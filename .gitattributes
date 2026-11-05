@@ -1,0 +1,5 @@
+# 固定快照的原始字节，避免Windows自动CRLF转换破坏摘要。
+vendor/** text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
