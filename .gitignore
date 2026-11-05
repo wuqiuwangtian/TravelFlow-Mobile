@@ -1,0 +1,13 @@
+node_modules/
+android/
+www/
+.env
+.env.*
+*.db
+*.sqlite
+*.jks
+*.keystore
+*.apk
+*.aab
+__pycache__/
+*.py[cod]

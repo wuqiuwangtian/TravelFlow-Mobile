@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/wuqiuwangtian/TravelFlow-AI",
+  "commit": "974743fc9df181f01919d06e4cf3cc4a5908bd49",
+  "path": "frontend/styles",
+  "files": {
+    "tokens.css": "8c068418230c1a2e58231296a1592f3bf68bf8f4522ad864550245f5801ecad0",
+    "components.css": "26b921d8b6d5781331f3edc69a102179b96e63be466ba89d06514b503e377996"
+  }
+}

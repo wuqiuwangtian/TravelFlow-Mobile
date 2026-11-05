@@ -1,0 +1,38 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  android-probe:
+    name: Contract, domain and isolated Android build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm check:contracts
+      - run: pnpm check:ledger
+      - run: pnpm typecheck
+      - run: pnpm audit --audit-level=moderate
+      - name: Prepare independent candidate project
+        run: node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe"
+      - name: Audit isolated candidate dependencies
+        run: pnpm --dir "$RUNNER_TEMP/android-probe" audit --audit-level=moderate
+      - name: Ensure Android build packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
+      - name: Build debug APK (no emulator or publication)
+        working-directory: ${{ runner.temp }}/android-probe/android
+        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
