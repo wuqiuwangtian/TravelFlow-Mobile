@@ -30,14 +30,25 @@ jobs:
         run: |
           node --check prototypes/android-runtime/probe.js
           node --check scripts/check-android-stream.mjs
-          python -m py_compile scripts/android_probe_service.py
+          node --check scripts/check-android-tls.mjs
+          node --check scripts/lib/android-probe-cdp.mjs
+          python -m py_compile scripts/android_probe_service.py scripts/prepare-probe-tls.py scripts/check-probe-apk.py
       - run: pnpm audit --audit-level=moderate
       - name: Prepare independent candidate project
-        run: node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe"
+        run: |
+          python scripts/prepare-probe-tls.py --output "$RUNNER_TEMP/probe-tls"
+          node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe" --tls-fixtures "$RUNNER_TEMP/probe-tls"
       - name: Audit isolated candidate dependencies
         run: pnpm --dir "$RUNNER_TEMP/android-probe" audit --audit-level=moderate
       - name: Ensure Android build packages
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
-      - name: Build debug APK (no emulator or publication)
+      - name: Build debug and unsigned release APKs (no emulator or publication)
         working-directory: ${{ runner.temp }}/android-probe/android
-        run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+        run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon --console=plain
+      - name: Verify packaged release excludes test CA and cleartext exception
+        run: >-
+          python scripts/check-probe-apk.py
+          --aapt2 "$ANDROID_HOME/build-tools/35.0.0/aapt2"
+          --debug "$RUNNER_TEMP/android-probe/android/app/build/outputs/apk/debug/app-debug.apk"
+          --release "$RUNNER_TEMP/android-probe/android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          --tls-fixtures "$RUNNER_TEMP/probe-tls"

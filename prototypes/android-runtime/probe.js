@@ -7,12 +7,36 @@ const byId = (id) => document.getElementById(id);
 let previousId = null;
 let streamId = null;
 let lastEventId = 0;
-const streamButtons = ["stream", "stall", "drop", "resume"];
+const streamButtons = ["stream", "stall", "drop", "resume", "drip", "no-auth", "unauthorized", "redirect"];
+let credentialBusy = false;
 
 function streamControls(running) {
-  for (const id of streamButtons) byId(id).disabled = running || (id === "resume" && !lastEventId);
+  for (const id of streamButtons) byId(id).disabled = running || credentialBusy || (id === "resume" && !(lastEventId > 0 && lastEventId < 3));
   byId("cancel").disabled = !running;
+  byId("transport").disabled = running || credentialBusy;
+  for (const id of ["credential-prepare", "credential-clear"]) byId(id).disabled = running || credentialBusy;
 }
+
+for (const [id, method, message] of [
+  ["credential-prepare", "prepareCredentialFixture", "虚构凭据已加密保存，可测试HTTPS。"],
+  ["credential-clear", "clearCredentialFixture", "虚构凭据已移除，HTTPS应明确报错。"],
+]) {
+  byId(id).onclick = async () => {
+    credentialBusy = true;
+    streamControls(false);
+    try {
+      await stream[method]();
+      byId("credential-status").textContent = message;
+    } catch (error) {
+      byId("credential-status").textContent = String(error);
+    } finally {
+      credentialBusy = false;
+      streamControls(false);
+    }
+  };
+}
+
+byId("transport").onchange = () => { lastEventId = 0; streamControls(false); };
 
 async function startStream(mode, after = 0) {
   streamId = crypto.randomUUID();
@@ -21,7 +45,7 @@ async function startStream(mode, after = 0) {
   byId("stream-status").textContent = "原生请求进行中";
   streamControls(true);
   try {
-    await stream.start({requestId: streamId, mode, after});
+    await stream.start({requestId: streamId, mode, after, transport: byId("transport").value});
   } catch (error) {
     byId("stream-status").textContent = String(error);
     streamId = null;
@@ -33,6 +57,9 @@ byId("stream").onclick = () => void startStream("normal");
 byId("stall").onclick = () => void startStream("stall");
 byId("drop").onclick = () => void startStream("drop");
 byId("resume").onclick = () => void startStream("normal", lastEventId);
+for (const mode of ["drip", "no-auth", "unauthorized", "redirect"]) {
+  byId(mode).onclick = () => void startStream(mode);
+}
 byId("cancel").onclick = async () => {
   byId("cancel").disabled = true;
   try {

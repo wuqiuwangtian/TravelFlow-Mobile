@@ -47,7 +47,7 @@ export ANDROID_AVD_HOME="$HOME/.cache/travelflow-p0-android/avd"
 
 ## 原生流式／取消验收
 
-生成器现会包含`ProbeStreamPlugin.java`：使用Android自带的`HttpURLConnection`和UTF-8读取器，在独立工作线程读取受控SSE；另一个线程执行`disconnect()`，避免桥线程被取消操作阻塞。本探针只接受固定模式和虚构请求ID，只访问`10.0.2.2:18510`，不接收任意URL、凭据或业务数据，不增加依赖，也不替代原有SQLite／普通HTTP实验。
+生成器包含`ProbeStreamPlugin.java`：使用Android自带的`HttpURLConnection`和UTF-8读取器，在独立工作线程读取受控SSE；另一个线程执行`disconnect()`，避免桥线程被取消操作阻塞。探针只接受固定模式、传输类型和虚构请求ID，只访问`10.0.2.2:18510–18515`，不接收任意URL、真实凭据或业务数据，不增加运行时依赖，也不替代原有SQLite／普通HTTP实验。默认选HTTP；下节说明可选HTTPS服务。
 
 准备新工程、构建并向明确的隔离模拟器安装后，运行上面的`python scripts/android_probe_service.py`。页面依次操作「分块输出」「读取超时」「中途断开」「从上次分块恢复」；另开一次「读取超时」，在首块出现后点「取消原生请求」。预期：中文逐块显示；停顿约1.5秒触发`TIMEOUT`；截断响应是失败；显式恢复只显示第2、3块；取消终态后不再追加分块，本地保存按钮始终可用。恢复编号只在当前页面内存中保留，重启后的续传、真实供应商恢复语义尚未定义。测试服务通过分块编码故意切开中文UTF-8字节，末尾使用实验性`[DONE]`标记；当前解析器不代表通用SSE／供应商适配器。
 
@@ -59,9 +59,37 @@ export ANDROID_AVD_HOME="$HOME/.cache/travelflow-p0-android/avd"
 node scripts/check-android-stream.mjs --port <PORT>
 ```
 
-脚本要求测试服务运行，输出`passed: true`及分块、取消、服务端断连和恢复时序。它会向虚构数据库追加一条123分并重放同ID，既有记录保留；不要要求初始金额为零。它同时验证正常完成、内置HTTP整包返回对照、阻塞读取消、立即取消、并发请求拒绝、错误ID取消拒绝、读取超时、截断后按`Last-Event-ID`重连、HTTP503及本地记录不受影响。取消必须在1秒内返回原生终态，且服务端在读取超时前观察到`peer_closed`，只忽略JS回调不算通过。脚本未验证连接超时、总时限或任意网络阶段的取消。
+脚本要求页面选择HTTP、测试服务运行，输出`passed: true`及分块、取消、服务端断连和恢复时序。它会向虚构数据库追加一条123分并重放同ID，既有记录保留；不要要求初始金额为零。它同时验证正常完成、内置HTTP整包返回对照、阻塞读取消、立即取消、并发请求拒绝、错误ID取消拒绝、读取超时、截断后按`Last-Event-ID`重连、HTTP503及本地记录不受影响。取消必须在1秒内返回原生终态，且服务端在读取超时前观察到`peer_closed`，只忽略JS回调不算通过。连接阶段与总时限使用下节的专门验收，不能由本脚本推断。
 
 断网冷启动验收：仅对明确的`emulator-5580`执行`adb -s emulator-5580 shell cmd connectivity airplane-mode enable`，强停后重启应用，更新PID与端口转发，再运行`node scripts/check-android-stream.mjs --port <PORT> --offline`。预期网络请求报错，原有余额保留、新增123分且重放不增加。恢复飞行模式原状态后，单独停止自己的测试服务，再运行同一`--offline`命令验证服务不可用；此参数只断言请求失败及本地写入可用，不替操作者证明或切换飞行模式。最后恢复服务和网络，强停重开核对金额并再次「分块输出」。不得清库。结束后移除自己的`adb -s emulator-5580 forward --remove tcp:<PORT>`，停止自己的服务与模拟器。
+
+## HTTPS、虚构凭据与连接阶段验收
+
+额外开发工具为OpenSSL和Python标准库。以下目录均需是仓库外的新目录，生成器拒绝覆盖；证书有效期2天，过期后重新生成一套，不能关闭证书验证。只向自己的隔离模拟器安装debug APK，不向Android系统或宿主安装CA：
+
+```sh
+python scripts/prepare-probe-tls.py --output /tmp/travelflow-probe-tls
+node scripts/prepare-android-probe.mjs --output /tmp/travelflow-probe-tls-app --tls-fixtures /tmp/travelflow-probe-tls
+python scripts/android_probe_service.py --tls-fixtures /tmp/travelflow-probe-tls
+```
+
+按上文构建、安装和转发当前WebView后，运行`node scripts/check-android-tls.mjs --port <PORT>`，预期`passed: true`。本脚本会生成／移除／重建专用虚构凭据，向虚构账本追加123分并重放一次，不清库。选择器由脚本设值，按钮通过页面CDP真实触摸。手工入口为「准备虚构凭据」、选择HTTPS类型、再操作分块、缺少／错误虚构凭据、拒绝重定向、TLS握手停顿及取消、持续分块与总时限。
+
+端口18510为HTTP与只读观测，18511为有效HTTPS，18512为不受信任证书，18513为主机名不匹配，18514为过期证书，18515接收TLS ClientHello但不回复。预期：有效HTTPS返回中文分块；三类错误证书返回`TLS_FAILED`且没有HTTP请求；缺少／错误授权返回HTTP401；重定向返回HTTP307且目标未收到请求。TLS握手停顿应约1500毫秒返回`CONNECT_TIMEOUT`，握手期间取消应在1秒内出现原生终态且服务端观察到关闭。此实验已完成TCP连接，不能冒充TCP SYN黑洞或DNS阶段验证。
+
+`drip`模式每约500毫秒输出一块，单次读取不会触发1500毫秒读取超时，但2500毫秒总时限应产生`DEADLINE`并关闭连接。其他模式总时限固定6000毫秒。这些值都是测试阈值，尚非产品策略；异常事件区分连接／读取阶段与HTTP状态，不返回底层包含请求信息的异常消息。
+
+`ProbeCredentials.java`只允许公开的固定虚构值：AES密钥由AndroidKeyStore管理，AES-GCM密文与IV位于应用私有`shared_prefs/p0-synthetic-credential.xml`，不写账本、不通过JS桥返回、不参与同步；「移除」仅处理该专用文件内容与`travelflow_p0_synthetic_v1`别名。强停重开、更新PID／转发后运行`node scripts/check-android-tls.mjs --port <PORT> --cold-start`，脚本不会重新准备凭据，预期仍能完成HTTPS。点击「移除虚构凭据」后可运行`--expect-credential-failure`，预期`CREDENTIAL_UNAVAILABLE`且账本不变；完成后显式重新准备虚构凭据。
+
+损坏密文的开发复现仅限该隔离模拟器：先强停，用`adb -s emulator-5580 exec-out run-as org.travelflow.p0 cat shared_prefs/p0-synthetic-credential.xml`保存仓库外备份；在副本中Base64解码`ciphertext`、翻转一个字节再编码，保留原IV及有效XML。用`adb -s emulator-5580 push`暂存到专用`/data/local/tmp/travelflow-p0-credential-fixture.xml`，再以`adb -s emulator-5580 shell run-as org.travelflow.p0 cp`复制到上述专用prefs文件。重启／更新转发后运行`--expect-credential-failure`，应明确失败且不删除密文或账本。最后强停、按同样方式还原备份、删除暂存文件，再冷启动验收。不要直接修改SQLite或其他prefs；不能将该虚构文件操作套到用户凭据。
+
+不带`--tls-fixtures`生成的debug默认只信任系统CA；向隔离模拟器替换安装该APK后运行`--expect-untrusted`，预期连有效测试证书也被拒绝。带测试CA的工程只在debug的`10.0.2.2`域配置引用它；main／release只信任系统CA并拒绝明文。可构建`:app:assembleDebug :app:assembleRelease`（release不签名、不安装、不发布），再检查实际打包资源：
+
+```sh
+python scripts/check-probe-apk.py --aapt2 "$ANDROID_HOME/build-tools/35.0.0/aapt2" --debug <DEBUG_APK> --release <UNSIGNED_RELEASE_APK> --tls-fixtures /tmp/travelflow-probe-tls
+```
+
+预期debug仅含一个测试CA，release无测试CA、无明文例外、无备份权限，双方无私钥。CI执行该打包检查，不运行模拟器。TLS私钥和证书目录必须留在仓库外；生成器只复制经摘要核对的单个公开CA到debug，篡改摘要会被拒绝。资料依据见[Android网络配置](https://developer.android.com/privacy-and-security/security-config)及[AndroidKeyStore](https://developer.android.com/privacy-and-security/keystore)。虚构值本身公开且编译进实验，模拟器未证明硬件密钥背书、真实凭据生命周期、卸载恢复或正式安全方案。
 
 ## 契约与设计快照更新
 
@@ -72,7 +100,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／超时／显式恢复验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。接下来补凭据与HTTPS失败证据、连接阶段取消／超时，以及兼容性评审。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。接下来整理候选框架与兼容性评审，明确API／WebView／ABI缺口；TCP／DNS取消和真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

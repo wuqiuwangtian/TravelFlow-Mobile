@@ -27,11 +27,27 @@
     <p id="network" role="status">网络调用尚未验证</p>
     <h2>原生流式传输实验</h2>
     <p>仅访问固定虚构服务。恢复是按事件编号显式重连，不代表业务同步或供应商自动续传。</p>
+    <label for="transport">测试传输</label>
+    <button class="tf-button" id="credential-prepare" disabled>准备虚构凭据</button>
+    <button class="tf-button" id="credential-clear" disabled>移除虚构凭据</button>
+    <p id="credential-status" role="status">只测试固定虚构凭据，不接收真实密钥。</p>
+    <select id="transport" disabled>
+      <option value="http">HTTP回归</option>
+      <option value="https">HTTPS有效证书</option>
+      <option value="untrusted">HTTPS不受信任证书</option>
+      <option value="hostname">HTTPS主机名不匹配</option>
+      <option value="expired">HTTPS过期证书</option>
+      <option value="handshake">TLS握手停顿</option>
+    </select>
     <button class="tf-button" id="stream" disabled>分块输出</button>
     <button class="tf-button" id="stall" disabled>读取超时</button>
     <button class="tf-button" id="drop" disabled>中途断开</button>
     <button class="tf-button" id="resume" disabled>从上次分块恢复</button>
     <button class="tf-button" id="cancel" disabled>取消原生请求</button>
+    <button class="tf-button" id="drip" disabled>持续分块与总时限</button>
+    <button class="tf-button" id="no-auth" disabled>缺少虚构凭据</button>
+    <button class="tf-button" id="unauthorized" disabled>错误虚构凭据</button>
+    <button class="tf-button" id="redirect" disabled>拒绝重定向</button>
     <p id="stream-status" role="status">流式传输尚未验证</p>
     <pre id="stream-events" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
     <p id="error" role="alert"></p>

@@ -7,6 +7,10 @@ www/
 *.sqlite
 *.jks
 *.keystore
+*.key
+*.pem
+*.csr
+*.srl
 *.apk
 *.aab
 __pycache__/

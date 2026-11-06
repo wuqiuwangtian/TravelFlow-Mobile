@@ -1,6 +1,7 @@
 // 连接已明确转发的隔离Android WebView；不启动浏览器、不选择或操作ADB设备。
 // 仅向P0虚构数据库追加记录，不清库。Node22+，无需额外依赖。
 import assert from "node:assert/strict";
+import { connectProbe } from "./lib/android-probe-cdp.mjs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const args = process.argv.slice(2);
@@ -8,55 +9,8 @@ if (![2, 3].includes(args.length) || args[0] !== "--port" || !/^\d{4,5}$/.test(a
     (args.length === 3 && args[2] !== "--offline")) {
   throw new Error("Usage: node scripts/check-android-stream.mjs --port FORWARDED_CDP_PORT [--offline]");
 }
-const targets = await (await fetch(`http://127.0.0.1:${args[1]}/json`)).json();
-const target = targets.find((item) => item.title === "TravelFlow Android P0");
-assert.ok(target, "Expected isolated P0 WebView");
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-const pending = new Map();
-let nextId = 0;
-await new Promise((resolve, reject) => { ws.onopen = resolve; ws.onerror = reject; });
-ws.onmessage = ({data}) => {
-  const message = JSON.parse(data);
-  const entry = pending.get(message.id);
-  if (!entry) return;
-  pending.delete(message.id);
-  clearTimeout(entry.timer);
-  if (message.error) entry.reject(new Error(JSON.stringify(message.error)));
-  else entry.resolve(message.result);
-};
-function call(method, params = {}) {
-  return new Promise((resolve, reject) => {
-    const id = ++nextId;
-    const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP timeout: ${method}`)); }, 15000);
-    pending.set(id, {resolve, reject, timer});
-    ws.send(JSON.stringify({id, method, params}));
-  });
-}
-async function evaluate(expression) {
-  const response = await call("Runtime.evaluate", {expression, awaitPromise: true, returnByValue: true});
-  if (response.exceptionDetails) throw new Error(JSON.stringify(response.exceptionDetails));
-  return response.result.value;
-}
-async function until(expression, timeout = 8000) {
-  const end = Date.now() + timeout;
-  while (Date.now() < end) {
-    const result = await evaluate(expression);
-    if (result) return result;
-    await delay(50);
-  }
-  throw new Error(`Condition timed out: ${expression}`);
-}
-async function tap(id) {
-  const point = await evaluate(`(() => {
-    const button = document.getElementById(${JSON.stringify(id)});
-    if (button.disabled) throw Error('Button disabled');
-    button.scrollIntoView({block: 'center'});
-    const box = button.getBoundingClientRect();
-    return {x: box.x + box.width / 2, y: box.y + box.height / 2};
-  })()`);
-  await call("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [point]});
-  await call("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
-}
+const page = await connectProbe(args[1]);
+const {evaluate, until, tap} = page;
 const events = (id) => `window.__streamCheck.events[${JSON.stringify(id)}]`;
 async function start(mode, after = 0) {
   const id = `check_${crypto.randomUUID()}`;
@@ -230,6 +184,6 @@ try {
       delete window.__streamCheck;
     })()`);
   } finally {
-    ws.close();
+    page.close();
   }
 }
