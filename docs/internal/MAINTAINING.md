@@ -61,7 +61,7 @@ node scripts/check-android-stream.mjs --port <PORT>
 
 脚本要求测试服务运行，输出`passed: true`及分块、取消、服务端断连和恢复时序。它会向虚构数据库追加一条123分并重放同ID，既有记录保留；不要要求初始金额为零。它同时验证正常完成、内置HTTP整包返回对照、阻塞读取消、立即取消、并发请求拒绝、错误ID取消拒绝、读取超时、截断后按`Last-Event-ID`重连、HTTP503及本地记录不受影响。取消必须在1秒内返回原生终态，且服务端在读取超时前观察到`peer_closed`，只忽略JS回调不算通过。脚本未验证连接超时、总时限或任意网络阶段的取消。
 
-断网冷启动验收：仅对明确的`emulator-5580`执行`adb shell cmd connectivity airplane-mode enable`，强停后重启应用，更新PID与端口转发，再运行`node scripts/check-android-stream.mjs --port <PORT> --offline`。预期网络请求报错，原有余额保留、新增123分且重放不增加。恢复飞行模式原状态后，单独停止自己的测试服务，再运行同一`--offline`命令验证服务不可用；此参数只断言请求失败及本地写入可用，不替操作者证明或切换飞行模式。最后恢复服务和网络，强停重开核对金额并再次「分块输出」。不得清库。结束后移除自己的`adb -s emulator-5580 forward --remove tcp:<PORT>`，停止自己的服务与模拟器。
+断网冷启动验收：仅对明确的`emulator-5580`执行`adb -s emulator-5580 shell cmd connectivity airplane-mode enable`，强停后重启应用，更新PID与端口转发，再运行`node scripts/check-android-stream.mjs --port <PORT> --offline`。预期网络请求报错，原有余额保留、新增123分且重放不增加。恢复飞行模式原状态后，单独停止自己的测试服务，再运行同一`--offline`命令验证服务不可用；此参数只断言请求失败及本地写入可用，不替操作者证明或切换飞行模式。最后恢复服务和网络，强停重开核对金额并再次「分块输出」。不得清库。结束后移除自己的`adb -s emulator-5580 forward --remove tcp:<PORT>`，停止自己的服务与模拟器。
 
 ## 契约与设计快照更新
 
