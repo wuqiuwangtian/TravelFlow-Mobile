@@ -45,7 +45,7 @@ if (process.platform === "win32") {
 }
 const www = path.join(output, "www");
 mkdirSync(www);
-for (const name of ["index.html", "probe.js"]) cpSync(path.join(source, name), path.join(www, name));
+for (const name of ["index.html", "bootstrap.js", "probe.js"]) cpSync(path.join(source, name), path.join(www, name));
 for (const name of ["tokens.css", "components.css"]) cpSync(path.join(root, "vendor/design", name), path.join(www, name));
 cpSync(path.join(output, "node_modules/@capacitor/core/dist/index.js"), path.join(www, "capacitor-core.js"));
 cpSync(path.join(output, "node_modules/@capacitor/core/LICENSE"), path.join(www, "CAPACITOR-LICENSE.txt"));
@@ -72,7 +72,7 @@ if (testCa) {
   writeFileSync(path.join(debug, "res/raw/p0_test_ca.pem"), testCa);
 }
 const anchors = testCa ? '<trust-anchors><certificates src="system"/><certificates src="@raw/p0_test_ca"/></trust-anchors>' : '';
-writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain>10.0.2.2</domain>${anchors}</domain-config></network-security-config>\n`);
+writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">10.0.2.2</domain>${anchors}</domain-config></network-security-config>\n`);
 console.log(JSON.stringify({
   project: output,
   appId: "org.travelflow.p0",

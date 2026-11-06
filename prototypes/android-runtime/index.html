@@ -11,7 +11,7 @@
     main { max-width: 38rem; margin: auto; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; }
     h1 { font-size: 1.5rem; }
     p { line-height: 1.6; overflow-wrap: anywhere; }
-    button { min-height: 44px; margin: .25rem 0; }
+    button, select { box-sizing: border-box; max-width: 100%; min-height: 44px; margin: .25rem 0; }
     #error { color: var(--tf-danger); }
   </style>
 </head>
@@ -52,6 +52,6 @@
     <pre id="stream-events" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
     <p id="error" role="alert"></p>
   </main>
-  <script type="module" src="probe.js"></script>
+  <script src="bootstrap.js"></script>
 </body>
 </html>

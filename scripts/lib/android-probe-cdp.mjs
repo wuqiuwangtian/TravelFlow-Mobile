@@ -43,12 +43,21 @@ export async function connectProbe(port) {
     throw new Error(`Condition timed out: ${expression}`);
   }
   async function tap(id) {
-    const point = await evaluate(`(() => {
+    const point = await evaluate(`(async () => {
       const button = document.getElementById(${JSON.stringify(id)});
       if (button.disabled) throw Error('Button disabled');
       button.scrollIntoView({block: 'center'});
+      // Android旧系统的合成器可能晚于DOM滚动；等绘制后再读取触摸坐标。
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const box = button.getBoundingClientRect();
-      return {x: box.x + box.width / 2, y: box.y + box.height / 2};
+      const viewport = window.visualViewport;
+      const point = {
+        x: box.x + box.width / 2 - (viewport ? viewport.offsetLeft : 0),
+        y: box.y + box.height / 2 - (viewport ? viewport.offsetTop : 0),
+      };
+      if (point.x < 0 || point.y < 0 || point.x >= (viewport ? viewport.width : innerWidth) ||
+          point.y >= (viewport ? viewport.height : innerHeight)) throw Error('Button center is outside the visible viewport');
+      return point;
     })()`);
     await call("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [point]});
     await call("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});

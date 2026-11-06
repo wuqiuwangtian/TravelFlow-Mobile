@@ -33,7 +33,7 @@ export ANDROID_AVD_HOME="$HOME/.cache/travelflow-p0-android/avd"
 "$ANDROID_HOME/platform-tools/adb" devices
 ```
 
-确认5580端口未被其他模拟器占用、上述AVD存在后，可另开开发终端运行 `"$ANDROID_HOME/emulator/emulator" -avd travelflow_p0_api35 -port 5580 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2`。若已有自己的实例则复用，不能默认重置或清数据；缺少AVD时按[Android官方AVD工具说明](https://developer.android.com/tools/avdmanager)创建自己的隔离镜像。先确认启动完成，再向明确的`emulator-5580`安装生成工程中的debug APK。所有ADB命令指定`-s emulator-5580`，不能使用默认第一台设备；验收后仅关闭自己启动的实例、回显服务和端口转发。
+确认5580端口未被其他模拟器占用、上述AVD存在后，可另开开发终端运行 `"$ANDROID_HOME/emulator/emulator" -avd travelflow_p0_api35 -port 5580 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2`。若已有自己的实例则复用，不能默认重置或清数据；缺少AVD时按[Android官方AVD工具说明](https://developer.android.com/tools/avdmanager)创建自己的隔离镜像。先确认启动完成，再向明确的`emulator-5580`安装生成工程中的debug APK。本节API35的ADB命令指定`-s emulator-5580`，其他隔离组合见兼容性一节；不能使用默认第一台设备。验收后仅关闭自己启动的实例、回显服务和端口转发。
 
 应用启动命令为 `adb -s emulator-5580 shell am start -n org.travelflow.p0/.MainActivity`，强停用 `adb -s emulator-5580 shell am force-stop org.travelflow.p0`；这里adb指上面SDK的platform-tools/adb，未加入PATH时使用完整路径。安装APK、切换网络、强停都仅限隔离模拟器。SDK／生成工程路径可能在机器清理后消失，应按文档重新准备，不能把旧/tmp路径存在当作验收前提。
 
@@ -65,7 +65,7 @@ node scripts/check-android-stream.mjs --port <PORT>
 
 ## HTTPS、虚构凭据与连接阶段验收
 
-额外开发工具为OpenSSL和Python标准库。以下目录均需是仓库外的新目录，生成器拒绝覆盖；证书有效期2天，过期后重新生成一套，不能关闭证书验证。只向自己的隔离模拟器安装debug APK，不向Android系统或宿主安装CA：
+额外开发工具为OpenSSL和Python3.9+标准库。以下目录均需是仓库外的新目录，生成器拒绝覆盖；证书有效期2天，过期后重新生成一套，不能关闭证书验证。只向自己的隔离模拟器安装debug APK，不向Android系统或宿主安装CA：
 
 ```sh
 python scripts/prepare-probe-tls.py --output /tmp/travelflow-probe-tls
@@ -91,6 +91,30 @@ python scripts/check-probe-apk.py --aapt2 "$ANDROID_HOME/build-tools/35.0.0/aapt
 
 预期debug仅含一个测试CA，release无测试CA、无明文例外、无备份权限，双方无私钥。CI执行该打包检查，不运行模拟器。TLS私钥和证书目录必须留在仓库外；生成器只复制经摘要核对的单个公开CA到debug，篡改摘要会被拒绝。资料依据见[Android网络配置](https://developer.android.com/privacy-and-security/security-config)及[AndroidKeyStore](https://developer.android.com/privacy-and-security/keystore)。虚构值本身公开且编译进实验，模拟器未证明硬件密钥背书、真实凭据生命周期、卸载恢复或正式安全方案。
 
+## 兼容性诊断与隔离系统对照
+
+评审依据与待确认范围见[Android框架评审](ANDROID_FRAMEWORK_REVIEW.md)。当前页面先运行经典`bootstrap.js`，按本构建需要检查ES模块、安全上下文、随机操作ID、CSS变量与层叠层；缺少能力时显示更新提示、保持按钮禁用，不加载业务实验模块，也不把未读取的账目显示为零。模块加载／解析失败另有错误提示。这不是正式最低版本政策，也没有改写vendor设计快照；正式降级／转译方案仍待验证。
+
+连接已明确转发的隔离WebView后运行`node scripts/check-android-compat.mjs --port <PORT>`。输出`scope: current_webview_only`、实际UA、功能检测与布局宽度；不支持当前构建时仍先输出JSON，再以非零退出。`platform`仅是浏览器报告，不是实际CPU／进程位数证明。源码检查、UA伪装或桌面浏览器不能代替系统对照。诊断只读页面，不写入记录；功能通过后仍需运行HTTP／TLS及离线冷启动验收。
+
+本机新增的隔离AVD为`travelflow_p0_api30`，官方包`system-images;android-30;default;x86_64` revision11。先确认5582与自己的CDP端口未被占用，AVD确属本任务；仅启动该实例，所有相关ADB明确使用`-s emulator-5582`。需要重新准备时，沿用前述独立缓存环境，目标AVD／目录必须不存在，不加`--force`：
+
+```sh
+"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "system-images;android-30;default;x86_64"
+printf 'no\n' | "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" create avd --name travelflow_p0_api30 --package "system-images;android-30;default;x86_64" --device pixel_2 --path "$ANDROID_AVD_HOME/travelflow_p0_api30.avd"
+"$ANDROID_HOME/emulator/emulator" -avd travelflow_p0_api30 -port 5582 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2 -skin 320x640
+```
+
+AVD工具本机曾报告缺少镜像`devices.xml`但创建成功；必须核对实际config／启动后的SDK及提供方，不只依赖退出码。API35仍保留在5580，两者不能混用。安装前确认`adb -s emulator-5582 shell getprop ro.build.version.sdk`为30、启动完成，再安装自己生成的debug APK。使用当前PID转发到自己的独立CDP端口（本轮API30为19236、API35为19235），命令与前文相同但显式替换设备序列号；重启后重新获取PID。
+
+镜像自带WebView83可作不支持分支验证：预期诊断缺少`randomUUID`／`cssLayers`，页面明确提示更新、所有按钮禁用且没有加载`probe.js`，原有虚构SQLite不被改写。仅在自己的隔离模拟器中，可用`adb -s emulator-5582 shell cmd package uninstall-system-updates com.android.webview`撤销自己安装的WebView测试更新以重现；不得清除P0应用数据，也不得对真机执行。此命令本机回显Success但退出码为1，应以`dumpsys webviewupdate`中的实际提供方版本确认，不把退出码冒充成功或失败证据。
+
+可用测试更新来源是已有官方API35/default/x86_64镜像中的`/product/app/webview/webview.apk`，本机副本在`~/.cache/travelflow-p0-android/webview124-api35-fixture.apk`。仅从明确的`emulator-5580`用`adb pull`提取到仓库外，以`aapt2 dump badging`核对包`com.android.webview`、版本124.0.6367.219、minSdk26及匹配ABI；先核对目标系统的提供方列表允许这个包，再对明确的`emulator-5582`执行`adb install -r <WEBVIEW_FIXTURE_APK>`。不重签、不改系统白名单、不向宿主安装CA，不将测试内核分发或推荐给真实用户。
+
+更新后强停／启动P0、更新PID与转发，运行诊断、`check-android-tls.mjs`和`check-android-stream.mjs`。再按前文离线步骤显式改用`emulator-5582`及其CDP端口；网络恢复后`--cold-start`不重新准备凭据，预期HTTPS完成，新增与重放记录保持。诊断的layout／visual宽度都记录，窄视口控件应无横向溢出；这不是正式手机交互验收。触摸脚本等待滚动绘制并将布局坐标换算为`visualViewport`坐标，不以JS `.click()`替代原生触摸。
+
+API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26仍待匹配提供方的合法镜像／组件验证，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
+
 ## 契约与设计快照更新
 
 权威数据契约在电脑仓库contracts，移动侧vendor/contracts保存固定版本。根目录执行 `node scripts/import-contract.mjs --source <电脑仓库Git副本> --commit <完整40位提交SHA>`，仅显式更新时需要此副本；导入前验证上游摘要，再运行三项检查、审阅差异并提交。当前导入器只支持实验ledger-v1，不是未来同步协议协商工具。既有契约版本不可原地改写；新规则需先由两端评审版本与迁移。
@@ -100,7 +124,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。接下来整理候选框架与兼容性评审，明确API／WebView／ABI缺口；TCP／DNS取消和真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；下一项按用户确认的旧系统＋可更新WebView优先顺序，补API24／26的匹配提供方组合，再完善系统／ABI边界。TCP／DNS取消和真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

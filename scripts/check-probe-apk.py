@@ -32,6 +32,7 @@ def check(aapt2, debug, release, fixtures):
         assert 'src="system"' in config
         with ZipFile(apk) as archive:
             ca_files = []
+            native_libraries = [entry.filename for entry in archive.infolist() if entry.filename.startswith("lib/") and entry.filename.endswith(".so")]
             for entry in archive.infolist():
                 data = archive.read(entry)
                 assert not re.search(rb"-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----", data), f"{name}: private key packaged"
@@ -42,12 +43,13 @@ def check(aapt2, debug, release, fixtures):
             assert len(ca_files) == 1, "debug must contain exactly one synthetic CA"
             assert "domain-config" in config and "10.0.2.2" in config
             assert "cleartextTrafficPermitted=true" in config
+            assert "includeSubdomains=false" in config, "debug trust scope must explicitly exclude subdomains"
         else:
             assert not ca_files and "p0_test_ca" not in resources, "test CA leaked into release"
             assert "domain-config" not in config and "cleartextTrafficPermitted=true" not in config, "debug network exception leaked into release"
             assert not re.search(r"debuggable[^\n]*=true", manifest), "release is debuggable"
         report[name] = {"testCaFiles": len(ca_files), "backupAllowed": False,
-                        "testHostCleartextAllowed": name == "debug"}
+                        "testHostCleartextAllowed": name == "debug", "nativeLibraries": native_libraries}
     print(json.dumps({"passed": True, **report}, indent=2))
 
 
