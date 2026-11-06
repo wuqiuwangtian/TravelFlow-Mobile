@@ -25,6 +25,15 @@
     <button class="tf-button" id="retry" disabled>重放上次操作</button>
     <button class="tf-button" id="http" disabled>调用独立测试服务</button>
     <p id="network" role="status">网络调用尚未验证</p>
+    <h2>原生流式传输实验</h2>
+    <p>仅访问固定虚构服务。恢复是按事件编号显式重连，不代表业务同步或供应商自动续传。</p>
+    <button class="tf-button" id="stream" disabled>分块输出</button>
+    <button class="tf-button" id="stall" disabled>读取超时</button>
+    <button class="tf-button" id="drop" disabled>中途断开</button>
+    <button class="tf-button" id="resume" disabled>从上次分块恢复</button>
+    <button class="tf-button" id="cancel" disabled>取消原生请求</button>
+    <p id="stream-status" role="status">流式传输尚未验证</p>
+    <pre id="stream-events" style="white-space: pre-wrap; overflow-wrap: anywhere;"></pre>
     <p id="error" role="alert"></p>
   </main>
   <script type="module" src="probe.js"></script>

@@ -26,6 +26,11 @@ jobs:
       - run: pnpm check:contracts
       - run: pnpm check:ledger
       - run: pnpm typecheck
+      - name: Check probe script syntax (native interaction requires an isolated emulator)
+        run: |
+          node --check prototypes/android-runtime/probe.js
+          node --check scripts/check-android-stream.mjs
+          python -m py_compile scripts/android_probe_service.py
       - run: pnpm audit --audit-level=moderate
       - name: Prepare independent candidate project
         run: node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe"

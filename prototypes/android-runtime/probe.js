@@ -2,8 +2,46 @@ import { Capacitor, registerPlugin, CapacitorHttp } from "./capacitor-core.js";
 import { summarizeLedger } from "./ledger-core.js";
 
 const store = registerPlugin("ProbeStore");
+const stream = registerPlugin("ProbeStream");
 const byId = (id) => document.getElementById(id);
 let previousId = null;
+let streamId = null;
+let lastEventId = 0;
+const streamButtons = ["stream", "stall", "drop", "resume"];
+
+function streamControls(running) {
+  for (const id of streamButtons) byId(id).disabled = running || (id === "resume" && !lastEventId);
+  byId("cancel").disabled = !running;
+}
+
+async function startStream(mode, after = 0) {
+  streamId = crypto.randomUUID();
+  if (!after) lastEventId = 0;
+  byId("stream-events").textContent = "";
+  byId("stream-status").textContent = "原生请求进行中";
+  streamControls(true);
+  try {
+    await stream.start({requestId: streamId, mode, after});
+  } catch (error) {
+    byId("stream-status").textContent = String(error);
+    streamId = null;
+    streamControls(false);
+  }
+}
+
+byId("stream").onclick = () => void startStream("normal");
+byId("stall").onclick = () => void startStream("stall");
+byId("drop").onclick = () => void startStream("drop");
+byId("resume").onclick = () => void startStream("normal", lastEventId);
+byId("cancel").onclick = async () => {
+  byId("cancel").disabled = true;
+  try {
+    await stream.cancel({requestId: streamId});
+    // 工作线程终态事件才确认取消完成。
+  } catch (error) {
+    byId("stream-status").textContent = String(error);
+  }
+};
 
 function render(snapshot) {
   const summary = summarizeLedger({expenses: snapshot.entries, adjustments: []});
@@ -52,10 +90,22 @@ byId("http").onclick = async () => {
 
 try {
   if (!Capacitor.isNativePlatform()) throw new Error("This probe requires Android native runtime");
+  await stream.addListener("stream", (event) => {
+    if (event.requestId !== streamId) return;
+    byId("stream-events").textContent += `${event.elapsedMs}ms ${event.type} ${event.data}\n`;
+    if (event.type === "chunk") {
+      lastEventId = Number(event.eventId);
+    } else {
+      byId("stream-status").textContent = `原生请求终态：${event.type} ${event.data}`;
+      streamId = null;
+      streamControls(false);
+    }
+  });
   render(await store.read());
   byId("runtime").textContent = "Android原生桥已就绪";
   byId("append").disabled = false;
   byId("http").disabled = false;
+  streamControls(false);
 } catch (error) {
   byId("runtime").textContent = "原生能力未就绪";
   byId("error").textContent = String(error);

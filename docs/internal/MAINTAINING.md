@@ -43,7 +43,25 @@ export ANDROID_AVD_HOME="$HOME/.cache/travelflow-p0-android/avd"
 
 可选测试对端：`python scripts/android_probe_service.py`，仅监听127.0.0.1:18510，不读取.env，Python仅用于开发测试。只向自己的隔离模拟器安装org.travelflow.p0；打开后原生桥就绪，保存1.23元，重放同一操作条数／金额不增加；强停重开保持，关闭网络后冷启动可继续新增。恢复网络时测试POST通过；停止测试服务后网络失败，但本地继续保存。已有记录不会因重开归零，不能默认每次验收从空库开始。
 
-服务无CORS；原生HTTP访问10.0.2.2的宿主回显服务，虚构token非真实鉴权。仅debug为该地址允许明文，release默认拒绝；此地址不适用真机。未调用真实模型／地图，流式／取消仍待验证。浏览器无法提供原生插件能力；不可把桌面触屏模拟当Android验收。
+服务无CORS；原生HTTP访问10.0.2.2的宿主回显服务，虚构token非真实鉴权。仅debug为该地址允许明文，release默认拒绝；此地址不适用真机。未调用真实模型／地图，流式／取消实验见下一节。浏览器无法提供原生插件能力；不可把桌面触屏模拟当Android验收。
+
+## 原生流式／取消验收
+
+生成器现会包含`ProbeStreamPlugin.java`：使用Android自带的`HttpURLConnection`和UTF-8读取器，在独立工作线程读取受控SSE；另一个线程执行`disconnect()`，避免桥线程被取消操作阻塞。本探针只接受固定模式和虚构请求ID，只访问`10.0.2.2:18510`，不接收任意URL、凭据或业务数据，不增加依赖，也不替代原有SQLite／普通HTTP实验。
+
+准备新工程、构建并向明确的隔离模拟器安装后，运行上面的`python scripts/android_probe_service.py`。页面依次操作「分块输出」「读取超时」「中途断开」「从上次分块恢复」；另开一次「读取超时」，在首块出现后点「取消原生请求」。预期：中文逐块显示；停顿约1.5秒触发`TIMEOUT`；截断响应是失败；显式恢复只显示第2、3块；取消终态后不再追加分块，本地保存按钮始终可用。恢复编号只在当前页面内存中保留，重启后的续传、真实供应商恢复语义尚未定义。测试服务通过分块编码故意切开中文UTF-8字节，末尾使用实验性`[DONE]`标记；当前解析器不代表通用SSE／供应商适配器。
+
+可复现自动验收使用Node22+内置WebSocket，通过页面CDP真实触摸按钮并检查原生事件；不用桌面浏览器代替Android。确认选定本机端口未占用，按当前PID执行转发（将`<PID>`和`<PORT>`替换为实际值）：
+
+```sh
+"$ANDROID_HOME/platform-tools/adb" -s emulator-5580 shell pidof org.travelflow.p0
+"$ANDROID_HOME/platform-tools/adb" -s emulator-5580 forward tcp:<PORT> localabstract:webview_devtools_remote_<PID>
+node scripts/check-android-stream.mjs --port <PORT>
+```
+
+脚本要求测试服务运行，输出`passed: true`及分块、取消、服务端断连和恢复时序。它会向虚构数据库追加一条123分并重放同ID，既有记录保留；不要要求初始金额为零。它同时验证正常完成、内置HTTP整包返回对照、阻塞读取消、立即取消、并发请求拒绝、错误ID取消拒绝、读取超时、截断后按`Last-Event-ID`重连、HTTP503及本地记录不受影响。取消必须在1秒内返回原生终态，且服务端在读取超时前观察到`peer_closed`，只忽略JS回调不算通过。脚本未验证连接超时、总时限或任意网络阶段的取消。
+
+断网冷启动验收：仅对明确的`emulator-5580`执行`adb shell cmd connectivity airplane-mode enable`，强停后重启应用，更新PID与端口转发，再运行`node scripts/check-android-stream.mjs --port <PORT> --offline`。预期网络请求报错，原有余额保留、新增123分且重放不增加。恢复飞行模式原状态后，单独停止自己的测试服务，再运行同一`--offline`命令验证服务不可用；此参数只断言请求失败及本地写入可用，不替操作者证明或切换飞行模式。最后恢复服务和网络，强停重开核对金额并再次「分块输出」。不得清库。结束后移除自己的`adb -s emulator-5580 forward --remove tcp:<PORT>`，停止自己的服务与模拟器。
 
 ## 契约与设计快照更新
 
@@ -54,7 +72,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。生成工程后，检查`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve。用延迟分块的虚构服务证明首块／中间块到达时间，再验证原生请求被真实取消和断线恢复；当前回显服务只有普通POST成功／失败，尚不能验收流式路径。选择原生传输适配方案仍需证据，不能据现有普通POST直接正式选定框架。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／超时／显式恢复验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。接下来补凭据与HTTPS失败证据、连接阶段取消／超时，以及兼容性评审。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

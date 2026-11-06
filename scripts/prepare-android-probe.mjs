@@ -42,7 +42,7 @@ writeFileSync(path.join(www, "ledger-core.js"), ts.transpileModule(
 const cli = path.join(output, "node_modules/@capacitor/cli/bin/capacitor");
 run(process.execPath, [cli, "add", "android"]);
 const java = path.join(output, "android/app/src/main/java/org/travelflow/p0");
-for (const name of ["MainActivity.java", "ProbeStorePlugin.java"]) cpSync(path.join(source, name), path.join(java, name));
+for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPlugin.java"]) cpSync(path.join(source, name), path.join(java, name));
 const manifest = path.join(output, "android/app/src/main/AndroidManifest.xml");
 writeFileSync(manifest, readFileSync(manifest, "utf8").replace('android:allowBackup="true"', 'android:allowBackup="false"'));
 // 仅debug测试服务可用明文；默认与release仍拒绝明文流量。
