@@ -18,6 +18,7 @@ def inspect(apk, aapt2, apksigner, sdk):
     certificates = run(apksigner, "verify", "--print-certs", apk)
     package = re.search(r"^package: name='([^']+)' versionCode='([^']+)' versionName='([^']+)'", badging, re.M)
     minimum = re.search(r"^(?:minSdkVersion|sdkVersion):'([0-9]+)'", badging, re.M)
+    maximum = re.search(r"^maxSdkVersion:'([0-9]+)'", badging, re.M)
     target = re.search(r"^targetSdkVersion:'([0-9]+)'", badging, re.M)
     if not package or not minimum:
         raise ValueError("APK package/minSdk metadata could not be established")
@@ -32,6 +33,7 @@ def inspect(apk, aapt2, apksigner, sdk):
         "versionCode": package.group(2),
         "versionName": package.group(3),
         "minSdk": int(minimum.group(1)),
+        "maxSdk": int(maximum.group(1)) if maximum else None,
         "targetSdk": int(target.group(1)) if target else None,
         "examinedSdk": sdk,
         "minimumSdkMet": int(minimum.group(1)) <= sdk,
@@ -42,7 +44,28 @@ def inspect(apk, aapt2, apksigner, sdk):
     }
     if not report["signerCertificateSha256"]:
         raise ValueError("Verified APK signer certificate could not be established")
-    print(json.dumps(report, indent=2))
+    return report
+
+
+def check_candidate(candidate, reference, expected_package, abi):
+    # 严格匹配同包当前签名集合；不把密钥轮换或站点声称自动视为可信。
+    checks = {
+        "packageMatches": candidate["package"] == reference["package"] == expected_package,
+        "signersMatch": sorted(candidate["signerCertificateSha256"]) == sorted(reference["signerCertificateSha256"]),
+        "minimumSdkMet": candidate["minimumSdkMet"],
+        "maximumSdkMet": candidate["maxSdk"] is None or candidate["examinedSdk"] <= candidate["maxSdk"],
+        "abiPresent": abi in candidate["nativeAbis"],
+        "webViewLibraryDeclared": candidate["declaresWebViewLibrary"],
+        "noUnresolvedStaticLibraries": not candidate["staticLibraries"],
+    }
+    return {
+        "scope": "webview_candidate_metadata_only",
+        "referenceSha256": reference["sha256"],
+        "expectedPackage": expected_package,
+        "requiredAbi": abi,
+        "checks": checks,
+        "passed": all(checks.values()),
+    }
 
 
 if __name__ == "__main__":
@@ -50,5 +73,16 @@ if __name__ == "__main__":
     for name in ["apk", "aapt2", "apksigner"]:
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--sdk", required=True, type=int)
+    parser.add_argument("--reference-apk", type=Path, help="Trusted same-package APK obtained independently from an official image")
+    parser.add_argument("--expect-package")
+    parser.add_argument("--require-abi")
     args = parser.parse_args()
-    inspect(args.apk, args.aapt2, args.apksigner, args.sdk)
+    guards = [args.reference_apk, args.expect_package, args.require_abi]
+    if any(guards) and not all(guards):
+        parser.error("--reference-apk, --expect-package and --require-abi must be supplied together")
+    report = inspect(args.apk, args.aapt2, args.apksigner, args.sdk)
+    if all(guards):
+        reference = inspect(args.reference_apk, args.aapt2, args.apksigner, args.sdk)
+        report["candidateCheck"] = check_candidate(report, reference, args.expect_package, args.require_abi)
+    print(json.dumps(report, indent=2))
+    raise SystemExit(0 if not all(guards) or report["candidateCheck"]["passed"] else 1)

@@ -136,6 +136,18 @@ python3 scripts/inspect-webview-apk.py --apk /path/to/candidate.apk --aapt2 "$AN
 
 APK工具需要可运行的JDK及Android Build Tools，执行实际签名校验；输出`minimumSdkMet`只比较最低系统要求，不能当作总体兼容结论。还须核对目标提供方白名单、已有包签名身份／更新资格、ABI、静态库与实际运行。签名有效不等于发布者身份可信，应与可靠来源的预期证书另行比对。工具不安装APK、不获取第三方组件、不调整设备。Google旧系统与官方109候选的实际结果见PROJECT_STATUS新增章节；本机缓存不是其他贡献者必需条件。
 
+已获用户授权，可从第三方镜像站取得原版组件，核验通过后仅用于本项目隔离模拟器。参考APK必须独立取自可信官方镜像，不能用同一镜像站的另一份下载自证身份。API26 Google镜像的 `/system/app/Chrome/Chrome.apk` 已提取到仓库外缓存 `google-chrome69-source26.apk`；实际文件SHA256为 `a1495bdd1c7774a16fc7c41f0dfbec81c2fb7402a35d543c28635cda32dd6b61`，签名证书SHA256为 `f0fd6c5b410f25cb25c3b53346c8972fae30f8ee7411df910480ad6b2d60db83`。复现应从自己明确的同类官方AVD提取，并记录来源，不把网站展示的摘要当作已下载文件的核验。
+
+可选的候选准入检查（参数三项须一起提供）：
+
+```sh
+python3 scripts/inspect-webview-apk.py --apk /path/to/candidate.apk --aapt2 "$ANDROID_HOME/build-tools/35.0.0/aapt2" --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" --sdk 26 --reference-apk /path/to/official-chrome.apk --expect-package com.android.chrome --require-abi x86_64
+```
+
+`candidateCheck.passed`与退出0仅表示包名、同包签名集合、SDK上下界、指定ABI、WebView库声明及没有未解决静态库依赖都满足本工具条件；拒绝时输出逐项布尔值并退出1。签名集合严格相同，不自动接受密钥轮换。纯元数据模式不变，仍可报告不匹配条件供调查。此工具不检查系统白名单、更新版本码资格、完整split集合、引擎功能或真正运行；即使69样本元数据通过，当前原型仍缺少页面能力。带静态库的候选保守拒绝，不为其自动下载／安装依赖。下载的HTML／错误页或签名无效的APK直接失败，不会得到准入结果。
+
+当前APKMirror／APKPure／Softpedia下载访问返回403，正常浏览器同样受阻；Uptodown的已检查119及其他候选页面仅提供ARM变体，没有取得可用于现有x86隔离AVD的候选。不要把页面架构描述写成已核验APK，也不要修改包名／重签／系统白名单来绕过。没有需要用户再次确认的来源权限；下一项是取得可访问且架构匹配的原版文件，之后重复上述核验和实际设备验收。
+
 ## 契约与设计快照更新
 
 权威数据契约在电脑仓库contracts，移动侧vendor/contracts保存固定版本。根目录执行 `node scripts/import-contract.mjs --source <电脑仓库Git副本> --commit <完整40位提交SHA>`，仅显式更新时需要此副本；导入前验证上游摘要，再运行三项检查、审阅差异并提交。当前导入器只支持实验ledger-v1，不是未来同步协议协商工具。既有契约版本不可原地改写；新规则需先由两端评审版本与迁移。
