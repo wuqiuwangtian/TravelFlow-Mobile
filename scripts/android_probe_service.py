@@ -74,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "redirect":
             record["outcome"] = "redirect"
             self.send_response(307)
-            self.send_header("Location", "http://10.0.2.2:18510/leak?requestId=" + request_id)
+            self.send_header("Location", f"http://{self.server.probe_host}:18510/leak?requestId=" + request_id)
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
@@ -200,18 +200,22 @@ class TLSFixtureServer(ThreadingHTTPServer):
             request.close()
 
 
-def serve(fixtures=None):
+def serve(fixtures=None, target="emulator"):
+    host = {"emulator": "10.0.2.2", "usb": "127.0.0.1"}[target]
+    if fixtures:
+        fixtures = fixtures.resolve()
+        manifest = json.loads((fixtures / "fixture.json").read_text())
+        if manifest.get("kind") != "travelflow-synthetic-tls-v1" or manifest.get("host", "10.0.2.2") != host:
+            raise ValueError("Invalid synthetic TLS fixture or target mismatch")
     print("P0 synthetic HTTP fixture on 127.0.0.1:18510", flush=True)
     with ExitStack() as stack:
         server = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", 18510), Handler))
+        server.probe_host = host
         extra = []
         if fixtures:
-            fixtures = fixtures.resolve()
-            manifest = json.loads((fixtures / "fixture.json").read_text())
-            if manifest.get("kind") != "travelflow-synthetic-tls-v1":
-                raise ValueError("Invalid synthetic TLS fixture")
             for port, name in [(18511, "valid"), (18512, "untrusted"), (18513, "hostname"), (18514, "expired")]:
                 tls = stack.enter_context(TLSFixtureServer(("127.0.0.1", port), Handler))
+                tls.probe_host = host
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_cert_chain(fixtures / f"{name}.pem", fixtures / f"{name}.key")
@@ -233,4 +237,6 @@ def serve(fixtures=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tls-fixtures", type=Path)
-    serve(parser.parse_args().tls_fixtures)
+    parser.add_argument("--target", choices=["emulator", "usb"], default="emulator")
+    args = parser.parse_args()
+    serve(args.tls_fixtures, args.target)

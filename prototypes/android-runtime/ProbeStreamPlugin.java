@@ -96,7 +96,7 @@ public class ProbeStreamPlugin extends Plugin {
             };
             String scheme = "http".equals(transport) ? "http" : "https";
             HttpURLConnection connection = (HttpURLConnection) new URL(
-                scheme + "://10.0.2.2:" + port + "/stream?mode=" + mode + "&requestId=" + job.id
+                scheme + "://" + ProbeEndpoint.HOST + ":" + port + "/stream?mode=" + mode + "&requestId=" + job.id
             ).openConnection();
             job.connection = connection;
             connection.setConnectTimeout(1500);

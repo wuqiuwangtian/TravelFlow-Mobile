@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin, CapacitorHttp } from "./capacitor-core.js";
 import { summarizeLedger } from "./ledger-core.js";
+import { probeHost } from "./probe-endpoint.js";
 
 const store = registerPlugin("ProbeStore");
 const stream = registerPlugin("ProbeStream");
@@ -98,7 +99,7 @@ byId("http").onclick = async () => {
   byId("network").textContent = "正在调用测试服务…";
   try {
     const result = await CapacitorHttp.request({
-      url: "http://10.0.2.2:18510/echo",
+      url: `http://${probeHost}:18510/echo`,
       method: "POST",
       headers: {"Content-Type": "application/json", "X-P0-Token": "fixture-token"},
       data: {message: "synthetic-p0"},

@@ -200,6 +200,36 @@ AGENTS默认仅限隔离模拟器。用户本轮明确允许对已识别ELI-AN00
 
 先跑能力诊断，再跑本地触摸脚本。只强停／启动该用户下本包，更新PID／自己的转发，用 `--expect-local` 只读验证。此手机本轮1条／123分，网络／凭据未验证，不调用对应脚本或按钮。验收后移除本轮转发、结束本包调试，保留应用与虚构记录，不卸载／清数据。后续先准备可审阅的USB本地测试对端配置，再另行明确真机网络／凭据操作范围；不能直接扩大本次授权。
 
+### USB回环配置的生成、审查与验收
+
+当前生成器仅接受 `--target emulator|usb`：默认emulator为10.0.2.2，usb为127.0.0.1；没有任意地址参数。两种工程都生成ProbeEndpoint.java及probe-endpoint.js，原生流式和普通HTTP测试共享固定目标。新版HTTP验收脚本需要这些资产，应匹配新生成APK；不要直接套到旧安装包。证书fixture的host须匹配target，旧v1无host字段仅视为emulator；混用在创建工程／启动服务前拒绝。
+
+准备仓库外的新目录（不覆盖），USB示例：
+
+```sh
+python3 scripts/prepare-probe-tls.py --output /tmp/travelflow-usb-tls --target usb
+node scripts/prepare-android-probe.mjs --output /tmp/travelflow-usb-app --tls-fixtures /tmp/travelflow-usb-tls --target usb
+python3 scripts/android_probe_service.py --tls-fixtures /tmp/travelflow-usb-tls --target usb
+```
+
+emulator配置同样可显式传 `--target emulator`，或沿用默认命令。证书只含对应测试IP，host不匹配／不信任／过期端口保持独立；服务307目标也采用同一固定IP。服务始终仅监听宿主127.0.0.1的18510–18515，不读取.env。测试CA仅进debug的唯一对应域，release只信任系统CA并拒绝明文；不向手机或宿主系统安装CA。生成后按前文构建debug／unsigned release及完整debug lint，再给 `check-probe-apk.py` 增加同一 `--target usb`。该检查解析实际打包XML层级及资产：不能只凭某个字符串存在就判断CA范围，测试CA若移到base-config全域信任也须拒绝。
+
+**反向转发必须明确回环绑定。** 本轮API36实测，标准 `adb reverse tcp:PORT tcp:PORT` 监听通配地址；地址参数又被客户端校验拒绝。新增工具通过已有ADB本机服务请求标准协议的localhost监听，依据[AOSP socket_spec_listen](https://android.googlesource.com/platform/packages/modules/adb/+/30e74acef93318b07a2de7ffca5086dde868ad01/socket_spec.cpp)。不修改ADB、不绕过设备授权、不启动或重启服务；先确认设备归属、授权和已有服务端口，再执行：
+
+```sh
+node scripts/check-probe-reverse.mjs
+node scripts/manage-probe-reverse.mjs --server-port <已有ADB端口> --serial <明确序列号> --action add
+node scripts/manage-probe-reverse.mjs --server-port <同一端口> --serial <同一序列号> --action remove
+```
+
+只处理18510–18515，`--probe-port 18510`可限定其中一项；无默认设备或服务端口，不提供任意目标主机。add不覆盖已有映射，部分失败只回滚本次新增；remove仅用于自己已创建的本轮映射，不是全设备清理。adbd列表中名字会规范化为tcp:PORT，实际监听应以设备的ss等只读结果核对为127.0.0.1，不能由列表名称推断；不支持明确localhost的设备不得退回通配绑定。确认失败／端口占用时停止并排查，不改全局ADB、系统网络或防火墙。协议检查器只启动本机模拟对端，CI不会通过它操作设备。
+
+Windows ADB服务的目标tcp:PORT指向Windows localhost；使用Windows Node运行管理／验收脚本，并先确认Windows的127.0.0.1测试端口可达WSL服务。Linux模拟器则使用Linux Node和本机ADB服务。不会因为USB转发而自动取得真机联网权限：当前已识别手机原授权仍仅本地路径；扩大到更新APK、转发与虚构凭据测试必须先给用户可审阅的包和范围。
+
+在已授权的隔离模拟器，可先安装USB debug并创建这六项映射，转发P0 WebView，依次跑能力、完整TLS与HTTP脚本。移除自己创建的HTTP映射后，强停冷启动并跑HTTP `--offline`，预期请求失败而本地新增／重放仍有效；这里证明映射缺失，不证明飞行模式。恢复映射、再强停冷启动，TLS `--cold-start`应不重新准备凭据就成功，账目保持。不要为期望值清数据。结束后只移除本轮反向映射／CDP转发并停止自己的测试服务，设备网络设置保持原状。
+
+本轮候选USB debug路径 `/tmp/travelflow-p0-app-usbprep/android/app/build/outputs/apk/debug/app-debug.apk`，SHA256 `e9a9de4ec3acbf81d3369dc92c4d02a0d9f8218f6e0c793d57214504757ff815`；需重新生成时重新核对摘要和权限，不能要求临时路径永久存在。实际构建、负例、模拟器8条／984分及尚未执行的真机范围见PROJECT_STATUS。未来真实供应商／凭据／跨端同步接口仍不由此探针决定。
+
 ## 契约与设计快照更新
 
 权威数据契约在电脑仓库contracts，移动侧vendor/contracts保存固定版本。根目录执行 `node scripts/import-contract.mjs --source <电脑仓库Git副本> --commit <完整40位提交SHA>`，仅显式更新时需要此副本；导入前验证上游摘要，再运行三项检查、审阅差异并提交。当前导入器只支持实验ledger-v1，不是未来同步协议协商工具。既有契约版本不可原地改写；新规则需先由两端评审版本与迁移。

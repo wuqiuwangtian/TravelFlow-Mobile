@@ -7,7 +7,8 @@ from pathlib import Path
 import subprocess
 
 
-def prepare(output):
+def prepare(output, target="emulator"):
+    host = {"emulator": "10.0.2.2", "usb": "127.0.0.1"}[target]
     output = output.resolve()
     root = Path(__file__).resolve().parent.parent
     if output.is_relative_to(root):
@@ -37,7 +38,7 @@ policy = policy
 [policy]
 commonName = supplied
 """)
-    for name, san in [("valid", "IP:10.0.2.2"), ("hostname", "DNS:wrong.invalid"), ("expired", "IP:10.0.2.2")]:
+    for name, san in [("valid", f"IP:{host}"), ("hostname", "DNS:wrong.invalid"), ("expired", f"IP:{host}")]:
         openssl("req", "-newkey", "rsa:2048", "-nodes", "-subj", f"/CN=synthetic-{name}",
                 "-keyout", f"{name}.key", "-out", f"{name}.csr")
         (output / "leaf.cnf").write_text(f"""[leaf]
@@ -51,15 +52,17 @@ subjectAltName = {san}
                 "-in", f"{name}.csr", "-out", f"{name}.pem", *dates)
     openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
             "-subj", "/CN=TravelFlow untrusted synthetic server", "-keyout", "untrusted.key", "-out", "untrusted.pem",
-            "-addext", "subjectAltName=IP:10.0.2.2")
+            "-addext", f"subjectAltName=IP:{host}")
     for key in output.glob("*.key"):
         key.chmod(0o600)
-    manifest = {"kind": "travelflow-synthetic-tls-v1", "ca_sha256": hashlib.sha256((output / "ca.pem").read_bytes()).hexdigest()}
+    manifest = {"kind": "travelflow-synthetic-tls-v1", "host": host, "ca_sha256": hashlib.sha256((output / "ca.pem").read_bytes()).hexdigest()}
     (output / "fixture.json").write_text(json.dumps(manifest, indent=2) + "\n")
-    print(json.dumps({"directory": str(output), "kind": manifest["kind"], "validDays": 2, "systemTrustChanged": False}))
+    print(json.dumps({"directory": str(output), "kind": manifest["kind"], "host": host, "validDays": 2, "systemTrustChanged": False}))
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
-    prepare(parser.parse_args().output)
+    parser.add_argument("--target", choices=["emulator", "usb"], default="emulator")
+    args = parser.parse_args()
+    prepare(args.output, args.target)

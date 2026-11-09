@@ -9,22 +9,31 @@ import { createHash } from "node:crypto";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "prototypes/android-runtime");
 const args = process.argv.slice(2);
-if (![2, 4].includes(args.length) || args[0] !== "--output" || (args.length === 4 && args[2] !== "--tls-fixtures")) {
-  throw new Error("Usage: prepare-android-probe.mjs --output NEW_DIRECTORY [--tls-fixtures FIXTURE_DIRECTORY]");
+const options = new Map();
+const usage = "Usage: prepare-android-probe.mjs --output NEW_DIRECTORY [--tls-fixtures FIXTURE_DIRECTORY] [--target emulator|usb]";
+for (let i = 0; i < args.length; i += 2) {
+  if (!["--output", "--tls-fixtures", "--target"].includes(args[i]) || options.has(args[i]) ||
+      !args[i + 1] || args[i + 1].startsWith("--")) throw new Error(usage);
+  options.set(args[i], args[i + 1]);
 }
+const hosts = {emulator: "10.0.2.2", usb: "127.0.0.1"};
+const target = options.get("--target") ?? "emulator";
+if (!options.has("--output") || !Object.hasOwn(hosts, target)) throw new Error(usage);
+const probeHost = hosts[target];
 let testCa;
-if (args.length === 4) {
-  const fixtures = path.resolve(args[3]);
+if (options.has("--tls-fixtures")) {
+  const fixtures = path.resolve(options.get("--tls-fixtures"));
   const relative = path.relative(root, fixtures);
   if (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error("TLS fixtures must be outside the repository");
   const manifest = JSON.parse(readFileSync(path.join(fixtures, "fixture.json"), "utf8"));
   testCa = readFileSync(path.join(fixtures, "ca.pem"));
-  if (manifest.kind !== "travelflow-synthetic-tls-v1" || createHash("sha256").update(testCa).digest("hex") !== manifest.ca_sha256 ||
+  if (manifest.kind !== "travelflow-synthetic-tls-v1" || (manifest.host ?? hosts.emulator) !== probeHost ||
+      createHash("sha256").update(testCa).digest("hex") !== manifest.ca_sha256 ||
       !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(testCa.toString("utf8"))) {
     throw new Error("Invalid synthetic TLS fixture");
   }
 }
-const output = path.resolve(args[1]);
+const output = path.resolve(options.get("--output"));
 if (existsSync(output)) throw new Error("Output directory must not already exist");
 mkdirSync(output, { recursive: true });
 for (const name of ["package.json", "pnpm-lock.yaml", "capacitor.config.json"]) {
@@ -46,6 +55,7 @@ if (process.platform === "win32") {
 const www = path.join(output, "www");
 mkdirSync(www);
 for (const name of ["index.html", "bootstrap.js", "probe.js"]) cpSync(path.join(source, name), path.join(www, name));
+writeFileSync(path.join(www, "probe-endpoint.js"), `export const probeHost = ${JSON.stringify(probeHost)};\n`);
 for (const name of ["tokens.css", "components.css"]) cpSync(path.join(root, "vendor/design", name), path.join(www, name));
 cpSync(path.join(output, "node_modules/@capacitor/core/dist/index.js"), path.join(www, "capacitor-core.js"));
 cpSync(path.join(output, "node_modules/@capacitor/core/LICENSE"), path.join(www, "CAPACITOR-LICENSE.txt"));
@@ -58,6 +68,7 @@ const cli = path.join(output, "node_modules/@capacitor/cli/bin/capacitor");
 run(process.execPath, [cli, "add", "android"]);
 const java = path.join(output, "android/app/src/main/java/org/travelflow/p0");
 for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPlugin.java", "ProbeCredentials.java"]) cpSync(path.join(source, name), path.join(java, name));
+writeFileSync(path.join(java, "ProbeEndpoint.java"), `package org.travelflow.p0;\nfinal class ProbeEndpoint {\n    static final String HOST = ${JSON.stringify(probeHost)};\n    private ProbeEndpoint() {}\n}\n`);
 const manifest = path.join(output, "android/app/src/main/AndroidManifest.xml");
 writeFileSync(manifest, readFileSync(manifest, "utf8").replace('android:allowBackup="true"',
   'android:allowBackup="false" android:networkSecurityConfig="@xml/p0_network_security"'));
@@ -72,10 +83,12 @@ if (testCa) {
   writeFileSync(path.join(debug, "res/raw/p0_test_ca.pem"), testCa);
 }
 const anchors = testCa ? '<trust-anchors><certificates src="system"/><certificates src="@raw/p0_test_ca"/></trust-anchors>' : '';
-writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">10.0.2.2</domain>${anchors}</domain-config></network-security-config>\n`);
+writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">${probeHost}</domain>${anchors}</domain-config></network-security-config>\n`);
 console.log(JSON.stringify({
   project: output,
   appId: "org.travelflow.p0",
+  target,
+  probeHost,
   phase: "prepared_only",
   sdkInstalledByThisCommand: false,
   apkBuilt: false,

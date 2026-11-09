@@ -40,9 +40,11 @@ try {
   await until(`document.getElementById('runtime').textContent === 'Android原生桥已就绪'`);
   await evaluate(`(async () => {
     const api = await import('./capacitor-core.js');
+    const {probeHost} = await import('./probe-endpoint.js');
     if (!api.Capacitor.isNativePlatform()) throw Error('Not a native runtime');
+    if (!['10.0.2.2', '127.0.0.1'].includes(probeHost)) throw Error('Unknown fixed probe target');
     const stream = api.registerPlugin('ProbeStream');
-    window.__streamCheck = {stream, store: api.registerPlugin('ProbeStore'), http: api.CapacitorHttp, events: {}};
+    window.__streamCheck = {stream, store: api.registerPlugin('ProbeStore'), http: api.CapacitorHttp, probeHost, events: {}};
     window.__streamCheck.listener = await stream.addListener('stream', event => {
       const list = window.__streamCheck.events[event.requestId];
       if (list) list.push(event);
@@ -98,7 +100,7 @@ try {
     report.bufferedHttp = await evaluate(`(async () => {
       const started = performance.now();
       const response = await window.__streamCheck.http.get({
-        url: 'http://10.0.2.2:18510/stream?requestId=buffered_${crypto.randomUUID()}', responseType: 'text', readTimeout: 4000
+        url: 'http://' + window.__streamCheck.probeHost + ':18510/stream?requestId=buffered_${crypto.randomUUID()}', responseType: 'text', readTimeout: 4000
       });
       return {elapsedMs: Math.round(performance.now() - started), status: response.status, data: response.data};
     })()`);

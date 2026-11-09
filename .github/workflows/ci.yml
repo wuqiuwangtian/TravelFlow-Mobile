@@ -7,8 +7,12 @@ permissions:
   contents: read
 jobs:
   android-probe:
-    name: Contract, domain and isolated Android build
+    name: Contract, domain and Android (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [emulator, usb]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -35,12 +39,14 @@ jobs:
           node --check scripts/check-android-compat.mjs
           node --check scripts/check-android-local.mjs
           node --check scripts/lib/android-probe-cdp.mjs
+          node --check scripts/manage-probe-reverse.mjs
           python -m py_compile scripts/android_probe_service.py scripts/prepare-probe-tls.py scripts/check-probe-apk.py scripts/inspect-android-provider.py scripts/inspect-webview-apk.py
+      - run: node scripts/check-probe-reverse.mjs
       - run: pnpm audit --audit-level=moderate
       - name: Prepare independent candidate project
         run: |
-          python scripts/prepare-probe-tls.py --output "$RUNNER_TEMP/probe-tls"
-          node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe" --tls-fixtures "$RUNNER_TEMP/probe-tls"
+          python scripts/prepare-probe-tls.py --output "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}"
+          node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe" --tls-fixtures "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}"
       - name: Audit isolated candidate dependencies
         run: pnpm --dir "$RUNNER_TEMP/android-probe" audit --audit-level=moderate
       - name: Ensure Android build packages
@@ -58,3 +64,4 @@ jobs:
           --debug "$RUNNER_TEMP/android-probe/android/app/build/outputs/apk/debug/app-debug.apk"
           --release "$RUNNER_TEMP/android-probe/android/app/build/outputs/apk/release/app-release-unsigned.apk"
           --tls-fixtures "$RUNNER_TEMP/probe-tls"
+          --target "${{ matrix.target }}"

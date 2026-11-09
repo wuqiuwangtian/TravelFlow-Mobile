@@ -55,7 +55,7 @@
 | 同一API30 AVD／更新为WebView124 | 最终构建能力检测、TLS与凭据／401／307／错误证书／握手取消及超时／总时限、HTTP流式／恢复／重放、断网强停冷启动和恢复网络后凭据冷读均通过 | 4条／492分为该独立AVD的虚构库，不是跨端同步；不是ARM64或Android7／8证据 |
 | Android7／8 API24／26 Google APIs／Chrome119／x86 | 两组存储、HTTP／TLS、断网冷启动与凭据冷读通过 | 详见旧系统32位组合章节；API24本轮点击驱动回归后4条／492分，API26仍3条／369分 |
 | Android13 API33 Google APIs／WebView109／x86_64 | 存储、HTTP／TLS、断网冷启动与凭据冷读通过 | 3条／369分；此组合未逐项重做API35全部历史边界 |
-| Android16 API36 Google APIs／WebView133／x86_64 | 同类网络／凭据及本地触摸／强停恢复通过 | 本轮新增；4条／492分；系统ABI列表含ARM64不能当真机证据 |
+| Android16 API36 Google APIs／WebView133／x86_64 | 同类网络／凭据及本地触摸／强停恢复通过 | 后续USB配置验收后8条／984分；系统ABI列表含ARM64不能当真机证据 |
 | 用户授权ELI-AN00手机／API36／WebView150／ARM64 | 启动、实际触摸保存／同ID重放、强停恢复通过 | 仅本地验收，1条／123分；未运行真机网络／凭据测试，未切换手机网络 |
 | Android8 API26/default revision1／自带58或安装124 | APK安装成功，创建WebView时失败；系统允许的Chrome／Google提供方不含`com.android.webview`，`Current WebView package is null`，日志`MissingWebViewPackageException` | 测试环境阻塞，未修改白名单或重签组件来制造通过；不能据此认定TravelFlow业务不兼容API26 |
 
@@ -143,7 +143,21 @@ TLS覆盖有效HTTPS、三类错误证书拒绝且没有HTTP请求、401／307�
 
 本轮新增一个本地验收脚本、修改CDP触摸驱动及CI语法检查，同步既有文档；无应用／业务功能新增或删除，无运行时依赖、共享契约、设计快照变化。契约、14组账目样例、类型及脚本语法检查通过。原型工程仍在仓库外，API36与真机仅计对应已执行范围；证据为仓库外 `/tmp/travelflow-api36-*.json`、`/tmp/travelflow-api24-*-regression.json`及`/tmp/travelflow-arm64-device-*.json`，不提交手机序列号、个人数据或原始证据。复现见MAINTAINING。本轮仅关闭自己的API36／API24模拟器、服务和转发；其他ADB设备与Windows服务保持原状。
 
-P0下一项是先准备可审阅的USB真机测试对端配置，再明确真机网络／凭据验收范围。现有联网入口固定10.0.2.2，仅适用于模拟器，不能直接拿它证明真机网络失败或通过；旧系统64位引擎、TCP／DNS取消和正式凭据策略也仍有缺口。正式框架与支持范围未定，P1未启动。
+截至该轮，P0下一项是准备USB测试对端并明确真机网络／凭据范围；当时联网入口固定10.0.2.2，仅适用于模拟器，后续配置增补见下节；旧系统64位引擎、TCP／DNS取消和正式凭据策略也仍有缺口。正式框架与支持范围未定，P1未启动。
+
+## P0 USB回环测试配置准备与模拟器验收（2026-11-09）
+
+生成器新增闭合的构建参数 `--target emulator|usb`，默认仍为10.0.2.2，usb为127.0.0.1；不接受任意host／URL。由同一生成变量写入Java的ProbeEndpoint常量、页面endpoint模块及唯一debug域配置，原生ProbeStream仍不从JS桥接收地址。TLS生成器与服务使用相同target，证书SAN、307目标和fixture元数据对应该固定IP；配置混用在生成目录或监听端口前拒绝。旧无host字段的v1 fixture仅按默认模拟器地址处理。release仍只信任系统CA、拒绝明文，不含测试CA；未改账本表、数据语义或运行时依赖。
+
+实际发现标准 `adb reverse tcp:PORT` 在API36上产生通配监听；本轮不将其带到手机。依据[AOSP监听实现](https://android.googlesource.com/platform/packages/modules/adb/+/30e74acef93318b07a2de7ffca5086dde868ad01/socket_spec.cpp)，新增manage-probe-reverse.mjs：向已有本机ADB服务选择明确serial，直接请求标准协议的 `tcp:localhost:18510–18515` 监听，保留设备授权与服务端检查，不改ADB二进制或系统权限、不重启服务。真实模拟器ss核对六端口均为127.0.0.1；adbd列表将名称规范化为tcp:PORT，清理按该名称。工具只处理这六个固定端口；添加不覆盖已有映射，部分失败只回滚本次成功的新建项。协议检查器仅使用本机模拟对端，验证分片响应、设备拒绝、端口约束、已有映射保留及回滚；Linux和Windows Node均通过。真实模拟器保留18512–18515、尝试全量添加时，10／11新建后因12占用失败，回滚后既有四项完全一致。
+
+分别生成独立emulator与usb工程及两天TLS材料，JDK21／SDK36／Build Tools35.0.0。两配置debug／unsigned release构建和完整debug lint均通过；USB首次离线lint因缺少concurrent-futures测试依赖失败，联网补齐后通过，没有关闭检查。实际APK检查解析XML层级，验证页面常量和唯一debug域匹配target、CA仅限该域、显式不含子域、仅一份公开CA、双方无私钥／备份、release无测试CA／明文例外和自带native库。对USB生成工程的debug资源故意追加第二允许域，重新构建的APK被检查器拒绝；将CA信任移到base-config的负例也被拒绝。随后恢复原XML并重建，摘要恢复一致、检查通过，错误target也被拒绝。未安装这个扩大域的负例APK。
+
+在既有专用API36／WebView133／x86_64 AVD保留原4条／492分：默认配置的已存凭据冷读成功，HTTP全套回归后5条／615分；替换为USB配置，六个端口经显式回环反向转发，完整TLS及HTTP脚本通过后7条／861分。覆盖有效／三类错误证书、401／307、凭据移除／重建、握手取消／超时、总时限、分块／截断／恢复、读取取消／超时等原有断言。TLS取消23毫秒检查到终态，服务端95毫秒观察到关闭，总时限2502毫秒；不是DNS或SYN黑洞证据。移除HTTP／有效HTTPS映射并验证部分添加回滚后，冷启动HTTP明确报NETWORK_OR_PROTOCOL，本地新增／同ID重放后8条／984分。恢复两项映射、再次强停冷启动，凭据不重新准备仍HTTPS成功，本地只读核对8／984通过；未清库或切换网络。此失败是映射缺失，不是手机断网证据。
+
+Windows Node已确认同机127.0.0.1的18510–18515均可建立TCP连接，HTTP观测端点返回预期200，无需增加监听网卡或修改防火墙。USB候选debug为 `/tmp/travelflow-p0-app-usbprep/android/app/build/outputs/apk/debug/app-debug.apk`，SHA256 `e9a9de4ec3acbf81d3369dc92c4d02a0d9f8218f6e0c793d57214504757ff815`，应用ID仍org.travelflow.p0，权限仍仅INTERNET与本包内部动态接收器权限。只改变开发探针测试目标配置，没有正式发布。工程／CA私钥／APK／原始运行证据均留仓库外；CI增加emulator与usb双配置的独立构建、完整lint及打包检查，不操作设备。
+
+此配置截至本节仅在隔离模拟器执行。未更新用户手机、未创建手机反向转发、未执行真机网络或凭据测试；此前手机1条／123分及本地授权不自动扩展。下一步在候选APK和操作范围可审阅后，请用户明确是否更新该指定手机并执行USB本地虚构服务的HTTP／TLS及公开虚构凭据测试；不调用真实供应商、不读真实密钥、不切换手机网络、不修改系统CA。需要支持的旧系统64位引擎、正式凭据生命周期和TCP／DNS阶段边界仍保留。
 
 ## 接手检查结论
 
