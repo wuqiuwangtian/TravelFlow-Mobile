@@ -35,7 +35,7 @@ export ANDROID_AVD_HOME="$HOME/.cache/travelflow-p0-android/avd"
 
 确认5580端口未被其他模拟器占用、上述AVD存在后，可另开开发终端运行 `"$ANDROID_HOME/emulator/emulator" -avd travelflow_p0_api35 -port 5580 -no-window -no-audio -no-boot-anim -no-snapshot -gpu swiftshader -memory 1536 -cores 2`。若已有自己的实例则复用，不能默认重置或清数据；缺少AVD时按[Android官方AVD工具说明](https://developer.android.com/tools/avdmanager)创建自己的隔离镜像。先确认启动完成，再向明确的`emulator-5580`安装生成工程中的debug APK。本节API35的ADB命令指定`-s emulator-5580`，其他隔离组合见兼容性一节；不能使用默认第一台设备。验收后仅关闭自己启动的实例、回显服务和端口转发。
 
-应用启动命令为 `adb -s emulator-5580 shell am start -n org.travelflow.p0/.MainActivity`，强停用 `adb -s emulator-5580 shell am force-stop org.travelflow.p0`；这里adb指上面SDK的platform-tools/adb，未加入PATH时使用完整路径。安装APK、切换网络、强停都仅限隔离模拟器。SDK／生成工程路径可能在机器清理后消失，应按文档重新准备，不能把旧/tmp路径存在当作验收前提。
+应用启动命令为 `adb -s emulator-5580 shell am start -n org.travelflow.p0/.MainActivity`，强停用 `adb -s emulator-5580 shell am force-stop org.travelflow.p0`；这里adb指上面SDK的platform-tools/adb，未加入PATH时使用完整路径。默认安装APK、切换网络、强停都仅限隔离模拟器；指定USB手机的明确授权例外见后文，切网仍不在真机授权内。SDK／生成工程路径可能在机器清理后消失，应按文档重新准备，不能把旧/tmp路径存在当作验收前提。
 
 页面调试：debug WebView支持页面CDP，先用ADB的`pidof org.travelflow.p0`取得当前PID，再转发该PID对应的`localabstract:webview_devtools_remote_<PID>`到自己选择的本机端口。重启应用后PID会变，需重新转发。历史Playwright CLI／connectOverCDP因WebView不支持桌面浏览器上下文管理失败，实际触摸验证使用页面CDP的`Input.dispatchTouchEvent`；不要把桌面浏览器测试替代原生插件验证。
 
@@ -188,17 +188,17 @@ node scripts/check-android-local.mjs --port <CDP端口> --expect-local <记录�
 
 确认归属、SDK36、启动完成及当前提供方后，安装自建debug、取PID并转发，依次运行能力／TLS／HTTP完整脚本。确认飞行模式原值后，用实际支持的 `cmd connectivity airplane-mode enable` 切换并核对状态为1；强停冷启动、更新PID／转发，再运行HTTP脚本 `--offline`。恢复原值0，强停冷启动、更新转发，TLS脚本 `--cold-start` 应读取已有虚构凭据成功。最后可跑上述本地触摸与只读强停检查；本轮最终4条／492分。具体覆盖与安全区早期日志边界见PROJECT_STATUS，不把此组合当全部Android16设备或正式交互验收。
 
-### 用户指定USB真机的本地验收边界
+### 用户指定USB真机的授权与本地验收
 
-AGENTS默认仅限隔离模拟器。用户本轮明确允许对已识别ELI-AN00手机安装现有独立APK，仅做启动／本地固定记录／重放／本包强停恢复；授权不扩展到其他设备、其他用户空间、联网、凭据、飞行模式、WebView更新或其他应用数据。新会话先只读识别并核对已有授权，不能把型号当唯一设备标识，也不把设备序列号写入Git。若没有对应授权，仍按模拟器边界执行；不要把本次例外改成全局真机权限。
+AGENTS默认仅限隔离模拟器。用户最初批准已识别ELI-AN00手机的安装／本地记录／重放／本包强停恢复；审阅USB候选包与范围后，又明确允许继续该给定USB手机的测试，已完成本包更新、USB回环虚构HTTP／TLS及公开虚构凭据验收。授权不扩展到其他设备、其他用户空间、真实供应商／密钥、飞行模式、WebView更新或其他应用数据。新会话先只读识别并核对已有授权，不能把型号当唯一设备标识，也不把设备序列号写入Git。若没有对应授权，仍按模拟器边界执行；不要把本次例外改成全局真机权限。
 
-本轮通过Windows既有ADB服务发现已授权设备，复用该服务对应的adb.exe与服务端口（不使用别的版本触发服务重启），未改全局ADB。先记录 `am get-current-user`，包查询用 `pm list packages --user <用户ID> org.travelflow.p0`，安装新包应显式指定该用户并拒绝覆盖已有包；启动／强停同样显式 `--user <用户ID>`。OEM受保护空间的访问错误不能通过root／遍历绕过，也不能把命令退出0当查询可靠。
+本轮通过Windows既有ADB服务发现已授权设备，复用该服务对应的adb.exe与服务端口（不使用别的版本触发服务重启），未改全局ADB。先记录 `am get-current-user`，包查询用 `pm list packages --user <用户ID> org.travelflow.p0`，首次安装应显式指定该用户并拒绝覆盖来源未知的已有包；已核对为本实验包的授权更新用`install -r --user <用户ID> <APK>`，先核对签名与保存原生账本摘要，更新后确认原记录／金额不变；启动／强停同样显式 `--user <用户ID>`。OEM受保护空间的访问错误不能通过root／遍历绕过，也不能把命令退出0当查询可靠。
 
-只安装已审阅的独立debug APK；本轮SHA256 `f27e4d10632a705bde56353f1c5f1496ad505a6b200ea7150ea3afd5faaba0ae`，仅INTERNET及本包内部动态接收器权限，应用ID `org.travelflow.p0`，不是正式签名发布。重新生成／构建会改变摘要，应重新核对来源和打包策略，不能照搬本值。现有APK联网入口固定10.0.2.2，仅用于模拟器；真机本轮只使用本地按钮。
+只安装已审阅的独立debug APK；首轮本地包SHA256 `f27e4d10632a705bde56353f1c5f1496ad505a6b200ea7150ea3afd5faaba0ae`，仅INTERNET及本包内部动态接收器权限，应用ID `org.travelflow.p0`，不是正式签名发布。重新生成／构建会改变摘要，应重新核对来源和打包策略，不能照搬本值。该首轮包联网入口固定10.0.2.2，仅用于模拟器；后续真机网络验收须使用下节USB配置包，不对旧包运行新版HTTP脚本。
 
 应用启动后，取本包当前PID，以 `run-as org.travelflow.p0 --user <用户ID> readlink /proc/<PID>/exe` 核对位数，结合 `uname -m` 和系统ABI；本轮手机为aarch64／app_process64。为该明确序列号创建自己的CDP转发，首次用 `forward --no-rebind tcp:<端口> localabstract:webview_devtools_remote_<PID>` 防止覆盖既有端口。Windows ADB的转发位于Windows localhost，本轮用Windows Node22+运行同一仓库脚本（必要时使用WSL仓库的UNC路径），不将其误当WSL localhost；无需重启用户ADB或映射手机存储。
 
-先跑能力诊断，再跑本地触摸脚本。只强停／启动该用户下本包，更新PID／自己的转发，用 `--expect-local` 只读验证。此手机本轮1条／123分，网络／凭据未验证，不调用对应脚本或按钮。验收后移除本轮转发、结束本包调试，保留应用与虚构记录，不卸载／清数据。后续先准备可审阅的USB本地测试对端配置，再另行明确真机网络／凭据操作范围；不能直接扩大本次授权。
+先跑能力诊断，再跑本地触摸脚本。只强停／启动该用户下本包，更新PID／自己的转发，用 `--expect-local` 只读验证。首轮手机1条／123分；后续USB验收至4条／492分，具体网络与凭据覆盖见下节和PROJECT_STATUS。验收后移除本轮转发、结束本包调试，保留应用与虚构记录，不卸载／清数据。不得将已有范围扩大为其他设备或真实业务测试。
 
 ### USB回环配置的生成、审查与验收
 
@@ -224,11 +224,15 @@ node scripts/manage-probe-reverse.mjs --server-port <同一端口> --serial <同
 
 只处理18510–18515，`--probe-port 18510`可限定其中一项；无默认设备或服务端口，不提供任意目标主机。add不覆盖已有映射，部分失败只回滚本次新增；remove仅用于自己已创建的本轮映射，不是全设备清理。adbd列表中名字会规范化为tcp:PORT，实际监听应以设备的ss等只读结果核对为127.0.0.1，不能由列表名称推断；不支持明确localhost的设备不得退回通配绑定。确认失败／端口占用时停止并排查，不改全局ADB、系统网络或防火墙。协议检查器只启动本机模拟对端，CI不会通过它操作设备。
 
-Windows ADB服务的目标tcp:PORT指向Windows localhost；使用Windows Node运行管理／验收脚本，并先确认Windows的127.0.0.1测试端口可达WSL服务。Linux模拟器则使用Linux Node和本机ADB服务。不会因为USB转发而自动取得真机联网权限：当前已识别手机原授权仍仅本地路径；扩大到更新APK、转发与虚构凭据测试必须先给用户可审阅的包和范围。
+Windows ADB服务的目标tcp:PORT指向Windows localhost；使用Windows Node运行管理／验收脚本，并先确认Windows的127.0.0.1测试端口可达WSL服务。Linux模拟器则使用Linux Node和本机ADB服务。USB转发本身不授予真机权限；本项目给定手机的更新、回环虚构服务与公开虚构凭据范围现已明确获准，其他设备仍需单独明确授权。
 
-在已授权的隔离模拟器，可先安装USB debug并创建这六项映射，转发P0 WebView，依次跑能力、完整TLS与HTTP脚本。移除自己创建的HTTP映射后，强停冷启动并跑HTTP `--offline`，预期请求失败而本地新增／重放仍有效；这里证明映射缺失，不证明飞行模式。恢复映射、再强停冷启动，TLS `--cold-start`应不重新准备凭据就成功，账目保持。不要为期望值清数据。结束后只移除本轮反向映射／CDP转发并停止自己的测试服务，设备网络设置保持原状。
+在隔离模拟器或明确获准的指定USB手机，可先安装／保留数据更新USB debug并创建这六项映射，转发P0 WebView，依次跑能力、完整TLS与HTTP脚本。移除自己创建的HTTP映射后，强停冷启动并跑HTTP `--offline`，预期请求失败而本地新增／重放仍有效；这里证明映射缺失，不证明飞行模式。恢复映射、再强停冷启动，TLS `--cold-start`应不重新准备凭据就成功，账目保持。不要为期望值清数据。结束后只移除本轮反向映射／CDP转发并停止自己的测试服务，设备网络设置保持原状。
 
-本轮候选USB debug路径 `/tmp/travelflow-p0-app-usbprep/android/app/build/outputs/apk/debug/app-debug.apk`，SHA256 `e9a9de4ec3acbf81d3369dc92c4d02a0d9f8218f6e0c793d57214504757ff815`；需重新生成时重新核对摘要和权限，不能要求临时路径永久存在。实际构建、负例、模拟器8条／984分及尚未执行的真机范围见PROJECT_STATUS。未来真实供应商／凭据／跨端同步接口仍不由此探针决定。
+指定手机的执行顺序为：更新前／后核对原生账本、能力诊断、完整TLS、完整HTTP、移除HTTP映射后的强停／`--offline`、恢复映射后的强停／TLS `--cold-start`。每次重启都重新取PID并只更新自己的CDP转发。所有`adb`显式带已有服务端口、设备序列号，安装／启动／强停限定当前用户；脚本由ADB所在Windows环境的Node22+运行。初始账本不要求为空，完整TLS与HTTP各新增123分，映射失败脚本再新增123分，重放不重复增加；冷读不增记录。本轮从1／123到4／492。若CDP连接挂起，先重新启动本包到前台并核对PID／转发，不重启全局ADB，也不操作锁屏或其他应用。
+
+最终凭据冷读通过后，通过「移除虚构凭据」只清理专用别名和prefs内容，运行TLS `--expect-credential-failure`应报CREDENTIAL_UNAVAILABLE、服务无HTTP请求且本地记录不变；再用本地脚本`--expect-local <条数> <分>`只读确认。指定手机结束时保留4条／492分，专用凭据已移除，下次完整测试需重新准备。清理只针对本轮创建的六项反向映射、CDP转发、服务与本包进程，不清数据、不卸载、不重启ADB、不修改手机网络。
+
+本轮候选USB debug路径 `/tmp/travelflow-p0-app-usbprep/android/app/build/outputs/apk/debug/app-debug.apk`，SHA256 `e9a9de4ec3acbf81d3369dc92c4d02a0d9f8218f6e0c793d57214504757ff815`；需重新生成时重新核对摘要和权限，不能要求临时路径永久存在。实际构建、负例、模拟器8条／984分及真机4条／492分的已执行范围与限制见PROJECT_STATUS。未来真实供应商／凭据／跨端同步接口仍不由此探针决定。
 
 ## 契约与设计快照更新
 
