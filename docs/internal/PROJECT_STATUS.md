@@ -65,7 +65,19 @@ API30数据保护过程：先保存／重放固定ID至123分，WebView83的启�
 
 最终工程`/tmp/travelflow-mobile-compat-reviewed/`冻结生成、debug／unsigned release离线构建及主源码`lintAnalyzeDebug`通过；实际APK范围检查通过，无自带`.so`或私钥，release无测试CA／明文例外。旧debug APK缺少显式子域范围，被新检查器拒绝。主源码lint原有的debug网络配置错误已消除，仍有7条模板图标／manifest等警告。本机完整`lintDebug`因测试依赖未缓存、联网下载JUnit时TLS握手失败而未完成，不把主源码分析当完整lint；CI已增加完整debug lint，结果按实际提交核对。没有为此关闭TLS验证或跳过新的检查。
 
-运行输出为仓库外`/tmp/travelflow-mobile-compat-*.json`，API26错误另有`/tmp/travelflow-mobile-api26-*.txt`；复现不依赖这些临时文件，步骤在MAINTAINING。API24尚未运行，API26仍需匹配提供方的合法镜像／组件；正式业务、同步与真机范围仍未实现，P0未收口。下一项按评审继续补上述边界，再交用户确认框架与拟支持范围。
+运行输出为仓库外`/tmp/travelflow-mobile-compat-*.json`，API26错误另有`/tmp/travelflow-mobile-api26-*.txt`；复现不依赖这些临时文件，步骤在MAINTAINING。API24／26的Google镜像与组件调查见下节；新版匹配提供方仍未验证，正式业务、同步与真机范围仍未实现，P0未收口。下一项按评审继续补上述边界，再交用户确认框架与拟支持范围。
+
+## P0旧系统提供方与候选APK核验（2026-11-09）
+
+新增两个只读工具：`inspect-android-provider.py`核对明确隔离模拟器的SDK、启动状态、ABI与当前提供方；`inspect-webview-apk.py`验证APK签名并提取版本、minSdk、ABI、WebView库声明与静态库依赖。二者不安装、不切换提供方，也不写账本；CI加入语法检查。应用功能、共享快照与原有目标未删改。
+
+- 官方Google APIs API26/x86_64 revision16，专用`travelflow_p0_api26_google`：选中合法`com.android.chrome`69.0.3497.100，原型可显示启动保护；实际诊断缺少`randomUUID`、`optionalChaining`、`cssLayers`，尚未进入存储／网络验收。这解决了default镜像的提供方环境故障，没有解决旧内核能力。
+- 官方Google APIs API24/x86_64 revision27，专用`travelflow_p0_api24_google`：原型同样在Chrome69显示能力不足。该系统`dumpsys webviewupdate`为空，虽然配置值是`com.android.chrome`，工具仍报告`selectionInspectable=false`、`providerSelected=null`并退出2；配置值不冒充实际选中状态。API26已选中退出0；明确未选中退出1。
+- 从官方API33 Google镜像只读提取的Google WebView109.0.5414.123与Chrome109均要求minSdk29，依赖同版本`com.google.android.trichromelibrary`；Chrome这份APK没有WebView库声明。签名校验通过，仅表示APK自身签名有效，不代表已核验发布者身份或可更新旧包。两份候选均未安装到API24／26；不能修改minSdk、重签或改白名单来制造通过。
+- 已有官方AOSP WebView124副本minSdk26、声明WebView库且包含x86_64／x86，但包名`com.android.webview`不满足上述Google旧系统提供方策略；minSdk匹配不是完整兼容证明。API26 Google自带Google WebView69文件仅为约400KB stub，也不能作为完整引擎或新版APK的签名身份依据。
+- 官方Play Store API24/x86 revision19专用`travelflow_p0_store24`尝试停在ADB授权，未取得新版组件；未登录／创建账号、未接受新增服务条款，已停止该实例。此路径尚未验证，不能据此断言商店无法更新。下一步需选定可复现的旧系统新版组件来源并核验身份，再执行实际副作用路径。
+
+上述系统镜像、AVD及提取APK仅在既有仓库外缓存；不提交或分发。API33来源AVD为`travelflow_p0_provider_source33`，不是已通过的应用验收组合。2026-11-09复验使用自己的API26端口5558、API24端口5560；端口会复用，接手必须重新确认AVD归属与SDK，不依赖旧序列号。之前`/tmp`工程与证据已被环境清理，短期证书已过期，后续HTTPS须重新生成证书与工程；历史结论不改写成当前文件仍存在。基线`08b9ade`远端CI完整debug lint与构建已通过；本轮工具／文档CI按对应提交核对。API30／35历史矩阵仍有效，但本轮未重跑。
 
 ## 接手检查结论
 

@@ -113,7 +113,20 @@ AVD工具本机曾报告缺少镜像`devices.xml`但创建成功；必须核对�
 
 更新后强停／启动P0、更新PID与转发，运行诊断、`check-android-tls.mjs`和`check-android-stream.mjs`。再按前文离线步骤显式改用`emulator-5582`及其CDP端口；网络恢复后`--cold-start`不重新准备凭据，预期HTTPS完成，新增与重放记录保持。诊断的layout／visual宽度都记录，窄视口控件应无横向溢出；这不是正式手机交互验收。触摸脚本等待滚动绘制并将布局坐标换算为`visualViewport`坐标，不以JS `.click()`替代原生触摸。
 
-API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26仍待匹配提供方的合法镜像／组件验证，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
+API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26已补Google镜像的Chrome69启动保护，新版匹配提供方仍待验证，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
+
+### 提供方与候选APK的只读核验
+
+先通过启动命令／AVD配置确认实例确属自己的隔离环境，再运行（序列号仅作示例，不能固定复用）：
+
+```sh
+python3 scripts/inspect-android-provider.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5558 --expect-sdk 26
+python3 scripts/inspect-webview-apk.py --apk /path/to/candidate.apk --aapt2 "$ANDROID_HOME/build-tools/35.0.0/aapt2" --apksigner "$ANDROID_HOME/build-tools/35.0.0/apksigner" --sdk 26
+```
+
+提供方工具拒绝非`emulator-N`序列号、非模拟器属性或SDK不符；退出0表示已观察到提供方，1表示明确未就绪，2表示此接口无法判定。API24的空dumpsys应为未知；`configuredProvider`只是配置值，不替代实际状态。`providerSelected=true`也不能代替页面、存储或网络验收。
+
+APK工具需要可运行的JDK及Android Build Tools，执行实际签名校验；输出`minimumSdkMet`只比较最低系统要求，不能当作总体兼容结论。还须核对目标提供方白名单、已有包签名身份／更新资格、ABI、静态库与实际运行。签名有效不等于发布者身份可信，应与可靠来源的预期证书另行比对。工具不安装APK、不获取第三方组件、不调整设备。Google旧系统与官方109候选的实际结果见PROJECT_STATUS新增章节；本机缓存不是其他贡献者必需条件。
 
 ## 契约与设计快照更新
 
