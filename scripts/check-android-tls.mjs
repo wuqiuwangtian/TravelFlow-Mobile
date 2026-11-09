@@ -74,6 +74,8 @@ try {
     assert.equal(after, report.initialLocal.cents);
   } else if (args[2] === "--cold-start") {
     report.coldRead = await finished(await start("https"), "done", "");
+    report.finalLocal = await evaluate("window.__tlsCheck.store.read().then(s => ({count: s.entries.length, cents: s.total_cents}))");
+    assert.deepEqual(report.finalLocal, report.initialLocal, "Credential cold read must not change local records");
   } else {
     // 选择器脚本设值；新增凭据和网络按钮使用页面CDP真实触摸。
     await transport("https");

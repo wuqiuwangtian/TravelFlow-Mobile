@@ -115,6 +115,14 @@ AVD工具本机曾报告缺少镜像`devices.xml`但创建成功；必须核对�
 
 API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26已补Google镜像的Chrome69启动保护，新版匹配提供方仍待验证，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
 
+### API33官方提供方组合复现
+
+已有专用AVD `travelflow_p0_provider_source33` 来自官方 `system-images;android-33;google_apis;x86_64` revision17，之前仅用于组件核验；本轮也用于原型运行。沿用本页隔离缓存变量，在确认5558未占用后，启动命令中的AVD改为该名称、端口改为5558；不得清数据或覆盖AVD。先用下节只读工具确认SDK33、启动完成及实际提供方 `com.google.android.webview` 109.0.5414.123，不需要另外安装引擎。
+
+重新生成新TLS证书与原型目录、构建debug，安装到明确的 `emulator-5558`；取当前PID并转发到自己的空闲端口（本轮19238）。依次运行 `check-android-compat.mjs`、`check-android-tls.mjs`、`check-android-stream.mjs`，参数均为 `--port 19238`。按前文断网冷启动步骤操作时，明确替换为该序列号，并每次更新PID／转发；先记录飞行模式原值，结束后恢复。恢复网络后强停重开，运行 `check-android-tls.mjs --port 19238 --cold-start`，确认不重新准备凭据仍可HTTPS，账目不增加。各脚本预期结果与副作用同前文，初始库不要求为空；准确结果见PROJECT_STATUS。
+
+这组同时改变OS与WebView，是组合验收，不是固定引擎的单变量OS对照。`colorMix=false`只记录当前悬停阴影增强缺失，不改vendor快照，也不当作正式交互验收。
+
 ### 提供方与候选APK的只读核验
 
 先通过启动命令／AVD配置确认实例确属自己的隔离环境，再运行（序列号仅作示例，不能固定复用）：
