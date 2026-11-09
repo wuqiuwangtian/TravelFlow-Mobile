@@ -169,6 +169,37 @@ API24／26的 `cmd connectivity` 没有shell实现，且可能退出0；不能�
 
 确认状态1后强停冷启动P0，更新PID／转发，运行 `check-android-stream.mjs --port <端口> --offline`；应网络失败、余额保留、新增123分且重放不增加。再从同一系统设置UI恢复原值（本轮为0），确认后强停冷启动、更新PID／转发，运行 `check-android-tls.mjs --port <端口> --cold-start`，应不重新准备凭据就成功HTTPS，记录数／金额前后一致。本轮各最终3条／369分。设置值、网络失败与冷启动后的行为分别核对，不把服务停止当真实断网。结束后移除自己创建的uiautomator暂存文件、转发、测试服务及实例；保留AVD数据。更多结果与未验边界见PROJECT_STATUS。
 
+### 本地触摸与强停恢复验收
+
+新增入口只连接操作者已经明确转发的P0 WebView，不发现／选择ADB设备，不安装APK，不改变网络：
+
+```sh
+node scripts/check-android-local.mjs --port <CDP端口>
+node scripts/check-android-local.mjs --port <CDP端口> --expect-local <记录数> <整数分>
+```
+
+第一条会真实触摸保存和同ID重放：原记录逐条保持，只追加一条123分，重放整个原生快照不变；输出前后计数／金额，不输出记录ID。随后仅强停、重开自己的P0应用，更新PID与转发，再用第二条只读核对预期持久结果。原库不要求为空，禁止为固定预期清数据。当前脚本仅验证固定虚构表，不是正式消费、日期、迁移或同步验收。
+
+共享CDP驱动在发送touchend后等待目标按钮的可信click事件，错目标或3秒内未收到点击均失败，并清除临时监听器／回执。API36首次执行时观测到约300毫秒的click延迟，旧脚本曾读到旧终态并提前滚动；等待真实事件后完整TLS／HTTP通过。不得用JS `.click()`、任意补眠或降低取消／超时要求制造通过。
+
+### API36官方模拟器复现
+
+官方包 `system-images;android-36;google_apis;x86_64` revision7，本机专用AVD `travelflow_p0_api36_google`。按前文SDK／AVD流程准备或复用，不覆盖、不清数据；本轮空闲端口5558、CDP19238。实际Google WebView133.0.6943.137，`app_process64`、内核和提供方为x86_64；ABI列表中的arm64-v8a不代表ARM64真机证据。独立原型的targetSdk为36，本轮复用此前已构建且测试CA仍有效的APK；过期后须按前文重新准备。
+
+确认归属、SDK36、启动完成及当前提供方后，安装自建debug、取PID并转发，依次运行能力／TLS／HTTP完整脚本。确认飞行模式原值后，用实际支持的 `cmd connectivity airplane-mode enable` 切换并核对状态为1；强停冷启动、更新PID／转发，再运行HTTP脚本 `--offline`。恢复原值0，强停冷启动、更新转发，TLS脚本 `--cold-start` 应读取已有虚构凭据成功。最后可跑上述本地触摸与只读强停检查；本轮最终4条／492分。具体覆盖与安全区早期日志边界见PROJECT_STATUS，不把此组合当全部Android16设备或正式交互验收。
+
+### 用户指定USB真机的本地验收边界
+
+AGENTS默认仅限隔离模拟器。用户本轮明确允许对已识别ELI-AN00手机安装现有独立APK，仅做启动／本地固定记录／重放／本包强停恢复；授权不扩展到其他设备、其他用户空间、联网、凭据、飞行模式、WebView更新或其他应用数据。新会话先只读识别并核对已有授权，不能把型号当唯一设备标识，也不把设备序列号写入Git。若没有对应授权，仍按模拟器边界执行；不要把本次例外改成全局真机权限。
+
+本轮通过Windows既有ADB服务发现已授权设备，复用该服务对应的adb.exe与服务端口（不使用别的版本触发服务重启），未改全局ADB。先记录 `am get-current-user`，包查询用 `pm list packages --user <用户ID> org.travelflow.p0`，安装新包应显式指定该用户并拒绝覆盖已有包；启动／强停同样显式 `--user <用户ID>`。OEM受保护空间的访问错误不能通过root／遍历绕过，也不能把命令退出0当查询可靠。
+
+只安装已审阅的独立debug APK；本轮SHA256 `f27e4d10632a705bde56353f1c5f1496ad505a6b200ea7150ea3afd5faaba0ae`，仅INTERNET及本包内部动态接收器权限，应用ID `org.travelflow.p0`，不是正式签名发布。重新生成／构建会改变摘要，应重新核对来源和打包策略，不能照搬本值。现有APK联网入口固定10.0.2.2，仅用于模拟器；真机本轮只使用本地按钮。
+
+应用启动后，取本包当前PID，以 `run-as org.travelflow.p0 --user <用户ID> readlink /proc/<PID>/exe` 核对位数，结合 `uname -m` 和系统ABI；本轮手机为aarch64／app_process64。为该明确序列号创建自己的CDP转发，首次用 `forward --no-rebind tcp:<端口> localabstract:webview_devtools_remote_<PID>` 防止覆盖既有端口。Windows ADB的转发位于Windows localhost，本轮用Windows Node22+运行同一仓库脚本（必要时使用WSL仓库的UNC路径），不将其误当WSL localhost；无需重启用户ADB或映射手机存储。
+
+先跑能力诊断，再跑本地触摸脚本。只强停／启动该用户下本包，更新PID／自己的转发，用 `--expect-local` 只读验证。此手机本轮1条／123分，网络／凭据未验证，不调用对应脚本或按钮。验收后移除本轮转发、结束本包调试，保留应用与虚构记录，不卸载／清数据。后续先准备可审阅的USB本地测试对端配置，再另行明确真机网络／凭据操作范围；不能直接扩大本次授权。
+
 ## 契约与设计快照更新
 
 权威数据契约在电脑仓库contracts，移动侧vendor/contracts保存固定版本。根目录执行 `node scripts/import-contract.mjs --source <电脑仓库Git副本> --commit <完整40位提交SHA>`，仅显式更新时需要此副本；导入前验证上游摘要，再运行三项检查、审阅差异并提交。当前导入器只支持实验ledger-v1，不是未来同步协议协商工具。既有契约版本不可原地改写；新规则需先由两端评审版本与迁移。

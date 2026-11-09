@@ -43,24 +43,43 @@ export async function connectProbe(port) {
     throw new Error(`Condition timed out: ${expression}`);
   }
   async function tap(id) {
-    const point = await evaluate(`(async () => {
-      const button = document.getElementById(${JSON.stringify(id)});
-      if (button.disabled) throw Error('Button disabled');
-      button.scrollIntoView({block: 'center'});
-      // Android旧系统的合成器可能晚于DOM滚动；等绘制后再读取触摸坐标。
-      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const box = button.getBoundingClientRect();
-      const viewport = window.visualViewport;
-      const point = {
-        x: box.x + box.width / 2 - (viewport ? viewport.offsetLeft : 0),
-        y: box.y + box.height / 2 - (viewport ? viewport.offsetTop : 0),
-      };
-      if (point.x < 0 || point.y < 0 || point.x >= (viewport ? viewport.width : innerWidth) ||
-          point.y >= (viewport ? viewport.height : innerHeight)) throw Error('Button center is outside the visible viewport');
-      return point;
-    })()`);
-    await call("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [point]});
-    await call("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+    const receipt = JSON.stringify(`__tfProbeTap_${crypto.randomUUID()}`);
+    try {
+      const point = await evaluate(`(async () => {
+        const button = document.getElementById(${JSON.stringify(id)});
+        if (button.disabled) throw Error('Button disabled');
+        button.scrollIntoView({block: 'center'});
+        // Android旧系统的合成器可能晚于DOM滚动；等绘制后再读取触摸坐标。
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const box = button.getBoundingClientRect();
+        const viewport = window.visualViewport;
+        const point = {
+          x: box.x + box.width / 2 - (viewport ? viewport.offsetLeft : 0),
+          y: box.y + box.height / 2 - (viewport ? viewport.offsetTop : 0),
+        };
+        if (point.x < 0 || point.y < 0 || point.x >= (viewport ? viewport.width : innerWidth) ||
+            point.y >= (viewport ? viewport.height : innerHeight)) throw Error('Button center is outside the visible viewport');
+        const listener = event => {
+          window[${receipt}].clicked = {trusted: event.isTrusted,
+            expected: event.target === button || button.contains(event.target), target: event.target.id};
+        };
+        window[${receipt}] = {listener, clicked: null};
+        document.addEventListener('click', listener, {capture: true, once: true});
+        return point;
+      })()`);
+      await call("Input.dispatchTouchEvent", {type: "touchStart", touchPoints: [point]});
+      await call("Input.dispatchTouchEvent", {type: "touchEnd", touchPoints: []});
+      // touchEnd的CDP确认可能早于click；必须等实际事件，避免读到旧终态或提前滚动。
+      const clicked = await until(`window[${receipt}].clicked`, 3000);
+      assert.ok(clicked.trusted && clicked.expected, `Touch missed ${id}: ${JSON.stringify(clicked)}`);
+    } finally {
+      await evaluate(`(() => {
+        const receipt = window[${receipt}];
+        if (!receipt) return;
+        document.removeEventListener('click', receipt.listener, true);
+        delete window[${receipt}];
+      })()`);
+    }
   }
   return {evaluate, until, tap, close: () => ws.close()};
 }
