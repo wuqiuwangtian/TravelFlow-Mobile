@@ -146,7 +146,28 @@ python3 scripts/inspect-webview-apk.py --apk /path/to/candidate.apk --aapt2 "$AN
 
 `candidateCheck.passed`与退出0仅表示包名、同包签名集合、SDK上下界、指定ABI、WebView库声明及没有未解决静态库依赖都满足本工具条件；拒绝时输出逐项布尔值并退出1。签名集合严格相同，不自动接受密钥轮换。纯元数据模式不变，仍可报告不匹配条件供调查。此工具不检查系统白名单、更新版本码资格、完整split集合、引擎功能或真正运行；即使69样本元数据通过，当前原型仍缺少页面能力。带静态库的候选保守拒绝，不为其自动下载／安装依赖。下载的HTML／错误页或签名无效的APK直接失败，不会得到准入结果。
 
-当前APKMirror／APKPure／Softpedia下载访问返回403，正常浏览器同样受阻；Uptodown的已检查119及其他候选页面仅提供ARM变体，没有取得可用于现有x86隔离AVD的候选。不要把页面架构描述写成已核验APK，也不要修改包名／重签／系统白名单来绕过。没有需要用户再次确认的来源权限；下一项是取得可访问且架构匹配的原版文件，之后重复上述核验和实际设备验收。
+此前APKMirror／APKPure／Softpedia下载访问返回403，正常浏览器同样受阻；Uptodown的已检查119及其他候选页面仅提供ARM变体，没有取得可用于现有x86隔离AVD的候选。不要把页面架构描述写成已核验APK，也不要修改包名／重签／系统白名单来绕过。没有需要用户再次确认的来源权限；后续已取得匹配的x86原版文件并运行，见下一小节。
+
+### API24／26的32位Chrome119组合复现
+
+已核验的历史测试组件来自[候选页面](https://apk.gold/download?file_id=2753516/chrome)的正常下载入口，本机仓库外副本为 `~/.cache/travelflow-p0-android/google-chrome119-193-x86-fixture.apk`。实际文件191313115字节，SHA256 `d88b3e77e8aa6c98d07bdad4099caf22d36a495312116549e1fde1aad6ad2f14`；版本119.0.6045.193／code604519326，minSdk24／maxSdk28，仅x86，签名证书与上述官方Chrome69基准一致。站点URL不是真实性证明，下载文件仍须先执行准入检查；页面及下载地址可能变化，摘要不同的文件不得沿用本次结论。不提交或向用户分发APK，不将历史引擎推荐给真实设备。
+
+关键前提是**应用进程与引擎ABI匹配**。不能因为 `ro.product.cpu.abilist` 同时列x86_64／x86就选32位组件：实际64位P0加载这份库已失败。确认应用运行的位数可执行 `adb -s <明确序列号> shell run-as org.travelflow.p0 readlink /proc/<当前PID>/exe`，本轮32位组合应为 `/system/bin/app_process32`；`navigator.platform`不能替代此证据。64位进程的准入应指定 `--require-abi x86_64`，会拒绝此文件，不能为“通过”而更改要求。
+
+本机新建官方包与专用AVD：
+
+| SDK包 | revision | AVD | 本轮端口 |
+| --- | --- | --- | --- |
+| `system-images;android-24;google_apis;x86` | 27 | `travelflow_p0_api24_google_x86` | 5560 |
+| `system-images;android-26;google_apis;x86` | 16 | `travelflow_p0_api26_google_x86` | 5558 |
+
+沿用本页SDK缓存环境，用sdkmanager安装表中包，缺少AVD时按前述avdmanager流程创建独立名称／新目录，不加force；现有AVD复用、不清数据。启动前确认端口空闲及config指向表中包，启动后核对SDK、启动完成、系统ABI仅x86。对候选分别运行上节准入命令，`--sdk`改为24／26、`--require-abi x86`；参考APK必须保留官方来源。通过后才向明确设备执行 `adb -s <序列号> install -r <候选APK>`，再安装自己独立构建且测试CA仍有效的debug原型。API26的dumpsys应选中Chrome119；API24空dumpsys仍报告未知，不把配置值替代实际运行。
+
+启动P0、取得PID／核对进程为32位、转发CDP。依次执行能力、TLS、HTTP脚本（API26本轮19238，API24本轮19239）；预期页面实际Chrome119、原生桥就绪及三脚本通过，初始金额不限，已有虚构记录保留。新AVD本轮各从0到123、246分，不要求后续重新从零开始。
+
+API24／26的 `cmd connectivity` 没有shell实现，且可能退出0；不能仅看退出码判断切网。直接发送飞行模式广播被系统拒绝，本轮未用root绕过。断网验收改用系统设置UI：先记录 `settings get global airplane_mode_on` 原值，执行 `adb -s <序列号> shell am start -a android.settings.AIRPLANE_MODE_SETTINGS`；用 `uiautomator dump` 检查当前“Airplane mode”行和开关真实状态，再通过该明确设备的 `input tap` 触摸实际坐标，等待设置值变为1。不可复用其他系统的坐标，也不可仅写global设置值冒充网络已关闭。
+
+确认状态1后强停冷启动P0，更新PID／转发，运行 `check-android-stream.mjs --port <端口> --offline`；应网络失败、余额保留、新增123分且重放不增加。再从同一系统设置UI恢复原值（本轮为0），确认后强停冷启动、更新PID／转发，运行 `check-android-tls.mjs --port <端口> --cold-start`，应不重新准备凭据就成功HTTPS，记录数／金额前后一致。本轮各最终3条／369分。设置值、网络失败与冷启动后的行为分别核对，不把服务停止当真实断网。结束后移除自己创建的uiautomator暂存文件、转发、测试服务及实例；保留AVD数据。更多结果与未验边界见PROJECT_STATUS。
 
 ## 契约与设计快照更新
 

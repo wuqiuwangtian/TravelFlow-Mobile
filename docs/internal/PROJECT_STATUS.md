@@ -100,7 +100,28 @@ APK检查器增加可选候选准入模式：必须同时提供参考APK、预�
 
 下载调查结果：[APKMirror119 x86＋x86_64候选页面](https://www.apkmirror.com/apk/google-inc/chrome/chrome-119-0-6045-194-release/google-chrome-fast-secure-119-0-6045-194-9-android-apk-download/)可由搜索访问，但实际HTTP及正常浏览器均返回403，未取得APK；APKPure与Softpedia同样403。[Uptodown119样例页面](https://chrome.en.uptodown.com/android/download/116819522)可访问，已检查119系列及117／112／111／109／106部分候选页面，所列均为ARM或ARM＋ARM64，不能用于当前x86 AVD（未下载／安装这些变体）。这些是下载访问与页面元数据证据，不是对第三方APK做完真实性核验。没有改白名单、重签或用不匹配组件制造通过；没有安装任何第三方组件，也未新增账目或改变网络设置。浏览器临时记录已移到仓库外，专用模拟器结束后关闭。
 
-原型应用仍为既有基线，既有目标、领域及共享快照未变；本轮仅增强开发检查与同步现有文档，无新增／删除业务功能。当前硬缺口是可取得的匹配引擎文件，不是用户授权；后续取得原版候选后继续API24／26实际副作用路径。`cb147ff`的CI第三次仍在Gradle发行包下载返回HTTP504，尚未进入Android编译；不通过跳过构建或降低TLS验证解决，本轮本地检查和新提交CI分别按实际结果记录。
+原型应用仍为既有基线，既有目标、领域及共享快照未变；本轮仅增强开发检查与同步现有文档，无新增／删除业务功能。截至该次调查的缺口是可取得的匹配引擎文件，不是用户授权；后续取得与运行结果见下节。`cb147ff`的CI第三次仍在Gradle发行包下载返回HTTP504，尚未进入Android编译；不通过跳过构建或降低TLS验证解决，本轮本地检查和新提交CI分别按实际结果记录。
+
+## P0 Android7／8＋Chrome119的32位组合验收（2026-11-09）
+
+第三方组件获取已打通：从[APK.Gold的119.0.6045.193 x86候选页](https://apk.gold/download?file_id=2753516/chrome)提供的正常下载链接取得191313115字节APK，留在仓库外。实际文件SHA256 `d88b3e77e8aa6c98d07bdad4099caf22d36a495312116549e1fde1aad6ad2f14`，包名 `com.android.chrome`、versionCode604519326、minSdk24／maxSdk28、x86、声明WebView库、无静态库依赖。真实APK签名校验通过，证书SHA256与官方Chrome69基准完全一致（基准值见MAINTAINING）；API24／26准入检查均通过。官网系统镜像中独立提取的API24与API26 Chrome69文件也逐字节相同。未采用站点“安全”标签作为身份依据，未重签、改包或分发文件。
+
+先在既有API26 Google/x86_64专用AVD更新Chrome：系统接受并选中119，但P0实际为`app_process64`，创建WebView失败，日志明确 `libmonochrome.so ... is 32-bit instead of 64-bit`。系统支持ABI列表包含x86，不等于64位应用可加载32位引擎。随后只撤销本次Chrome更新（`pm uninstall -k com.android.chrome`），确认恢复官方Chrome69，未清除P0数据。此失败保留为ABI组合证据，不能写成Android8业务不兼容。
+
+为验证匹配的进程／组件，新建以下官方32位Google APIs隔离AVD，无覆盖或清库。沿用原独立debug APK（`/tmp/travelflow-p0-app-20261109-api33/`，应用源码基线`08b9ade`，本轮脚本基线`c0b4397`，未重新构建／改动APK）；测试CA在本轮仍处于有效期，未向系统安装CA。
+
+| 组合 | 实际提供方／进程证据 | 实际验收结果 |
+| --- | --- | --- |
+| API24 Google APIs/x86 revision27，`travelflow_p0_api24_google_x86` | APK正常更新；页面UA为Chrome119.0.6045.193，原生桥就绪，实际`/proc/<PID>/exe`为`app_process32`；dumpsys接口仍为空，工具保留未知 | 能力检测、完整TLS脚本、完整HTTP流式脚本、断网强停冷启动、恢复网络后凭据冷读均通过 |
+| API26 Google APIs/x86 revision16，`travelflow_p0_api26_google_x86` | dumpsys确认选中`com.android.chrome`119.0.6045.193；页面同版本，实际`app_process32` | 同上，各脚本明确`passed: true` |
+
+TLS覆盖有效HTTPS、三类错误证书拒绝且没有HTTP请求、401／307、不跟随重定向、虚构凭据移除／重建、握手取消／连接超时、持续分块总时限。API24／26握手取消分别19／27毫秒检查到原生终态，服务端均96毫秒观察到断连；连接超时1509／1511毫秒，总时限2502／2505毫秒。HTTP覆盖真实触摸、中文分块、整包对照、读取取消／超时、立即取消、并发／错误ID拒绝、截断及显式恢复、503及本地重放。读取取消分别14／26毫秒检查到终态；服务端在请求开始后116／166毫秒观察到关闭。均非DNS或SYN黑洞证据。
+
+两套新AVD初始虚构库各为空，TLS后1条／123分，HTTP后2条／246分。旧系统的`cmd connectivity`返回`No shell command implementation.`，即使退出0也不能当切网成功；直接发送飞行模式广播亦被系统拒绝。最终通过系统设置页面的实际触摸切换，确认飞行模式原值0→1后强停冷启动，网络报`NETWORK_OR_PROTOCOL`，246分保留，本地新增／同ID重放后各3条／369分。再通过设置UI恢复原值0，强停冷启动，更新PID／转发，`--cold-start`不重新准备凭据仍HTTPS成功，记录数与金额前后均为3／369。没有将设置值、服务停止或页面UA单独冒充断网／运行通过。
+
+页面布局／内容宽度均412CSS像素，所有能力和两项增强效果检测通过；未作正式手机设计验收。本轮只改现有文档，无应用或功能新增／删除，无运行时依赖、领域、契约或设计快照变更。没有重跑API30／33／35历史路径；API24／26未做默认系统CA替换对照、密文篡改恢复、磁盘失败、升级迁移、后台／省电、真实供应商或ARM真机验收。Chrome119仅作历史兼容实验，不是实际设备更新建议。
+
+新AVD本轮分别使用5558（API26）、5560（API24），CDP19238／19239；端口只是本次实例，复现先核对归属、SDK与进程ABI。原型APK、下载APK、官方镜像、虚构库及`/tmp/travelflow-api{24,26}-x86-{provider,compat,tls,stream,offline,cold}.json`不提交，也不作为接续前提。结束后恢复网络、移除本轮转发、停止自己的服务与两台模拟器，保留测试记录和已验证引擎。旧API24／26 x86_64 AVD仍保留Chrome69基线；API26的64位失败日志在仓库外。本轮结果补上“旧Android＋可更新WebView”的两组32位模拟器证据，P0下一项转为较新系统、64位引擎／ARM64真机等剩余边界，再交用户确认框架与拟支持范围。
 
 ## 接手检查结论
 
