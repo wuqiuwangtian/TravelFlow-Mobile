@@ -79,6 +79,8 @@ def check(aapt2, debug, release, fixtures, target="emulator"):
             native_libraries = [entry.filename for entry in archive.infolist() if entry.filename.startswith("lib/") and entry.filename.endswith(".so")]
             for entry in archive.infolist():
                 data = archive.read(entry)
+                if name == "release" and re.fullmatch(r"classes[0-9]*\.dex", entry.filename):
+                    assert b".p0-dns.invalid" not in data, "debug DNS fixture leaked into release DEX"
                 assert not re.search(rb"-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----", data), f"{name}: private key packaged"
                 assert not entry.filename.endswith((".key", ".csr")), f"{name}: TLS private artifact packaged"
                 if data == ca:

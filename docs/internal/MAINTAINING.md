@@ -255,6 +255,29 @@ Windows ADB服务的目标tcp:PORT指向Windows localhost；使用Windows Node�
 
 本轮候选USB debug路径 `/tmp/travelflow-p0-app-usbprep/android/app/build/outputs/apk/debug/app-debug.apk`，SHA256 `e9a9de4ec3acbf81d3369dc92c4d02a0d9f8218f6e0c793d57214504757ff815`；需重新生成时重新核对摘要和权限，不能要求临时路径永久存在。实际构建、负例、模拟器8条／984分及真机4条／492分的已执行范围与限制见PROJECT_STATUS。未来真实供应商／凭据／跨端同步接口仍不由此探针决定。
 
+## SYN／DNS故障实验（仅专用隔离AVD）
+
+这是诊断入口，不是正式业务或真机步骤。需要Node22+、Python3.9+、已构建的最新emulator debug APK、可root的官方隔离镜像及其iptables。先按前文创建全新专用AVD，名称以`travelflow_p0_connect`开头，不复用用户手机或其他任务实例；本机已有`travelflow_p0_connect35`（API35/default/x86_64）和`travelflow_p0_connect24`（API24/Google APIs/x86_64，使用已核验Chrome119分包）。启动选项添加`-dns-server 127.0.0.1`，只影响此实例，依据[官方DNS配置](https://developer.android.com/studio/run/emulator-networking-dns)。不要修改宿主resolv.conf、系统DNS或防火墙。
+
+先只读核对明确实例的`ro.kernel.qemu=1`、SDK、boot完成及AVD名（新系统为ro.boot.qemu.avd_name，API24为ro.kernel.qemu.avd_name）。确认后仅对该序列号执行`adb -s <序列号> root`及wait-for-device；不重启全局ADB，不修改应用UID。安装最新独立emulator debug；API24须先沿前述步骤验证匹配引擎。例：
+
+```sh
+PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py
+python3 scripts/android_probe_service.py --tls-fixtures /path/to/fresh-emulator-tls
+# 另一个终端；替换为已核对且确属本任务的序列号、专用AVD、SDK及空闲CDP端口
+python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5558 --expect-avd travelflow_p0_connect35 --expect-sdk 35 --port 19238
+```
+
+控制器不会自动root或选择设备；错误设备／AVD／SDK／用户／非debug／非root、已占用映射或专用链均在写入前拒绝，Python优化模式也不会关闭这些检查。工具不安装APK、不清库、不启动模拟器。既有HTTP对端18510须先运行；另需本机回环UDP18516及HTTP18517空闲，不允许通配绑定。API24例改为明确的5560／travelflow_p0_connect24／24／19239；端口只是本轮选择，接手要重新核对。
+
+工具依次冷启动正常HTTP、SYN丢包、DNS取消、DNS总时限及恢复后的正常HTTP，每次按当前PID转发自己的CDP。SYN规则只匹配本包UID及10.0.2.2:18510的新建连接，须先实际看到丢包计数与内核SYN_SENT；DNS仅将此AVD的10.0.2.3:53 UDP转发到10.0.2.2:18516的宿主回环对端，看到固定虚构名A／AAAA查询才取消。DNS释放时仅返回NXDOMAIN，不访问真实DNS、不发鉴权。终态后核对SYN_SENT已关闭、无追加事件、账本保留和幂等重放；finally只删除本轮新增跳转／专用链、转发并强停本包，已有链不清理。
+
+**读结果时分开两项：**`fixtureAssertionsPassed=true`证明实验和数据保护断言通过；`promptCancellationPassed`才表示1秒内真正取消是否满足。当前API24／35的SYN为true、DNS为false；DNS在挂起超过1.2秒时仍无终态，释放后才结束。dns-deadline在越过原6000ms阈值、额外等待6500ms后仍无终态，不能将DEADLINE信号当线程已退出。实验刻意释放查询以结束诊断，没有测出默认DNS最坏等待时间。控制器返回0不代表原传输所有取消目标通过；不得为绿灯改阈值或提前伪造终态。
+
+每次完整诊断在SYN与DNS取消期间各追加123分并重放，正常基线与deadline不写账本；已有记录逐条保护。初始金额不要求0，失败后的已保存记录也不能清掉；本轮具体计数、规则错误与完整TLS／HTTP回归见PROJECT_STATUS。结束后确认专用链不存在、自己的转发与对端停止，再关闭自己的AVD，保留数据；root adbd只在该隔离实例存活期间使用。
+
+DNS入口位于原ProbeStream，但仅debug＋emulator可用，固定随机`.p0-dns.invalid`后缀且不接收业务URL；USB／release返回INVALID_OPTIONS，不添加凭据。生成器开启BuildConfig，编译期release移除DNS目标字符串，check-probe-apk.py对实际release DEX再检查；debug CA仍仅原固定IP。不要将本实验配置安装到用户手机或据此调用真实供应商。
+
 ## 契约与设计快照更新
 
 权威数据契约在电脑仓库contracts，移动侧vendor/contracts保存固定版本。根目录执行 `node scripts/import-contract.mjs --source <电脑仓库Git副本> --commit <完整40位提交SHA>`，仅显式更新时需要此副本；导入前验证上游摘要，再运行三项检查、审阅差异并提交。当前导入器只支持实验ledger-v1，不是未来同步协议协商工具。既有契约版本不可原地改写；新规则需先由两端评审版本与迁移。
@@ -264,7 +287,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；下一项按路线图核对TCP SYN／DNS取消边界，整理正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；下一项验证可取消解析与传输组合，收口正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

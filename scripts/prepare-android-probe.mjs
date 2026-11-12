@@ -67,6 +67,8 @@ writeFileSync(path.join(www, "ledger-core.js"), ts.transpileModule(
 const cli = path.join(output, "node_modules/@capacitor/cli/bin/capacitor");
 run(process.execPath, [cli, "add", "android"]);
 const java = path.join(output, "android/app/src/main/java/org/travelflow/p0");
+const appGradle = path.join(output, "android/app/build.gradle");
+writeFileSync(appGradle, readFileSync(appGradle, "utf8") + "\nandroid { buildFeatures { buildConfig = true } }\n");
 for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPlugin.java", "ProbeCredentials.java"]) cpSync(path.join(source, name), path.join(java, name));
 writeFileSync(path.join(java, "ProbeEndpoint.java"), `package org.travelflow.p0;\nfinal class ProbeEndpoint {\n    static final String HOST = ${JSON.stringify(probeHost)};\n    private ProbeEndpoint() {}\n}\n`);
 const manifest = path.join(output, "android/app/src/main/AndroidManifest.xml");

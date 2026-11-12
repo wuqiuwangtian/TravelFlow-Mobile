@@ -14,6 +14,7 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -61,7 +62,9 @@ public class ProbeStreamPlugin extends Plugin {
         int after = call.getInt("after", 0);
         if (!id.matches("[a-zA-Z0-9_-]{1,80}") || after < 0 || after > 3 ||
             !Set.of("normal", "stall", "drop", "http-error", "drip", "no-auth", "unauthorized", "redirect").contains(mode) ||
-            !Set.of("http", "https", "untrusted", "hostname", "expired", "handshake").contains(transport)) {
+            !Set.of("http", "https", "untrusted", "hostname", "expired", "handshake", "dns").contains(transport) ||
+            ("dns".equals(transport) && (!BuildConfig.DEBUG || !"10.0.2.2".equals(ProbeEndpoint.HOST) ||
+                !"normal".equals(mode) || after != 0))) {
             call.reject("Invalid synthetic stream options", "INVALID_OPTIONS");
             return;
         }
@@ -87,7 +90,7 @@ public class ProbeStreamPlugin extends Plugin {
         String detail = "UNEXPECTED_EOF";
         try {
             int port = switch (transport) {
-                case "https" -> 18511;
+                case "https", "dns" -> 18511;
                 case "untrusted" -> 18512;
                 case "hostname" -> 18513;
                 case "expired" -> 18514;
@@ -95,8 +98,13 @@ public class ProbeStreamPlugin extends Plugin {
                 default -> 18510;
             };
             String scheme = "http".equals(transport) ? "http" : "https";
+            String host = ProbeEndpoint.HOST;
+            // 仅debug模拟器的DNS停顿实验；无任意域名入口、无凭据，不改变release信任范围。
+            if (BuildConfig.DEBUG && "dns".equals(transport)) {
+                host = "tf" + UUID.randomUUID().toString().replace("-", "") + ".p0-dns.invalid";
+            }
             HttpURLConnection connection = (HttpURLConnection) new URL(
-                scheme + "://" + ProbeEndpoint.HOST + ":" + port + "/stream?mode=" + mode + "&requestId=" + job.id
+                scheme + "://" + host + ":" + port + "/stream?mode=" + mode + "&requestId=" + job.id
             ).openConnection();
             job.connection = connection;
             connection.setConnectTimeout(1500);
@@ -106,7 +114,7 @@ public class ProbeStreamPlugin extends Plugin {
             connection.setRequestProperty("Accept", "text/event-stream");
             connection.setRequestProperty("Last-Event-ID", Integer.toString(after));
             // 虚构凭据在原生Keystore实验中解密，只加入HTTPS请求，不通过桥返回。
-            if (!"http".equals(transport) && !"no-auth".equals(mode)) {
+            if (!Set.of("http", "dns").contains(transport) && !"no-auth".equals(mode)) {
                 String credential;
                 try {
                     credential = "unauthorized".equals(mode) ? "fixture-wrong-token" : ProbeCredentials.read(getContext());

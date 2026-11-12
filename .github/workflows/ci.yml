@@ -38,9 +38,11 @@ jobs:
           node --check scripts/check-android-tls.mjs
           node --check scripts/check-android-compat.mjs
           node --check scripts/check-android-local.mjs
+          node --check scripts/check-android-connect.mjs
           node --check scripts/lib/android-probe-cdp.mjs
           node --check scripts/manage-probe-reverse.mjs
-          python -m py_compile scripts/android_probe_service.py scripts/prepare-probe-tls.py scripts/check-probe-apk.py scripts/inspect-android-provider.py scripts/inspect-webview-apk.py
+          python -m py_compile scripts/android_probe_service.py scripts/prepare-probe-tls.py scripts/check-probe-apk.py scripts/inspect-android-provider.py scripts/inspect-webview-apk.py scripts/run-android-connect.py scripts/lib/connect_fixture.py
+      - run: PYTHONOPTIMIZE=1 python scripts/check-connect-fixture.py
       - run: node scripts/check-probe-reverse.mjs
       - run: pnpm audit --audit-level=moderate
       - name: Prepare independent candidate project
