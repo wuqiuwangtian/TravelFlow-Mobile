@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import {setTimeout as delay} from "node:timers/promises";
 import {connectProbe} from "./lib/android-probe-cdp.mjs";
 const args = process.argv.slice(2);
-assert.ok([2,3].includes(args.length) && args[0] === "--port" && (args.length === 2 || args[2] === "--offline"), "Usage: check-android-network.mjs --port PORT [--offline]");
+assert.ok([2,3].includes(args.length) && args[0] === "--port" && (args.length === 2 || ["--offline","--reconnect","--reconnect-negative"].includes(args[2])), "Usage: check-android-network.mjs --port PORT [--offline|--reconnect|--reconnect-negative]");
 const page = await connectProbe(args[1]);
 const state = "window.__networkCheck";
-const report = {scenario:args[2] ? "network-offline-cold" : "dns-network", cases:{}};
+const reconnect = args[2]?.startsWith("--reconnect");
+const negative = args[2] === "--reconnect-negative";
+const report = {scenario:reconnect ? "dns-" + args[2].slice(2) : args[2] ? "network-offline-cold" : "dns-network", cases:{}};
 async function control(path, post = false) {
   const response = await fetch(`http://127.0.0.1:18517/${path}`, {method:post ? "POST" : "GET", signal:AbortSignal.timeout(15000)});
   assert.equal(response.status, 200); return response.json();
@@ -90,7 +92,62 @@ try {
     });
   })()`);
   report.before = await page.evaluate(`${state}.store.read()`);
-  if (args[2]) {
+  if (reconnect) {
+    await stableNetwork();
+    await page.evaluate(`${state}.credentials.prepareCredentialFixture()`);
+    report.baseline = await success("baseline");
+    report.reconnect = [];
+    report.reconnectOrder = "release_old_dns_before_probe";
+    report.injectedHttpError = negative;
+    for (let cycle = 0; cycle < (negative ? 1 : 5); cycle++) {
+      const phase = cycle % 2 === 0 ? "dns" : "reading";
+      const row = {cycle,phase,initial:await stableNetwork()};
+      report.reconnect.push(row);
+      await control("mode/direct",true);
+      const old = await start(phase === "dns" ? "dns" : "dns-valid",phase === "reading" ? "stall" : "normal");
+      if (phase === "reading") await page.until(`${state}.events[${JSON.stringify(old)}].some(e => e.type === 'chunk')`);
+      else await observed(async value => value.dns.heldNames.includes((await resources()).dnsHost));
+      row.active = await resources();
+      row.liveSockets = await control("state");
+      if (phase === "reading" || row.active.resolver === "minidns-core-owned-io") assert.ok(row.liveSockets.probeOwnedSockets > 0,"Socket observation has no positive control");
+      await control("network/off",true);
+      row.offline = await networkReady(false);
+      row.stopped = await finished(old);
+      assert.equal(row.stopped.events.at(-1).type,"error");
+      await observed(value => value.probeOwnedSockets === 0);
+      await control("network/restore",true);
+      row.appeared = await networkReady(true);
+      assert.notEqual(row.appeared.currentNetwork,row.initial.currentNetwork);
+      await delay(200);
+      await control("release",true);
+      await control("mode/direct",true);
+      const id = await start("dns-valid",negative ? "http-error" : "normal");
+      row.immediate = await finished(id);
+      row.immediate.observation = await server(id);
+      row.immediate.fault = await control("state");
+      if (row.immediate.events.at(-1).type === "done") {
+        assert.equal(row.immediate.observation.fixtureHost,"valid.p0-dns.invalid:18511");
+        assert.equal(row.immediate.observation.fixtureSni,"valid.p0-dns.invalid");
+        assert.equal(row.immediate.observation.authorized,true);
+        assert.deepEqual(row.immediate.events.filter(event => event.type === "chunk").map(event => JSON.parse(event.data).text),["旅途1","旅途2","旅途3"]);
+      }
+      // 首请求失败作为诊断结果保留；后续对照是不同ID的显式请求，不自动重放。
+      await control("release",true);
+      await control("mode/direct",true);
+      row.settledNetwork = await stableNetwork();
+      row.settled = await success(`settled_${cycle}`);
+      assert.deepEqual(await page.evaluate(`${state}.events[${JSON.stringify(old)}]`),row.stopped.events);
+      assert.deepEqual(await page.evaluate(`${state}.events[${JSON.stringify(id)}]`),row.immediate.events);
+      assert.deepEqual(await page.evaluate(`${state}.store.read()`),report.before,"Read-only reconnect diagnostic changed records");
+    }
+    report.firstRequestFailures = report.reconnect.filter(row => row.immediate.events.at(-1).type !== "done").length;
+    if (negative) {
+      assert.equal(report.firstRequestFailures,1);
+      const terminal = report.reconnect[0].immediate.events.at(-1);
+      assert.equal(terminal.data,"HTTP_STATUS"); assert.equal(terminal.httpStatus,503);
+    }
+    report.allImmediateRequestsPassed = report.firstRequestFailures === 0;
+  } else if (args[2] === "--offline") {
     report.offline = await networkReady(false);
     const id = await start("http");
     report.rejected = await finished(id);
@@ -122,7 +179,7 @@ try {
       const stopToTerminalMs = await page.evaluate(`${state}.terminalAt[${JSON.stringify(id)}] - ${state}.switchedAt`);
       assert.ok(stopToTerminalMs < 3000,"Request did not terminate promptly after radio change");
       const callbackToTerminalMs = terminal.networkLostMs < 0 ? null : terminal.elapsedMs - terminal.networkLostMs;
-      if (callbackToTerminalMs !== null) assert.ok(callbackToTerminalMs < 1000);
+      if (callbackToTerminalMs !== null) assert.ok(callbackToTerminalMs >= 0 && callbackToTerminalMs < 1000);
       const fault = await observed(value => value.probeOwnedSockets === 0);
       const local = await appendOffline();
       const failed = await start("http");
@@ -154,6 +211,16 @@ try {
   report.local = await page.evaluate(`${state}.store.read()`);
   report.fixtureAssertionsPassed = true;
   console.log(JSON.stringify(report,null,2));
+} catch (error) {
+  // 即使稳定对照或后续断言失败，也保留先前首请求，避免只留下最后一次错误。
+  report.fixtureAssertionsPassed = false;
+  if (reconnect) {
+    const attempted = (report.reconnect ?? []).filter(row => row.immediate);
+    report.firstRequestFailures = attempted.filter(row => row.immediate.events.at(-1).type !== "done").length;
+    report.allImmediateRequestsPassed = false;
+  }
+  console.log(JSON.stringify(report,null,2));
+  throw error;
 } finally {
   await control("network/restore",true).catch(() => {});
   await control("release",true).catch(() => {});

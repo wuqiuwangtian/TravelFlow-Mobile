@@ -10,6 +10,7 @@ import android.net.NetworkRequest;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.SystemClock;
+import android.system.ErrnoException;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -21,6 +22,7 @@ import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.Proxy;
 import java.util.ArrayList;
 import java.net.UnknownHostException;
 import java.util.List;
@@ -37,6 +39,8 @@ import javax.net.ssl.SSLException;
 import okhttp3.Call;
 import okhttp3.ConnectionPool;
 import okhttp3.Dns;
+import okhttp3.EventListener;
+import okhttp3.Handshake;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
@@ -75,6 +79,8 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         volatile long lostAt = -1;
         List<InetSocketAddress> dnsServers;
         volatile String stage = "connecting";
+        volatile String networkPhase = "preparing";
+        volatile int dnsRcode = -1, dnsErrorCode = -1, dnsErrno = -1;
         volatile int status;
         volatile String dnsHost = "";
         ScheduledFuture<?> deadline;
@@ -118,6 +124,9 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         event.put("elapsedMs", SystemClock.elapsedRealtime() - job.started); event.put("stage", job.stage); event.put("httpStatus", job.status);
         event.put("boundNetwork", job.network == null ? "" : job.network.toString());
         event.put("networkLostMs", job.lostAt < 0 ? -1 : job.lostAt - job.started);
+        event.put("networkPhase", job.networkPhase);
+        event.put("dnsRcode", job.dnsRcode); event.put("dnsErrorCode", job.dnsErrorCode); event.put("dnsErrno", job.dnsErrno);
+        event.put("clockEpochMs", System.currentTimeMillis());
         notifyListeners("stream", event);
     }
 
@@ -132,7 +141,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
                 public void cancel() { /* 保留阻塞式系统解析，作为仅更换HTTP库的对照。 */ }
             };
         } else if (Build.VERSION.SDK_INT >= 29) {
-            lookup = new PlatformLookup(job.network);
+            lookup = new PlatformLookup(job);
         } else {
             lookup = new CodecLookup(job);
         }
@@ -176,6 +185,19 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         if (manager.getLinkProperties(job.network) == null) stop(job, "NETWORK_LOST");
     }
 
+    // 仅保留闭合阶段标签，不记录URL、请求头、凭据、证书或底层异常文本。
+    private EventListener trace(Job job) {
+        return new EventListener() {
+            @Override public void dnsStart(Call call, String name) { job.networkPhase = "dns"; }
+            @Override public void dnsEnd(Call call, String name, List<InetAddress> addresses) { job.networkPhase = "dns-ready"; }
+            @Override public void connectStart(Call call, InetSocketAddress address, Proxy proxy) { job.networkPhase = "tcp"; }
+            @Override public void secureConnectStart(Call call) { job.networkPhase = "tls"; }
+            @Override public void secureConnectEnd(Call call, Handshake handshake) { job.networkPhase = "tls-ready"; }
+            @Override public void responseHeadersStart(Call call) { job.networkPhase = "headers"; }
+            @Override public void responseBodyStart(Call call) { job.networkPhase = "body"; }
+        };
+    }
+
     private void run(Job job, String transport, String mode, String resolver, int after) {
         workers.incrementAndGet();
         String type = "error", detail = "UNEXPECTED_EOF";
@@ -203,7 +225,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
                 catch (Exception failure) { throw new IOException("CREDENTIAL_UNAVAILABLE"); }
                 request.header("Authorization", "Bearer " + credential);
             }
-            OkHttpClient client = base.newBuilder().socketFactory(job.network.getSocketFactory()).dns(name -> resolve(job, name, resolver)).build();
+            OkHttpClient client = base.newBuilder().eventListener(trace(job)).socketFactory(job.network.getSocketFactory()).dns(name -> resolve(job, name, resolver)).build();
             job.call = client.newCall(request.build());
             if (job.reason.get() != null) return;
             try (Response response = job.call.execute()) {
@@ -270,6 +292,11 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
         Network current = manager.getActiveNetwork();
         NetworkCapabilities capabilities = current == null ? null : manager.getNetworkCapabilities(current);
+        LinkProperties currentLinks = current == null ? null : manager.getLinkProperties(current);
+        value.put("currentDnsServers", currentLinks == null ? 0 : currentLinks.getDnsServers().size());
+        value.put("currentProxyConfigured", manager.getDefaultProxy() != null);
+        value.put("currentPrivateDnsActive", Build.VERSION.SDK_INT >= 28 && currentLinks != null && currentLinks.isPrivateDnsActive());
+        value.put("clockEpochMs", System.currentTimeMillis());
         value.put("currentNetwork", current == null ? "" : current.toString());
         value.put("currentTransport", capabilities == null ? "none" : capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" :
             capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cellular" : "other");
@@ -280,7 +307,8 @@ public class ProbeAsyncStreamPlugin extends Plugin {
     private static final class PlatformLookup implements Lookup {
         final CancellationSignal signal = new CancellationSignal();
         final Network network;
-        PlatformLookup(Network network) { this.network = network; }
+        final Job job;
+        PlatformLookup(Job job) { this.job = job; this.network = job.network; }
         boolean done;
         List<InetAddress> result;
         UnknownHostException error;
@@ -288,8 +316,12 @@ public class ProbeAsyncStreamPlugin extends Plugin {
             if (signal.isCanceled()) throw new UnknownHostException("Cancelled");
             DnsResolver.getInstance().query(network, host, DnsResolver.FLAG_EMPTY,
                 Runnable::run, signal, new DnsResolver.Callback<List<InetAddress>>() {
-                    public void onAnswer(List<InetAddress> answer, int code) { finish(answer, code == 0 ? null : new UnknownHostException("DNS response failed")); }
-                    public void onError(DnsResolver.DnsException failure) { finish(null, new UnknownHostException("DNS query failed")); }
+                    public void onAnswer(List<InetAddress> answer, int code) { job.dnsRcode = code; finish(answer, code == 0 ? null : new UnknownHostException("DNS response failed")); }
+                    public void onError(DnsResolver.DnsException failure) {
+                        job.dnsErrorCode = failure.code;
+                        if (failure.getCause() instanceof ErrnoException) job.dnsErrno = ((ErrnoException) failure.getCause()).errno;
+                        finish(null, new UnknownHostException("DNS query failed"));
+                    }
                 });
             synchronized (this) {
                 while (!done) try { wait(); } catch (InterruptedException failure) { Thread.currentThread().interrupt(); throw new UnknownHostException("Interrupted"); }

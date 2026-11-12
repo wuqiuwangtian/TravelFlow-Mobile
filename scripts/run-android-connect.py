@@ -134,7 +134,7 @@ def run(args):
                 remote = fields[2]
                 if remote.endswith("0302000A:0035") or any(remote.endswith(f"0202000A:{port:04X}") for port in range(18510, 18516)):
                     owned_sockets += 1
-        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets}
+        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000)}
 
     class ControlHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -158,11 +158,11 @@ def run(args):
             if self.headers.get("Content-Length", "0") != "0":
                 self.send_error(404)
                 return
-            if args.case == "network" and self.path == "/network/retire-dns-peer":
+            if args.case in ("network", "reconnect", "reconnect-negative") and self.path == "/network/retire-dns-peer":
                 state.retire_tcp()
                 self.respond(state.snapshot())
                 return
-            if args.case == "network" and self.path in ("/network/off", "/network/restore"):
+            if args.case in ("network", "reconnect", "reconnect-negative") and self.path in ("/network/off", "/network/restore"):
                 if self.path == "/network/off":
                     radios.offline()
                 else:
@@ -197,6 +197,8 @@ def run(args):
                 scenarios = ("proxy-guard", "baseline")
             if args.case == "network":
                 scenarios = ("dns-network", "network-offline-cold", "baseline")
+            if args.case in ("reconnect", "reconnect-negative"):
+                scenarios = ("dns-" + args.case,)
             for scenario in scenarios:
                 state.reset()
                 if scenario == "proxy-guard":
@@ -242,12 +244,21 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
+                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
                 command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
                 if scenario == "network-offline-cold":
                     command.append("--offline")
-                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario == "dns-network" else 100 if scenario in ("dns-tls", "dns-codec") else 40)
+                if scenario in ("dns-reconnect", "dns-reconnect-negative"):
+                    command.append("--" + scenario.removeprefix("dns-"))
+                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec") else 40)
+                if result.returncode != 0:
+                    try:
+                        partial = json.loads(result.stdout)
+                    except json.JSONDecodeError:
+                        partial = None
+                    if isinstance(partial, dict) and partial.get("scenario") == scenario:
+                        reports.append(partial)
                 require(result.returncode == 0, result.stderr or result.stdout)
                 report = json.loads(result.stdout)
                 if scenario == "network-offline-cold":
@@ -288,7 +299,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18518), "Choose a separate CDP port")
     run(options)

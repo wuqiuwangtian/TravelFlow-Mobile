@@ -366,9 +366,26 @@ API24覆盖挂起UDP DNS、转TCP后的DNS与TLS读取；API35覆盖平台DNS与
 `PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现在有9项检查，包含无线原值与缺失键恢复、部分写入失败恢复、飞行模式前置拒绝，以及主动对端清理不冒充peer_closed；不连接ADB。JVM12组及既有可选TLS／codec检查继续可用，终态资源断言增加networkWatches。三配置CI只运行这些主机检查与构建／lint／打包，不执行切网。实际覆盖为蜂窝虚拟网络断开／重建；并存Wi-Fi／蜂窝、VPN、真实供应商和真机切网未验。API35首次恢复请求失败及复验边界见PROJECT_STATUS，不能删去失败来宣布完整切网支持。
 
 
+## 恢复首请求的只读诊断（仅专用AVD）
+
+沿用上一节最新可选debug APK、TLS对端、明确AVD／root adbd与无线前提。本入口会切换该AVD的无线，不写账本；不适用于手机。每组五次交替DNS挂起／TLS读取，恢复后只等Network出现，等待200ms并释放旧DNS回复，再发首个域名HTTPS，不经过750ms稳定窗口。全部首请求无论成败都保留，再以不同ID执行稳定后的对照，禁止自动重放或删除失败结果。
+
+```sh
+python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5558 --expect-avd travelflow_p0_connect35 --expect-sdk 35 --port 19238 --client okhttp --case reconnect
+```
+
+报告的fixtureAssertionsPassed只表示诊断／资源／数据保护断言通过；还要独立看firstRequestFailures和allImmediateRequestsPassed。每个周期有原请求、网络出现时状态、首请求事件／资源／对端观测与稳定后不同ID请求，正常首请求必须核对原域名Host／SNI、授权和三段中文流；原请求与首请求均不得再追加事件。后续对照／断言失败时，脚本输出已有部分JSON，控制器保留该场景报告并非零退出；部分报告不能当完整验收通过。前后完整账本快照须一致，原始金额不限。读取时先观察本包固定对端FD为正，停止后须归零；平台共享DNS服务不在本包FD范围。所有退出仍恢复无线原状态及键存在性、自己的规则与转发，强停本包；操作者停止自己启动的对端与AVD。
+
+只验证“错误被保留”的闭合负例，将命令改为`--case reconnect-negative`：一周期内首请求刻意使用已有http-error模式返回503，稳定后以不同ID正常请求。预期fixtureAssertionsPassed=true、firstRequestFailures=1、allImmediateRequestsPassed=false，首请求HTTP_STATUS／503仍在报告内；这不是原历史故障复现，不可当首请求成功。两组都只读账本、会准备公开虚构凭据；默认all和原network组不自动执行这些诊断。错误物理serial在任何ADB调用前拒绝。
+
+新可选插件事件附networkPhase、设备clockEpochMs及平台DNS的rcode／错误码／errno；未触发或不适用为-1。resources附当前DNS服务器数量与代理／Private DNS布尔状态，控制器state附hostEpochMs。阶段是最后观察到的活动，不能仅据阶段标签判根因；时钟采样也有先后延迟。不要为诊断打印URL、请求头、凭据、证书或底层异常原文。最新debug APK和资源断言是前提，旧包不保证这些字段存在。API24可用5560／travelflow_p0_connect24／24／19239验证兼容；平台DNS数值错误诊断仅API29+。
+
+本轮API35两种时序共15次正常尝试未复现历史失败，保留为待证据，见PROJECT_STATUS；不需要接手后默认重跑15次。复发时保留当次完整诊断，并分别判断原终态、当前Network变化、解析码、TLS／HTTP阶段与对端结果；不能将后续成功覆盖首个错误，也不能凭750ms稳定窗口宣称生产网络已就绪。
+
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；下一项优先复现API35一次恢复首请求失败，并按评审收口缓存／搜索域／服务器预算、代理／Private DNS等兼容语义及维护成本，收口正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；API35恢复首请求已补有界只读复现与分阶段诊断，原失败未再复现、仍待证据；下一项按评审收口缓存／搜索域／服务器预算、代理／Private DNS等兼容语义及维护成本，收口正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 
