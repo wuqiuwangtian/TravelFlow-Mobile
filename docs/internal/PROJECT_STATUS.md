@@ -241,7 +241,7 @@ emulator与usb配置的debug／unsigned release、完整debug lint及实际APK�
 
 ## P0旧系统DNS报文兼容层与网络约束（2026-11-12）
 
-承接`048d2e6`的机制对照，将可选debug分支的固定UDP A解析替换为`CancelableDnsLookup`：固定MiniDNS core 1.1.1只处理DNS报文，本项目持有并关闭UDP／TCP套接字。新增该兼容层、上游许可选择文本、JVM协议检查及Android协议／代理拒绝检查；修改可选插件、生成器、对端／控制器、APK检查、CI和本轮四份内部文档；无文件删除、无正式业务／领域／共享快照变化。它仍是可逆的隔离实验，不是正式依赖或最低版本决定；方案比较与维护代价见ANDROID_FRAMEWORK_REVIEW。
+承接`048d2e6`的机制对照，将可选debug分支的固定UDP A解析替换为`CancelableDnsLookup`：固定MiniDNS core 1.1.1只处理DNS报文，本项目持有并关闭UDP／TCP套接字。新增该兼容层、上游许可选择文本、JVM协议检查及Android协议／代理拒绝检查；修改可选插件、生成器、对端／控制器、APK检查、CI、第三方来源说明和本轮四份内部文档；无文件删除、无正式业务／领域／共享快照变化。它仍是可逆的隔离实验，不是正式依赖或最低版本决定；方案比较与维护代价见ANDROID_FRAMEWORK_REVIEW。
 
 旧分支新增A／AAAA、最多8跳且检测循环的CNAME、UDP截断转同一DNS服务器的TCP、TCP长度帧与响应ID／问题校验；错误UDP包不延长等待预算。兼容层总预算10秒，应用请求仍在6000ms触发实际关闭，不靠提前发终态或取消Future掩盖阻塞。每次请求读取当前Android Network及其LinkProperties的DNS服务器；DNS和HTTP分别绑定同一网络，API29+平台查询也显式传该Network。没有硬编码公共DNS、改写业务域名URL或新增CA域。仅可选debug增加ACCESS_NETWORK_STATE，默认emulator／usb和release不增加该权限、MiniDNS或实验插件。配置代理或活动Private DNS时实验客户端明确拒绝，后者尚未实测；这不是正式代理／加密DNS支持。
 

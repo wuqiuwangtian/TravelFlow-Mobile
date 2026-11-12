@@ -319,9 +319,10 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 旧系统DNS协议与代理拒绝的增补验收
 
-前提仍是上一节已匹配的可选工程／TLS材料及专用AVD。JVM协议检查只需要JDK21、Python3.9+和生成工程解析的MiniDNS Jar，不启动ADB、不访问公共DNS。先在生成工程的android目录运行`:app:exportDnsCodec`，再回仓库执行（`$PROBE_APP`自行设为仓库外的该工程路径，Java命令使用JDK21）：
+前提仍是上一节已匹配的可选工程／TLS材料及专用AVD。JVM协议检查只需要JDK21、Python3.9+和生成工程解析的MiniDNS Jar，不启动ADB、不访问公共DNS。导出生成工程解析的依赖后，在仓库执行（`$PROBE_APP`自行设为仓库外的该工程路径，Java命令使用JDK21）：
 
 ```sh
+(cd "$PROBE_APP/android" && ./gradlew :app:exportDnsCodec --no-daemon)
 python3 scripts/check-dns-codec.py --jar "$PROBE_APP/android/app/build/probe-deps/minidns-core-1.1.1.jar"
 ```
 

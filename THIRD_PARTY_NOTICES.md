@@ -3,6 +3,7 @@
 本项目MIT许可，作者及许可文本见LICENSE。初始P0源码来自TravelFlow-AI提交 `974743fc9df181f01919d06e4cf3cc4a5908bd49`；源Git历史继续保留，不把文件迁移描述成重新实现。
 
 - Capacitor core／android／cli 8.6.0：MIT，隔离候选锁文件位于prototypes/android-runtime/pnpm-lock.yaml。生成器将core许可复制进静态资源，第三方许可不因本项目MIT而改变。
+- 可选debug网络对照使用OkHttp Android 5.3.2与MiniDNS core 1.1.1（后者选择上游三许可中的Apache-2.0）；仅通过`--transport-probe okhttp`加入隔离模拟器工程，不进入默认配置或release。固定版本、传递依赖与归属见[实验NOTICE](prototypes/okhttp-probe/NOTICE.txt)，[Apache-2.0全文](prototypes/okhttp-probe/LICENSE.txt)及[MiniDNS许可选择](prototypes/okhttp-probe/MINIDNS-LICENCE.txt)随该debug包附带；这不是正式依赖选型。
 - TypeScript 5.9.3：Apache-2.0，开发依赖，根目录pnpm-lock.yaml固定版本。
 - vendor/design是原项目共享样式的MIT快照；精确提交与文件摘要见该目录ORIGIN.json，不能宣称与上游实时同步。
 - vendor/contracts是实验账目投影契约快照；来源、固定提交与manifest摘要见vendor/contracts/ORIGIN.json。
