@@ -5,6 +5,8 @@ import android.net.DnsResolver;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.NetworkRequest;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.SystemClock;
@@ -21,7 +23,6 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.ArrayList;
 import java.net.UnknownHostException;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -50,6 +51,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
     private final AtomicInteger workers = new AtomicInteger();
     private final AtomicInteger resolutions = new AtomicInteger();
     private final AtomicInteger dnsSockets = new AtomicInteger();
+    private final AtomicInteger networkWatches = new AtomicInteger();
     private final OkHttpClient base = new OkHttpClient.Builder()
         .connectionPool(new ConnectionPool(0, 1, TimeUnit.SECONDS))
         .followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(false)
@@ -67,6 +69,10 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         volatile Call call;
         volatile Lookup lookup;
         Network network;
+        ConnectivityManager manager;
+        ConnectivityManager.NetworkCallback networkCallback;
+        boolean networkRegistered;
+        volatile long lostAt = -1;
         List<InetSocketAddress> dnsServers;
         volatile String stage = "connecting";
         volatile int status;
@@ -110,6 +116,8 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         JSObject event = new JSObject();
         event.put("requestId", job.id); event.put("type", type); event.put("data", data); event.put("eventId", eventId);
         event.put("elapsedMs", SystemClock.elapsedRealtime() - job.started); event.put("stage", job.stage); event.put("httpStatus", job.status);
+        event.put("boundNetwork", job.network == null ? "" : job.network.toString());
+        event.put("networkLostMs", job.lostAt < 0 ? -1 : job.lostAt - job.started);
         notifyListeners("stream", event);
     }
 
@@ -145,6 +153,29 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         }
     }
 
+    private void watchNetwork(Job job, ConnectivityManager manager) throws IOException {
+        job.manager = manager;
+        job.networkCallback = new ConnectivityManager.NetworkCallback() {
+            @Override public void onLost(Network network) {
+                if (!network.equals(job.network)) return;
+                job.lostAt = SystemClock.elapsedRealtime();
+                // 回调只提交关闭工作；不阻塞ConnectivityManager线程，不自动重发。
+                stop(job, "NETWORK_LOST");
+            }
+        };
+        try {
+            // 被动监听全部可见网络，仅处理本请求已绑定的Network；不维持或申请额外网络。
+            manager.registerNetworkCallback(new NetworkRequest.Builder()
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_TRUSTED)
+                .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN).build(), job.networkCallback);
+            job.networkRegistered = true;
+            networkWatches.incrementAndGet();
+        } catch (RuntimeException failure) { throw new IOException("NETWORK_WATCH_UNAVAILABLE"); }
+        // 覆盖取快照与注册之间已丢失网络、因而没有收到初始回调的竞态。
+        if (manager.getLinkProperties(job.network) == null) stop(job, "NETWORK_LOST");
+    }
+
     private void run(Job job, String transport, String mode, String resolver, int after) {
         workers.incrementAndGet();
         String type = "error", detail = "UNEXPECTED_EOF";
@@ -156,6 +187,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
             // 尚未验证代理／加密DNS，明确拒绝，避免实验兼容层静默绕开用户配置。
             if (manager.getDefaultProxy() != null) throw new IOException("PROXY_UNVERIFIED");
             if (Build.VERSION.SDK_INT >= 28 && links.isPrivateDnsActive()) throw new IOException("PRIVATE_DNS_UNVERIFIED");
+            watchNetwork(job, manager);
             job.dnsServers = new ArrayList<>();
             for (InetAddress server : links.getDnsServers()) job.dnsServers.add(new InetSocketAddress(server, 53));
             String host = "dns".equals(transport) ? "tf" + UUID.randomUUID().toString().replace("-", "") + ".p0-dns.invalid" :
@@ -199,14 +231,22 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         } catch (SSLException error) { detail = "TLS_FAILED";
         } catch (UnknownHostException error) { detail = "DNS_FAILED";
         } catch (InterruptedIOException error) { detail = "TIMEOUT";
-        } catch (IOException error) { detail = Set.of("HTTP_STATUS", "CONTENT_TYPE", "STREAM_LIMIT", "CREDENTIAL_UNAVAILABLE", "NETWORK_UNAVAILABLE", "PROXY_UNVERIFIED", "PRIVATE_DNS_UNVERIFIED").contains(error.getMessage() == null ? "" : error.getMessage()) ? error.getMessage() : "NETWORK_OR_PROTOCOL";
+        } catch (IOException error) { detail = Set.of("HTTP_STATUS", "CONTENT_TYPE", "STREAM_LIMIT", "CREDENTIAL_UNAVAILABLE", "NETWORK_UNAVAILABLE", "PROXY_UNVERIFIED", "PRIVATE_DNS_UNVERIFIED", "NETWORK_WATCH_UNAVAILABLE").contains(error.getMessage() == null ? "" : error.getMessage()) ? error.getMessage() : "NETWORK_OR_PROTOCOL";
         } catch (Exception error) { detail = "UNEXPECTED_FAILURE";
         } finally {
             job.deadline.cancel(false);
             if (job.lookup != null) job.lookup.cancel();
+            boolean cleanupFailed = false;
+            if (job.networkRegistered) {
+                try {
+                    job.manager.unregisterNetworkCallback(job.networkCallback);
+                    job.networkRegistered = false;
+                    networkWatches.decrementAndGet();
+                } catch (RuntimeException failure) { cleanupFailed = true; }
+            }
             base.connectionPool().evictAll();
             workers.decrementAndGet(); active.compareAndSet(job, null);
-            String reason = job.reason.get();
+            String reason = cleanupFailed ? "NETWORK_CLEANUP_FAILED" : job.reason.get();
             emit(job, "CANCELLED".equals(reason) ? "cancelled" : reason == null ? type : "error",
                 "CANCELLED".equals(reason) ? "" : reason == null ? detail : reason, "");
         }
@@ -225,6 +265,14 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         Job job = active.get(); value.put("dnsHost", job == null ? "" : job.dnsHost);
         value.put("resolutions", resolutions.get()); value.put("dnsSockets", dnsSockets.get());
         value.put("httpCalls", base.dispatcher().runningCallsCount()); value.put("connections", base.connectionPool().connectionCount());
+        value.put("networkWatches", networkWatches.get());
+        value.put("boundNetwork", job == null || job.network == null ? "" : job.network.toString());
+        ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
+        Network current = manager.getActiveNetwork();
+        NetworkCapabilities capabilities = current == null ? null : manager.getNetworkCapabilities(current);
+        value.put("currentNetwork", current == null ? "" : current.toString());
+        value.put("currentTransport", capabilities == null ? "none" : capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" :
+            capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) ? "cellular" : "other");
         value.put("resolver", Build.VERSION.SDK_INT >= 29 ? "android-dnsresolver" : "minidns-core-owned-io"); call.resolve(value);
     }
 

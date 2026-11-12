@@ -20,7 +20,7 @@ async function finished(id, type, detail = "") {
   assert.equal(events.at(-1).type, type); assert.equal(events.at(-1).data, detail);
   const resources = await page.evaluate(`${state}.stream.resources()`);
   assert.equal(resources.active, false);
-  for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections"]) assert.equal(resources[key], 0, key);
+  for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections", "networkWatches"]) assert.equal(resources[key], 0, key);
   return {events, resources};
 }
 async function start(mode) {

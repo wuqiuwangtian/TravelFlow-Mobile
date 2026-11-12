@@ -13,6 +13,7 @@ import time
 import urllib.request
 
 from lib.connect_fixture import DnsServer, CodecDns, TcpDnsServer
+from lib.network_fixture import RadioFixture
 
 
 def require(condition, message):
@@ -62,6 +63,7 @@ def run(args):
     forwarded = False
     proxy_original = None
     reports = []
+    radios = RadioFixture(shell)
 
     def iptables(table, *parts):
         return shell("iptables", "-t", table, *parts)
@@ -123,7 +125,16 @@ def run(args):
                 fields = row.split()
                 if len(fields) > 7 and fields[2].endswith(f"0202000A:{18510:04X}") and fields[3] == "02" and fields[7] == uid:
                     sockets += 1
-        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot()}
+        owned_sockets = 0
+        for protocol in ("tcp", "tcp6", "udp", "udp6"):
+            for row in shell("cat", "/proc/net/" + protocol).splitlines()[1:]:
+                fields = row.split()
+                if len(fields) <= 9 or fields[7] != uid or fields[9] == "0":
+                    continue
+                remote = fields[2]
+                if remote.endswith("0302000A:0035") or any(remote.endswith(f"0202000A:{port:04X}") for port in range(18510, 18516)):
+                    owned_sockets += 1
+        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets}
 
     class ControlHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -144,13 +155,27 @@ def run(args):
             self.respond(fault_snapshot())
 
         def do_POST(self):
-            if self.headers.get("Content-Length", "0") != "0" or (self.path != "/release" and self.path.removeprefix("/mode/") not in state.MODES):
+            if self.headers.get("Content-Length", "0") != "0":
                 self.send_error(404)
+                return
+            if args.case == "network" and self.path == "/network/retire-dns-peer":
+                state.retire_tcp()
+                self.respond(state.snapshot())
+                return
+            if args.case == "network" and self.path in ("/network/off", "/network/restore"):
+                if self.path == "/network/off":
+                    radios.offline()
+                else:
+                    radios.restore()
+                self.respond({"radioSettings": radios.settings()})
                 return
             if self.path == "/release":
                 state.release()
-            else:
+            elif self.path.removeprefix("/mode/") in state.MODES:
                 state.reset(self.path.removeprefix("/mode/"))
+            else:
+                self.send_error(404)
+                return
             self.respond(state.snapshot())
 
     try:
@@ -162,6 +187,7 @@ def run(args):
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 stack.callback(server.shutdown)
             stack.callback(state.release)
+            stack.callback(state.retire_tcp)
             scenarios = ("baseline", "syn", "dns-system", "dns", "dns-deadline", "dns-codec", "dns-tls", "baseline") if args.client == "okhttp" else ("baseline", "syn", "dns", "dns-deadline", "baseline")
             if args.expect_sdk >= 29:
                 scenarios = tuple(item for item in scenarios if item != "dns-codec")
@@ -169,6 +195,8 @@ def run(args):
                 scenarios = ("dns-tls" if args.case == "tls" else "dns-codec",)
             if args.case == "proxy":
                 scenarios = ("proxy-guard", "baseline")
+            if args.case == "network":
+                scenarios = ("dns-network", "network-offline-cold", "baseline")
             for scenario in scenarios:
                 state.reset()
                 if scenario == "proxy-guard":
@@ -178,6 +206,8 @@ def run(args):
                             original["global_proxy_pac_url"] in (None, ""), "Do not replace an existing proxy")
                     proxy_original = original
                     shell("settings", "put", "global", "http_proxy", "127.0.0.1:18510")
+                elif scenario == "network-offline-cold":
+                    radios.offline()
                 elif scenario == "syn":
                     make_rule("filter", "P0_SYN_PROBE",
                               ["-p", "tcp", "-d", "10.0.2.2", "--dport", "18510", "--syn", "-m", "owner", "--uid-owner", uid, "-j", "P0_SYN_PROBE"],
@@ -212,14 +242,20 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs"}
+                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
                 command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
-                result = subprocess.run(command, text=True, capture_output=True, timeout=100 if scenario in ("dns-tls", "dns-codec") else 40)
+                if scenario == "network-offline-cold":
+                    command.append("--offline")
+                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario == "dns-network" else 100 if scenario in ("dns-tls", "dns-codec") else 40)
                 require(result.returncode == 0, result.stderr or result.stdout)
-                reports.append(json.loads(result.stdout))
+                report = json.loads(result.stdout)
+                if scenario == "network-offline-cold":
+                    require(report["before"] == reports[-1]["local"], "Offline cold start changed existing records")
+                reports.append(report)
                 remove_rules()
                 restore_proxy()
+                radios.restore()
     except Exception:
         print(json.dumps({"fixtureAssertionsPassed": False, "experiments": reports}, indent=2))
         raise
@@ -232,7 +268,10 @@ def run(args):
                 remove_rules()
             finally:
                 try:
-                    restore_proxy()
+                    try:
+                        restore_proxy()
+                    finally:
+                        radios.restore()
                 finally:
                     if forwarded:
                         adb("forward", "--remove", f"tcp:{args.port}")
@@ -249,7 +288,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18518), "Choose a separate CDP port")
     run(options)

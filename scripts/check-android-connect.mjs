@@ -83,7 +83,7 @@ try {
         report.resourcesBeforeDnsRelease = await page.evaluate(`${state}.stream.resources()`);
         const resources = report.resourcesBeforeDnsRelease;
         assert.equal(resources.active, false);
-        for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections"]) assert.equal(resources[key], 0, key);
+        for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections", "networkWatches"]) assert.equal(resources[key], 0, key);
         assert.equal(report.terminalBeforeDnsRelease.length, 1, "Candidate still waits for DNS release");
         const reuse = await page.evaluate(`(async () => {
           const id = 'reuse_${crypto.randomUUID()}';

@@ -22,7 +22,7 @@ try {
   assert.equal(events.length, 1); assert.equal(events[0].type, "error"); assert.equal(events[0].data, "PROXY_UNVERIFIED");
   const resources = await page.evaluate("window.__proxyCheck.stream.resources()");
   assert.equal(resources.active, false);
-  for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections"]) assert.equal(resources[key], 0, key);
+  for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections", "networkWatches"]) assert.equal(resources[key], 0, key);
   const server = await (await fetch(`http://127.0.0.1:18510/observations?requestId=${id}`, {signal:AbortSignal.timeout(3000)})).json();
   assert.equal(server, null);
   assert.deepEqual(await page.evaluate("window.__proxyCheck.store.read()"), before);

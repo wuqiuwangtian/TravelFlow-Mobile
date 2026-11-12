@@ -1,6 +1,7 @@
 """仅回环UDP的受控DNS对端；挂起固定虚构名，释放时返回NXDOMAIN，绝不转发。"""
 
 import re
+import socket
 import socketserver
 import struct
 import threading
@@ -110,6 +111,22 @@ class CodecDns(HeldDns):
         self.mode = "direct"
         self.tcp_active = 0
         self.tcp_closed = 0
+        self.tcp_connections = set()
+        self.retired_connections = set()
+        self.fixture_closed = 0
+
+    def retire_tcp(self):
+        """仅清理本对端持有的半开连接；不伪称客户端关闭。"""
+        with self.lock:
+            pending = list(self.tcp_connections - self.retired_connections)
+            self.retired_connections.update(pending)
+            self.fixture_closed += len(pending)
+        for connection in pending:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
 
     def reset(self, mode="direct"):
         if mode not in self.MODES:
@@ -121,11 +138,12 @@ class CodecDns(HeldDns):
         with self.lock:
             self.mode = mode
             self.tcp_closed = 0
+            self.fixture_closed = 0
 
     def snapshot(self):
         result = super().snapshot()
         with self.lock:
-            result.update(mode=self.mode, tcpActive=self.tcp_active, tcpPeerClosed=self.tcp_closed)
+            result.update(mode=self.mode, tcpActive=self.tcp_active, tcpPeerClosed=self.tcp_closed, tcpFixtureClosed=self.fixture_closed)
         return result
 
     def handle(self, packet, address, sock, tcp=False):
@@ -191,6 +209,7 @@ class TcpDnsServer(socketserver.ThreadingTCPServer):
                         return
                     with state.lock:
                         state.tcp_active += 1
+                        state.tcp_connections.add(self.request)
                         mode = state.mode
                     try:
                         if mode == "tcp-hold":
@@ -198,7 +217,8 @@ class TcpDnsServer(socketserver.ThreadingTCPServer):
                                 state.queries.append({"name": name, "type": question(packet)[1], "protocol": "tcp"})
                             if self.request.recv(1) == b"":
                                 with state.lock:
-                                    state.tcp_closed += 1
+                                    if self.request not in state.retired_connections:
+                                        state.tcp_closed += 1
                         elif mode == "truncated-tcp":
                             self.request.sendall(b"\x00\x20bad")
                         else:
@@ -209,6 +229,8 @@ class TcpDnsServer(socketserver.ThreadingTCPServer):
                             state.handle(packet, self.client_address, FramedSocket(), tcp=True)
                     finally:
                         with state.lock:
+                            state.tcp_connections.discard(self.request)
+                            state.retired_connections.discard(self.request)
                             state.tcp_active -= 1
                 except (OSError, EOFError, ValueError, struct.error):
                     pass

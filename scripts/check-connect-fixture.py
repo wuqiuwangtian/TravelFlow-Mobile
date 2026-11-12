@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from lib.connect_fixture import DnsServer, HeldDns, CodecDns, TcpDnsServer, positive_reply
+from lib.network_fixture import RadioFixture
 
 
 def query(name, kind=1):
@@ -100,6 +101,85 @@ class TcpLifecycle(unittest.TestCase):
                     server.shutdown()
                     worker.join(2)
 
+    def test_fixture_retirement_is_not_peer_close(self):
+        state = CodecDns()
+        state.reset("tcp-hold")
+        with TcpDnsServer(state, 0) as server:
+            worker = threading.Thread(target=server.serve_forever, daemon=True)
+            worker.start()
+            try:
+                with socket.create_connection(server.server_address, timeout=2) as client:
+                    packet = query("valid.p0-dns.invalid")
+                    client.sendall(struct.pack("!H", len(packet)) + packet)
+                    end = time.monotonic() + 2
+                    while state.snapshot()["tcpActive"] != 1:
+                        self.assertLess(time.monotonic(), end)
+                        time.sleep(0.01)
+                    state.retire_tcp()
+                    while state.snapshot()["tcpActive"]:
+                        self.assertLess(time.monotonic(), end)
+                        time.sleep(0.01)
+                    self.assertEqual(state.snapshot()["tcpPeerClosed"], 0)
+                    self.assertEqual(state.snapshot()["tcpFixtureClosed"], 1)
+            finally:
+                state.retire_tcp()
+                server.shutdown()
+                worker.join(2)
+
+
+class RadioRecovery(unittest.TestCase):
+    def fixture(self, wifi="1", fail=False, airplane="0"):
+        values = {"wifi_on": wifi, "mobile_data": "1", "airplane_mode_on": airplane}
+        original, writes = dict(values), []
+
+        def shell(*command):
+            nonlocal fail
+            if command == ("settings", "list", "global"):
+                return "\n".join(f"{key}={value}" for key, value in values.items())
+            writes.append(command)
+            if command[0] == "svc":
+                key = "wifi_on" if command[1] == "wifi" else "mobile_data"
+                values[key] = "1" if command[2] == "enable" else "0"
+                if command[1] == "data":
+                    values["mobile_data1"] = values[key]
+                    if fail and command[2] == "disable":
+                        fail = False
+                        raise RuntimeError("Injected failure after write")
+            elif command[:2] == ("settings", "delete"):
+                values.pop(command[3], None)
+            elif command[:2] == ("settings", "put"):
+                values[command[3]] = command[4]
+            else:
+                raise AssertionError("Unexpected mutation")
+            return ""
+        return RadioFixture(shell), values, original, writes
+
+    def test_restore_original_values_and_absent_subscription_key(self):
+        for wifi in ("0", "1"):
+            fixture, values, original, writes = self.fixture(wifi=wifi)
+            fixture.offline()
+            self.assertEqual(values["mobile_data"], "0")
+            self.assertEqual(values["wifi_on"], "0")
+            fixture.restore()
+            self.assertEqual(values, original)
+            length = len(writes)
+            fixture.restore()
+            self.assertEqual(len(writes), length, "Clean restore must not mutate again")
+
+    def test_partial_failure_can_restore(self):
+        fixture, values, original, _ = self.fixture(fail=True)
+        with self.assertRaisesRegex(RuntimeError, "Injected failure"):
+            fixture.offline()
+        fixture.restore()
+        self.assertEqual(values, original)
+
+    def test_airplane_mode_rejected_before_any_write(self):
+        fixture, values, original, writes = self.fixture(airplane="1")
+        with self.assertRaisesRegex(RuntimeError, "airplane mode off"):
+            fixture.offline()
+        self.assertEqual(writes, [])
+        self.assertEqual(values, original)
+
 
 spec = importlib.util.spec_from_file_location("connect_runner", Path(__file__).with_name("run-android-connect.py"))
 runner = importlib.util.module_from_spec(spec)
@@ -113,8 +193,9 @@ class DeviceGuards(unittest.TestCase):
 
     def test_real_serial_rejected_without_running_any_command(self):
         with patch.object(runner.subprocess, "run") as process:
-            with self.assertRaisesRegex(RuntimeError, "emulator serial"):
-                runner.run(self.options(serial="physical-device"))
+            for scenario in ("all", "network"):
+                with self.assertRaisesRegex(RuntimeError, "emulator serial"):
+                    runner.run(self.options(serial="physical-device", client="okhttp", case=scenario))
             process.assert_not_called()
 
     def test_wrong_avd_and_non_root_rejected_before_any_write(self):
