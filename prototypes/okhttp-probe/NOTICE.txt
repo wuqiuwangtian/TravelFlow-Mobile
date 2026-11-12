@@ -11,3 +11,10 @@ https://github.com/JetBrains/kotlin
 The Apache License 2.0 text is bundled beside this notice. All upstream
 copyrights remain with their respective owners. The experiment's generated
 release build excludes the optional client and these debug-only assets.
+
+MiniDNS core 1.1.1 (Apache-2.0 option selected from upstream tri-license)
+Copyright 2015-2024 the original author or authors
+https://github.com/MiniDNS/minidns/tree/1.1.1
+Upstream license choice is bundled as minidns-licence.txt; the Apache text
+is the same license bundled beside this notice. Only the core wire codec
+is used; this experiment owns and closes its UDP/TCP sockets.

@@ -77,12 +77,28 @@ for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPl
 if (transportProbe === "okhttp") {
   const experimental = path.join(output, "android/app/src/debug/java/org/travelflow/p0");
   mkdirSync(experimental, {recursive: true});
-  cpSync(path.join(root, "prototypes/okhttp-probe/ProbeAsyncStreamPlugin.java"), path.join(experimental, "ProbeAsyncStreamPlugin.java"));
+  for (const name of ["ProbeAsyncStreamPlugin.java", "CancelableDnsLookup.java"]) {
+    cpSync(path.join(root, "prototypes/okhttp-probe", name), path.join(experimental, name));
+  }
+  writeFileSync(path.join(output, "android/app/src/debug/AndroidManifest.xml"), '<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/></manifest>\n');
   const notices = path.join(output, "android/app/src/debug/assets/third-party");
   mkdirSync(notices, {recursive: true});
   cpSync(path.join(root, "prototypes/okhttp-probe/LICENSE.txt"), path.join(notices, "okhttp-apache-2.0.txt"));
   cpSync(path.join(root, "prototypes/okhttp-probe/NOTICE.txt"), path.join(notices, "okhttp-notice.txt"));
-  writeFileSync(appGradle, readFileSync(appGradle, "utf8") + '\ndependencies { debugImplementation("com.squareup.okhttp3:okhttp-android:5.3.2") }\n');
+  cpSync(path.join(root, "prototypes/okhttp-probe/MINIDNS-LICENCE.txt"), path.join(notices, "minidns-licence.txt"));
+  writeFileSync(appGradle, readFileSync(appGradle, "utf8") + `
+def dnsCodecVersion = "org.minidns:minidns-core:1.1.1"
+configurations { dnsCodecCheck }
+dependencies {
+    debugImplementation("com.squareup.okhttp3:okhttp-android:5.3.2")
+    debugImplementation(dnsCodecVersion)
+    dnsCodecCheck(dnsCodecVersion)
+}
+tasks.register("exportDnsCodec", Copy) {
+    from(configurations.dnsCodecCheck) { include "minidns-core-1.1.1.jar" }
+    into(layout.buildDirectory.dir("probe-deps"))
+}
+`);
   const activity = path.join(java, "MainActivity.java");
   writeFileSync(activity, readFileSync(activity, "utf8").replace("        super.onCreate(savedInstanceState);", `        if (BuildConfig.DEBUG) {
             try {

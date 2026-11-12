@@ -6,12 +6,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import threading
 import time
 import urllib.request
 
-from lib.connect_fixture import DnsServer, HeldDns
+from lib.connect_fixture import DnsServer, CodecDns, TcpDnsServer
 
 
 def require(condition, message):
@@ -20,7 +21,7 @@ def require(condition, message):
 
 
 def run(args):
-    require(args.case == "all" or args.client == "okhttp", "TLS-only checks require the optional client")
+    require(args.case == "all" or args.client == "okhttp", "Focused checks require the optional client")
     def adb(*command, check=True):
         result = subprocess.run([str(args.adb), "-s", args.serial, *command], check=False,
                                 capture_output=True, text=True, timeout=20)
@@ -29,7 +30,7 @@ def run(args):
         return result
 
     def shell(*command, check=True):
-        return adb("shell", *command, check=check).stdout.strip()
+        return adb("shell", *(shlex.quote(part) for part in command), check=check).stdout.strip()
 
     # 所有写入之前先验证设备类型、确切AVD归属及SDK；不会执行root或重启全局ADB服务。
     require(re.fullmatch(r"emulator-[0-9]+", args.serial), "An explicit emulator serial is required")
@@ -54,10 +55,12 @@ def run(args):
     for table, chain in [("filter", "P0_SYN_PROBE"), ("nat", "P0_DNS_PROBE")]:
         require(adb("shell", "iptables", "-t", table, "-S", chain, check=False).returncode != 0, "Fixture chain already exists")
 
-    state = HeldDns()
+    require(args.case != "codec" or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
+    state = CodecDns()
     created = []
     jumps = []
     forwarded = False
+    proxy_original = None
     reports = []
 
     def iptables(table, *parts):
@@ -81,6 +84,31 @@ def run(args):
         iptables(table, "-A", chain, *action)
         iptables(table, "-I", "OUTPUT", "1", *rule)
         jumps.append((table, rule))
+
+    proxy_keys = ("http_proxy", "global_http_proxy_host", "global_http_proxy_port", "global_http_proxy_exclusion_list", "global_proxy_pac_url")
+
+    def proxy_settings():
+        rows = dict(row.split("=", 1) for row in shell("settings", "list", "global").splitlines() if "=" in row)
+        return {key: rows.get(key) for key in proxy_keys}
+
+    def restore_proxy():
+        nonlocal proxy_original
+        if proxy_original is None:
+            return
+        # Android将旧键转换为global_*配置；先让系统清除实际代理，再恢复全部设置。
+        shell("settings", "put", "global", "http_proxy", ":0")
+        end = time.monotonic() + 3
+        while proxy_settings()["global_http_proxy_host"] not in (None, ""):
+            require(time.monotonic() < end, "Temporary proxy remained active")
+            time.sleep(0.05)
+        for key in (*proxy_keys[1:], "http_proxy"):
+            value = proxy_original[key]
+            if value is None:
+                shell("settings", "delete", "global", key)
+            else:
+                shell("settings", "put", "global", key, value)
+        require(proxy_settings() == proxy_original, "Proxy settings were not restored exactly")
+        proxy_original = None
 
     def fault_snapshot():
         packets = 0
@@ -116,34 +144,53 @@ def run(args):
             self.respond(fault_snapshot())
 
         def do_POST(self):
-            if self.path != "/release" or self.headers.get("Content-Length", "0") != "0":
+            if self.headers.get("Content-Length", "0") != "0" or (self.path != "/release" and self.path.removeprefix("/mode/") not in state.MODES):
                 self.send_error(404)
                 return
-            state.release()
+            if self.path == "/release":
+                state.release()
+            else:
+                state.reset(self.path.removeprefix("/mode/"))
             self.respond(state.snapshot())
 
     try:
         with ExitStack() as stack:
             dns = stack.enter_context(DnsServer(state))
+            tcp_dns = stack.enter_context(TcpDnsServer(state, 18516))
             control = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", 18517), ControlHandler))
-            for server in (dns, control):
+            for server in (dns, tcp_dns, control):
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 stack.callback(server.shutdown)
             stack.callback(state.release)
-            scenarios = ("baseline", "syn", "dns-system", "dns", "dns-deadline", "dns-tls", "baseline") if args.client == "okhttp" else ("baseline", "syn", "dns", "dns-deadline", "baseline")
-            if args.case == "tls":
-                scenarios = ("dns-tls",)
+            scenarios = ("baseline", "syn", "dns-system", "dns", "dns-deadline", "dns-codec", "dns-tls", "baseline") if args.client == "okhttp" else ("baseline", "syn", "dns", "dns-deadline", "baseline")
+            if args.expect_sdk >= 29:
+                scenarios = tuple(item for item in scenarios if item != "dns-codec")
+            if args.case in ("tls", "codec"):
+                scenarios = ("dns-tls" if args.case == "tls" else "dns-codec",)
+            if args.case == "proxy":
+                scenarios = ("proxy-guard", "baseline")
             for scenario in scenarios:
                 state.reset()
-                if scenario == "syn":
+                if scenario == "proxy-guard":
+                    original = proxy_settings()
+                    require(original["http_proxy"] in (None, ":0", "") and
+                            original["global_http_proxy_host"] in (None, "") and
+                            original["global_proxy_pac_url"] in (None, ""), "Do not replace an existing proxy")
+                    proxy_original = original
+                    shell("settings", "put", "global", "http_proxy", "127.0.0.1:18510")
+                elif scenario == "syn":
                     make_rule("filter", "P0_SYN_PROBE",
                               ["-p", "tcp", "-d", "10.0.2.2", "--dport", "18510", "--syn", "-m", "owner", "--uid-owner", uid, "-j", "P0_SYN_PROBE"],
                               ["-j", "DROP"])
                 elif scenario.startswith("dns"):
-                    # -dns-server只配置这一台AVD的DNS；规则仅将该虚拟地址的UDP53送到回环测试服务。
+                    # -dns-server只配置此AVD；UDP与TCP53均仅送到固定回环对端。
                     make_rule("nat", "P0_DNS_PROBE",
                               ["-p", "udp", "-d", "10.0.2.3", "--dport", "53", "-j", "P0_DNS_PROBE"],
                               ["-p", "udp", "-j", "DNAT", "--to-destination", "10.0.2.2:18516"])
+                    iptables("nat", "-A", "P0_DNS_PROBE", "-p", "tcp", "-j", "DNAT", "--to-destination", "10.0.2.2:18516")
+                    tcp_rule = ["-p", "tcp", "-d", "10.0.2.3", "--dport", "53", "-j", "P0_DNS_PROBE"]
+                    iptables("nat", "-I", "OUTPUT", "1", *tcp_rule)
+                    jumps.append(("nat", tcp_rule))
                 adb("shell", "am", "force-stop", "--user", "0", "org.travelflow.p0")
                 adb("shell", "am", "start", "--user", "0", "-n", "org.travelflow.p0/.MainActivity")
                 end = time.monotonic() + 8
@@ -165,12 +212,14 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                command = ["node", str(Path(__file__).with_name("check-android-async.mjs")), "--port", str(args.port)] if scenario == "dns-tls" else [
+                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs"}
+                command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
-                result = subprocess.run(command, text=True, capture_output=True, timeout=100 if scenario == "dns-tls" else 40)
+                result = subprocess.run(command, text=True, capture_output=True, timeout=100 if scenario in ("dns-tls", "dns-codec") else 40)
                 require(result.returncode == 0, result.stderr or result.stdout)
                 reports.append(json.loads(result.stdout))
                 remove_rules()
+                restore_proxy()
     except Exception:
         print(json.dumps({"fixtureAssertionsPassed": False, "experiments": reports}, indent=2))
         raise
@@ -182,8 +231,11 @@ def run(args):
                 adb("shell", "am", "force-stop", "--user", "0", "org.travelflow.p0", check=False)
                 remove_rules()
             finally:
-                if forwarded:
-                    adb("forward", "--remove", f"tcp:{args.port}")
+                try:
+                    restore_proxy()
+                finally:
+                    if forwarded:
+                        adb("forward", "--remove", f"tcp:{args.port}")
 
     print(json.dumps({"fixtureAssertionsPassed": True, "sdk": args.expect_sdk, "avd": args.expect_avd, "client": args.client,
                       "scope": "isolated_emulator_fixed_synthetic_endpoints", "experiments": reports}, indent=2))
@@ -197,7 +249,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18518), "Choose a separate CDP port")
     run(options)

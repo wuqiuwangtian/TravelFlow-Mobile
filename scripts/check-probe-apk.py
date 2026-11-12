@@ -78,6 +78,9 @@ def check(aapt2, debug, release, fixtures, target="emulator", transport_probe="p
             ca_files = []
             dex_files = [entry.filename for entry in archive.infolist() if re.fullmatch(r"classes[0-9]*\.dex", entry.filename)]
             has_client = any(b"Lokhttp3/OkHttpClient;" in archive.read(entry) for entry in dex_files)
+            has_codec = any(b"Lorg/minidns/dnsmessage/DnsMessage;" in archive.read(entry) for entry in dex_files)
+            assert has_codec == (name == "debug" and transport_probe == "okhttp"), "Unexpected DNS codec packaging"
+            assert ("android.permission.ACCESS_NETWORK_STATE" in manifest) == (name == "debug" and transport_probe == "okhttp"), "Unexpected network-state permission"
             has_experiment = any(b"Lorg/travelflow/p0/ProbeAsyncStreamPlugin;" in archive.read(entry) for entry in dex_files)
             assert (has_client and has_experiment) if name == "debug" and transport_probe == "okhttp" else not (has_client or has_experiment), "Unexpected experimental client packaging"
             native_libraries = [entry.filename for entry in archive.infolist() if entry.filename.startswith("lib/") and entry.filename.endswith(".so")]
@@ -106,6 +109,7 @@ def check(aapt2, debug, release, fixtures, target="emulator", transport_probe="p
                 with ZipFile(apk) as archive:
                     assert "assets/third-party/okhttp-apache-2.0.txt" in archive.namelist(), "Missing experimental license"
                     assert "assets/third-party/okhttp-notice.txt" in archive.namelist(), "Missing experimental notice"
+                    assert "assets/third-party/minidns-licence.txt" in archive.namelist(), "Missing DNS codec license choice"
         else:
             assert not ca_files and "p0_test_ca" not in resources, "test CA leaked into release"
             assert "domain-config" not in config and "cleartextTrafficPermitted=true" not in config, "debug network exception leaked into release"

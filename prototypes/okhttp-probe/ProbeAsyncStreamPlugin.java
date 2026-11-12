@@ -2,6 +2,9 @@ package org.travelflow.p0;
 
 import android.annotation.TargetApi;
 import android.net.DnsResolver;
+import android.net.ConnectivityManager;
+import android.net.LinkProperties;
+import android.net.Network;
 import android.os.Build;
 import android.os.CancellationSignal;
 import android.os.SystemClock;
@@ -10,16 +13,15 @@ import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InterruptedIOException;
-import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.util.ArrayList;
 import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -38,7 +40,7 @@ import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
-/** 可选debug机制对照；旧系统UDP仅识别固定实验协议，不是正式DNS解析器。 */
+/** 可选debug机制对照；旧系统复用MiniDNS报文，网络范围仍限隔离实验。 */
 @CapacitorPlugin(name = "ProbeAsyncStream")
 public class ProbeAsyncStreamPlugin extends Plugin {
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -64,6 +66,8 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         final AtomicReference<String> reason = new AtomicReference<>();
         volatile Call call;
         volatile Lookup lookup;
+        Network network;
+        List<InetSocketAddress> dnsServers;
         volatile String stage = "connecting";
         volatile int status;
         volatile String dnsHost = "";
@@ -120,9 +124,9 @@ public class ProbeAsyncStreamPlugin extends Plugin {
                 public void cancel() { /* 保留阻塞式系统解析，作为仅更换HTTP库的对照。 */ }
             };
         } else if (Build.VERSION.SDK_INT >= 29) {
-            lookup = new PlatformLookup();
+            lookup = new PlatformLookup(job.network);
         } else {
-            lookup = new FixtureLookup();
+            lookup = new CodecLookup(job);
         }
         resolutions.incrementAndGet();
         job.lookup = lookup;
@@ -145,6 +149,15 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         workers.incrementAndGet();
         String type = "error", detail = "UNEXPECTED_EOF";
         try {
+            ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
+            job.network = manager.getActiveNetwork();
+            LinkProperties links = job.network == null ? null : manager.getLinkProperties(job.network);
+            if (links == null) throw new IOException("NETWORK_UNAVAILABLE");
+            // 尚未验证代理／加密DNS，明确拒绝，避免实验兼容层静默绕开用户配置。
+            if (manager.getDefaultProxy() != null) throw new IOException("PROXY_UNVERIFIED");
+            if (Build.VERSION.SDK_INT >= 28 && links.isPrivateDnsActive()) throw new IOException("PRIVATE_DNS_UNVERIFIED");
+            job.dnsServers = new ArrayList<>();
+            for (InetAddress server : links.getDnsServers()) job.dnsServers.add(new InetSocketAddress(server, 53));
             String host = "dns".equals(transport) ? "tf" + UUID.randomUUID().toString().replace("-", "") + ".p0-dns.invalid" :
                 transport.startsWith("dns-") ? "valid.p0-dns.invalid" : ProbeEndpoint.HOST;
             if (host.endsWith(".p0-dns.invalid")) job.dnsHost = host;
@@ -158,7 +171,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
                 catch (Exception failure) { throw new IOException("CREDENTIAL_UNAVAILABLE"); }
                 request.header("Authorization", "Bearer " + credential);
             }
-            OkHttpClient client = base.newBuilder().dns(name -> resolve(job, name, resolver)).build();
+            OkHttpClient client = base.newBuilder().socketFactory(job.network.getSocketFactory()).dns(name -> resolve(job, name, resolver)).build();
             job.call = client.newCall(request.build());
             if (job.reason.get() != null) return;
             try (Response response = job.call.execute()) {
@@ -186,7 +199,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         } catch (SSLException error) { detail = "TLS_FAILED";
         } catch (UnknownHostException error) { detail = "DNS_FAILED";
         } catch (InterruptedIOException error) { detail = "TIMEOUT";
-        } catch (IOException error) { detail = Set.of("HTTP_STATUS", "CONTENT_TYPE", "STREAM_LIMIT", "CREDENTIAL_UNAVAILABLE").contains(error.getMessage() == null ? "" : error.getMessage()) ? error.getMessage() : "NETWORK_OR_PROTOCOL";
+        } catch (IOException error) { detail = Set.of("HTTP_STATUS", "CONTENT_TYPE", "STREAM_LIMIT", "CREDENTIAL_UNAVAILABLE", "NETWORK_UNAVAILABLE", "PROXY_UNVERIFIED", "PRIVATE_DNS_UNVERIFIED").contains(error.getMessage() == null ? "" : error.getMessage()) ? error.getMessage() : "NETWORK_OR_PROTOCOL";
         } catch (Exception error) { detail = "UNEXPECTED_FAILURE";
         } finally {
             job.deadline.cancel(false);
@@ -212,18 +225,20 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         Job job = active.get(); value.put("dnsHost", job == null ? "" : job.dnsHost);
         value.put("resolutions", resolutions.get()); value.put("dnsSockets", dnsSockets.get());
         value.put("httpCalls", base.dispatcher().runningCallsCount()); value.put("connections", base.connectionPool().connectionCount());
-        value.put("resolver", Build.VERSION.SDK_INT >= 29 ? "android-dnsresolver" : "synthetic-udp-only"); call.resolve(value);
+        value.put("resolver", Build.VERSION.SDK_INT >= 29 ? "android-dnsresolver" : "minidns-core-owned-io"); call.resolve(value);
     }
 
     @TargetApi(29)
     private static final class PlatformLookup implements Lookup {
         final CancellationSignal signal = new CancellationSignal();
+        final Network network;
+        PlatformLookup(Network network) { this.network = network; }
         boolean done;
         List<InetAddress> result;
         UnknownHostException error;
         public List<InetAddress> lookup(String host) throws UnknownHostException {
             if (signal.isCanceled()) throw new UnknownHostException("Cancelled");
-            DnsResolver.getInstance().query(null, host, DnsResolver.FLAG_EMPTY,
+            DnsResolver.getInstance().query(network, host, DnsResolver.FLAG_EMPTY,
                 Runnable::run, signal, new DnsResolver.Callback<List<InetAddress>>() {
                     public void onAnswer(List<InetAddress> answer, int code) { finish(answer, code == 0 ? null : new UnknownHostException("DNS response failed")); }
                     public void onError(DnsResolver.DnsException failure) { finish(null, new UnknownHostException("DNS query failed")); }
@@ -244,42 +259,25 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         }
     }
 
-    /** 仅固定模拟器对端的A记录协议；不实现公共DNS、CNAME、搜索域、TCP或网络切换。 */
-    private final class FixtureLookup implements Lookup {
-        DatagramSocket socket;
-        boolean cancelled;
-        synchronized void closeSocket() { if (socket != null) { socket.close(); socket = null; dnsSockets.decrementAndGet(); } }
-        public synchronized void cancel() { cancelled = true; closeSocket(); }
+    private final class CodecLookup implements Lookup {
+        final CancelableDnsLookup delegate;
+        CodecLookup(Job job) {
+            delegate = new CancelableDnsLookup(job.dnsServers, new CancelableDnsLookup.Binding() {
+                public void bind(DatagramSocket socket) throws IOException { job.network.bindSocket(socket); }
+                public void bind(Socket socket) throws IOException { job.network.bindSocket(socket); }
+                public void opened() { dnsSockets.incrementAndGet(); }
+                public void closed() { dnsSockets.decrementAndGet(); }
+            });
+        }
+        public void cancel() { delegate.cancel(); }
         public List<InetAddress> lookup(String host) throws UnknownHostException {
-            DatagramSocket current;
-            try {
-                synchronized (this) {
-                    if (cancelled) throw new UnknownHostException("Cancelled");
-                    current = socket = new DatagramSocket(); dnsSockets.incrementAndGet();
-                }
-                current.connect(InetAddress.getByAddress(new byte[]{10, 0, 2, 3}), 53);
-                current.setSoTimeout(10000);
-                int transaction = UUID.randomUUID().hashCode() & 0xffff;
-                ByteArrayOutputStream bytes = new ByteArrayOutputStream(); DataOutputStream query = new DataOutputStream(bytes);
-                query.writeShort(transaction); query.writeShort(0x0100); query.writeShort(1); query.writeShort(0); query.writeShort(0); query.writeShort(0);
-                for (String label : host.split("\\.")) { byte[] value = label.getBytes(StandardCharsets.US_ASCII); query.writeByte(value.length); query.write(value); }
-                query.writeByte(0); query.writeShort(1); query.writeShort(1);
-                byte[] packet = bytes.toByteArray(); current.send(new DatagramPacket(packet, packet.length));
-                byte[] response = new byte[512]; DatagramPacket reply = new DatagramPacket(response, response.length); current.receive(reply);
-                int offset = packet.length;
-                if (reply.getLength() != offset + 16 || unsigned(response, 0) != transaction || unsigned(response, 2) != 0x8180 ||
-                    unsigned(response, 4) != 1 || unsigned(response, 6) != 1 || unsigned(response, 8) != 0 || unsigned(response, 10) != 0 ||
-                    !Arrays.equals(Arrays.copyOfRange(packet, 12, offset), Arrays.copyOfRange(response, 12, offset)) ||
-                    unsigned(response, offset) != 0xc00c || unsigned(response, offset + 2) != 1 || unsigned(response, offset + 4) != 1 ||
-                    unsigned(response, offset + 10) != 4) throw new UnknownHostException("Not a fixed fixture A response");
-                return List.of(InetAddress.getByAddress(Arrays.copyOfRange(response, offset + 12, offset + 16)));
-            } catch (IOException failure) {
-                UnknownHostException error = new UnknownHostException("Fixture DNS unavailable"); error.initCause(failure); throw error;
-            } finally { closeSocket(); }
+            try { return delegate.lookup(host); }
+            catch (IOException failure) {
+                UnknownHostException error = new UnknownHostException("DNS codec lookup failed");
+                error.initCause(failure); throw error;
+            }
         }
     }
-
-    private static int unsigned(byte[] bytes, int offset) { return ((bytes[offset] & 255) << 8) | (bytes[offset + 1] & 255); }
 
     @Override protected void handleOnDestroy() {
         Job job = active.get(); if (job != null) stop(job, "CANCELLED");

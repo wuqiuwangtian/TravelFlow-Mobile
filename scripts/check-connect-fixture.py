@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from lib.connect_fixture import DnsServer, HeldDns, positive_reply
+from lib.connect_fixture import DnsServer, HeldDns, CodecDns, TcpDnsServer, positive_reply
 
 
 def query(name, kind=1):
@@ -72,6 +72,33 @@ class DnsProtocol(unittest.TestCase):
                 state.release()
                 server.shutdown()
                 worker.join(2)
+
+
+class TcpLifecycle(unittest.TestCase):
+    def test_loopback_peer_close_restart_and_exclusive_listener(self):
+        state, port = CodecDns(), 0
+        for _ in range(2):
+            with TcpDnsServer(state, port) as server:
+                port = server.server_address[1]
+                with self.assertRaises(OSError):
+                    TcpDnsServer(state, port)
+                worker = threading.Thread(target=server.serve_forever, daemon=True)
+                worker.start()
+                try:
+                    with socket.create_connection(server.server_address, timeout=2) as client:
+                        packet = query("valid.p0-dns.invalid")
+                        client.sendall(struct.pack("!H", len(packet)) + packet)
+                        reply = b""
+                        while True:
+                            part = client.recv(4096)
+                            if not part:
+                                break
+                            reply += part
+                        self.assertEqual(struct.unpack("!H", reply[:2])[0], len(reply) - 2)
+                        self.assertEqual(reply[2:], positive_reply(packet))
+                finally:
+                    server.shutdown()
+                    worker.join(2)
 
 
 spec = importlib.util.spec_from_file_location("connect_runner", Path(__file__).with_name("run-android-connect.py"))
