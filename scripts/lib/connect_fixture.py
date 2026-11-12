@@ -37,6 +37,12 @@ def negative_reply(packet):
     return packet[:2] + struct.pack("!5H", 0x8183, 1, 0, 0, 0) + query
 
 
+def positive_reply(packet):
+    _, kind, query = question(packet)
+    answer = b"\xc0\x0c" + struct.pack("!2HIH", 1, 1, 0, 4) + b"\x0a\x00\x02\x02" if kind == 1 else b""
+    return packet[:2] + struct.pack("!5H", 0x8180, 1, int(bool(answer)), 0, 0) + query + answer
+
+
 class HeldDns:
     def __init__(self):
         self.lock = threading.Lock()
@@ -51,19 +57,20 @@ class HeldDns:
         except (ValueError, UnicodeError, struct.error):
             return
         controlled = re.fullmatch(r"tf[0-9a-f]{32}\.p0-dns\.invalid", name) and kind in (1, 28)
+        positive = name == "valid.p0-dns.invalid" and kind in (1, 28)
         with self.lock:
-            if controlled:
-                self.queries.append({"type": kind})
-                if self.hold:
-                    self.pending.append((sock, address, reply))
+            if controlled or positive:
+                self.queries.append({"type": kind, "name": name})
+                if controlled and self.hold:
+                    self.pending.append((sock, address, reply, name))
                     return
-        sock.sendto(reply, address)
+        sock.sendto(positive_reply(packet) if positive else reply, address)
 
     def release(self):
         with self.lock:
             self.hold = False
             pending, self.pending = self.pending, []
-        for sock, address, reply in pending:
+        for sock, address, reply, _ in pending:
             sock.sendto(reply, address)
 
     def reset(self):
@@ -75,7 +82,7 @@ class HeldDns:
 
     def snapshot(self):
         with self.lock:
-            return {"queries": list(self.queries), "held": len(self.pending), "released": not self.hold}
+            return {"queries": list(self.queries), "held": len(self.pending), "heldNames": [row[3] for row in self.pending], "released": not self.hold}
 
 
 class DnsServer(socketserver.ThreadingUDPServer):

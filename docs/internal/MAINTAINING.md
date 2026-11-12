@@ -272,11 +272,40 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 工具依次冷启动正常HTTP、SYN丢包、DNS取消、DNS总时限及恢复后的正常HTTP，每次按当前PID转发自己的CDP。SYN规则只匹配本包UID及10.0.2.2:18510的新建连接，须先实际看到丢包计数与内核SYN_SENT；DNS仅将此AVD的10.0.2.3:53 UDP转发到10.0.2.2:18516的宿主回环对端，看到固定虚构名A／AAAA查询才取消。DNS释放时仅返回NXDOMAIN，不访问真实DNS、不发鉴权。终态后核对SYN_SENT已关闭、无追加事件、账本保留和幂等重放；finally只删除本轮新增跳转／专用链、转发并强停本包，已有链不清理。
 
-**读结果时分开两项：**`fixtureAssertionsPassed=true`证明实验和数据保护断言通过；`promptCancellationPassed`才表示1秒内真正取消是否满足。当前API24／35的SYN为true、DNS为false；DNS在挂起超过1.2秒时仍无终态，释放后才结束。dns-deadline在越过原6000ms阈值、额外等待6500ms后仍无终态，不能将DEADLINE信号当线程已退出。实验刻意释放查询以结束诊断，没有测出默认DNS最坏等待时间。控制器返回0不代表原传输所有取消目标通过；不得为绿灯改阈值或提前伪造终态。
+**读结果时分开两项：**`fixtureAssertionsPassed=true`证明实验和数据保护断言通过；`promptCancellationPassed`才表示1秒内真正取消是否满足。原ProbeStream对照在API24／35的SYN为true、DNS为false；DNS在挂起超过1.2秒时仍无终态，释放后才结束。dns-deadline在越过原6000ms阈值、额外等待6500ms后仍无终态，不能将DEADLINE信号当线程已退出。实验刻意释放查询以结束诊断，没有测出默认DNS最坏等待时间。控制器返回0不代表原传输所有取消目标通过；不得为绿灯改阈值或提前伪造终态。
 
 每次完整诊断在SYN与DNS取消期间各追加123分并重放，正常基线与deadline不写账本；已有记录逐条保护。初始金额不要求0，失败后的已保存记录也不能清掉；本轮具体计数、规则错误与完整TLS／HTTP回归见PROJECT_STATUS。结束后确认专用链不存在、自己的转发与对端停止，再关闭自己的AVD，保留数据；root adbd只在该隔离实例存活期间使用。
 
 DNS入口位于原ProbeStream，但仅debug＋emulator可用，固定随机`.p0-dns.invalid`后缀且不接收业务URL；USB／release返回INVALID_OPTIONS，不添加凭据。生成器开启BuildConfig，编译期release移除DNS目标字符串，check-probe-apk.py对实际release DEX再检查；debug CA仍仅原固定IP。不要将本实验配置安装到用户手机或据此调用真实供应商。
+
+## 可选可取消解析与客户端对照
+
+这是上一节的独立debug对照，原页面按钮仍调用ProbeStream。只有显式`--transport-probe okhttp`才加入ProbeAsyncStream与固定OkHttp Android5.3.2 debug依赖及许可／NOTICE，默认emulator、usb和所有release不加入实验客户端；不是正式选型。使用上一节两台明确的专用AVD、DNS启动参数、root adbd及既有数据，不覆盖或清库。
+
+必须生成匹配的独立证书和工程，目录应不存在：
+
+```sh
+python3 scripts/prepare-probe-tls.py --output /tmp/travelflow-async-tls --transport-probe okhttp
+node scripts/prepare-android-probe.mjs --output /tmp/travelflow-async-app --tls-fixtures /tmp/travelflow-async-tls --transport-probe okhttp
+```
+
+仍按前文JDK21／SDK36流程构建debug、unsigned release和完整debug lint。打包检查命令额外添加`--transport-probe okhttp`，对端使用该新TLS目录启动。此配置仅emulator可用，usb＋okhttp或证书／工程配置混用在创建目标目录前拒绝；不要用上轮默认CA目录假装匹配。
+
+debug仅在原IP域之外增加精确`valid.p0-dns.invalid`的测试CA信任，明确includeSubdomains=false、cleartextTrafficPermitted=false；叶证书增加该DNS SAN，错误／过期／不信任证书仍独立。release只保留系统CA和禁明文，实际APK还检查实验DNS、插件、OkHttp客户端不进入release。许可与NOTICE只在debug资产中，未注入系统CA。扩大DNS子域信任的实际APK负例已被拒绝、未安装。恢复APK因增量重打包布局变化而摘要不同，已核对全部条目内容及同一有效签名；实际运行包与恢复包摘要分别见PROJECT_STATUS。
+
+向已核对的专用AVD保留数据更新安装debug，保持上一节的基础回显／TLS服务运行，然后：
+
+```sh
+python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5558 --expect-avd travelflow_p0_connect35 --expect-sdk 35 --port 19238 --client okhttp
+```
+
+API24替换为其明确实例5560、travelflow_p0_connect24、SDK24及端口19239。完整对照包含普通HTTP、SYN、保留系统解析的对照、自动可取消解析、DNS总时限、域名HTTPS／流式边界及恢复后的普通HTTP。`dns-system`预期保留已知取消不足，不能把`fixtureAssertionsPassed`当所有分支取消通过；自动分支的DNS取消必须一秒内，6000ms阈值后6500ms检查时须已发终态。自动分支资源计数归零后、DNS对端尚未释放时，还须成功启动并完成新HTTP请求。每组完整诊断在三次取消实验各追加123分／幂等重放，初始账本不限；原条目须保持。
+
+API29+自动分支使用平台DnsResolver与CancellationSignal。API24自动分支只识别固定虚构名和固定对端的UDP A记录，关闭自有套接字完成取消；**不能直接用作通用旧系统DNS客户端**。固定valid域正例返回10.0.2.2，AAAA返回无记录；随机tf前缀继续挂起，其他名字立即否定、不转发。以当前随机域名关联查询，避免旧重试或缓存制造假结果。新客户端通过可注入Dns接口使用解析结果，URL始终保留域名；服务观测必须同时记录正确Host和SNI，三种错误证书不得有HTTP请求。
+
+只复验凭据／TLS／SSE的增补，可在完整命令末尾加`--case tls`，不新增账目；会移除／重建专用公开虚构凭据。预期缺失凭据不发请求、401／307／503、证书拒绝、分块／截断／Last-Event-ID恢复、握手和读取取消／超时、总时限、立即取消、并发和错误ID拒绝均满足断言，请求结束后工作项／解析／DNS套接字／HTTP调用／连接计数归零。它只证明固定对端上的组合能力；真实供应商、代理、切网和正式凭据策略仍未完成。
+
+本轮最终专用API35为10条／1230分，API24为7条／861分，具体来源及原客户端回归见PROJECT_STATUS；再次复验按已有数据计算，不能清库凑期望值。最后按上一节清理本轮链、自己的转发及服务，关闭自己的实例，保留数据。若需再次生成，临时目录和两天证书都不作为接续前提。
 
 ## 契约与设计快照更新
 
@@ -287,7 +316,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；下一项验证可取消解析与传输组合，收口正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及固定UDP的取消／TLS组合对照；下一项比较可维护的旧系统通用解析方案，补代理／网络选择边界，收口正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

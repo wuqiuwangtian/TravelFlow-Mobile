@@ -1,0 +1,13 @@
+Optional TravelFlow P0 debug experiment; no production dependency decision.
+
+OkHttp Android 5.3.2 (Apache-2.0)
+https://github.com/square/okhttp/tree/parent-5.3.2
+
+Its Maven dependency graph includes Okio JVM 3.16.4 and Kotlin stdlib 2.2.21
+(Apache-2.0), plus AndroidX components already used by the Android candidate.
+https://github.com/square/okio
+https://github.com/JetBrains/kotlin
+
+The Apache License 2.0 text is bundled beside this notice. All upstream
+copyrights remain with their respective owners. The experiment's generated
+release build excludes the optional client and these debug-only assets.

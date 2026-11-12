@@ -60,7 +60,9 @@ class Handler(BaseHTTPRequestHandler):
         started = time.monotonic()
         authorized = self.headers.get("Authorization") == "Bearer fixture-stream-token"
         record = {"mode": mode, "after": int(after), "sent": [], "outcome": "running",
-                  "authorizationPresent": bool(self.headers.get("Authorization")), "authorized": authorized}
+                  "authorizationPresent": bool(self.headers.get("Authorization")), "authorized": authorized,
+                  "fixtureHost": self.headers.get("Host") if self.headers.get("Host", "").split(":")[0] in {self.server.probe_host, "valid.p0-dns.invalid"} else "unexpected",
+                  "fixtureSni": getattr(self.connection, "fixture_sni", None)}
         remember(request_id, record)
         self.close_connection = True
         if isinstance(self.connection, ssl.SSLSocket) and not authorized:
@@ -219,6 +221,7 @@ def serve(fixtures=None, target="emulator"):
                 context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
                 context.minimum_version = ssl.TLSVersion.TLSv1_2
                 context.load_cert_chain(fixtures / f"{name}.pem", fixtures / f"{name}.key")
+                context.set_servername_callback(lambda sock, server_name, _: setattr(sock, "fixture_sni", server_name if server_name == "valid.p0-dns.invalid" else "unexpected"))
                 tls.tls_context = context
                 extra.append(tls)
             extra.append(stack.enter_context(HandshakeServer(("127.0.0.1", 18515), HandshakeSink)))

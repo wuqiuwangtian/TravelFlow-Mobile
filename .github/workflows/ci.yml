@@ -7,12 +7,18 @@ permissions:
   contents: read
 jobs:
   android-probe:
-    name: Contract, domain and Android (${{ matrix.target }})
+    name: Contract, domain and Android (${{ matrix.target }}, ${{ matrix.transport }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        target: [emulator, usb]
+        include:
+          - target: emulator
+            transport: platform
+          - target: usb
+            transport: platform
+          - target: emulator
+            transport: okhttp
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -39,6 +45,7 @@ jobs:
           node --check scripts/check-android-compat.mjs
           node --check scripts/check-android-local.mjs
           node --check scripts/check-android-connect.mjs
+          node --check scripts/check-android-async.mjs
           node --check scripts/lib/android-probe-cdp.mjs
           node --check scripts/manage-probe-reverse.mjs
           python -m py_compile scripts/android_probe_service.py scripts/prepare-probe-tls.py scripts/check-probe-apk.py scripts/inspect-android-provider.py scripts/inspect-webview-apk.py scripts/run-android-connect.py scripts/lib/connect_fixture.py
@@ -47,8 +54,8 @@ jobs:
       - run: pnpm audit --audit-level=moderate
       - name: Prepare independent candidate project
         run: |
-          python scripts/prepare-probe-tls.py --output "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}"
-          node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe" --tls-fixtures "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}"
+          python scripts/prepare-probe-tls.py --output "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}" --transport-probe "${{ matrix.transport }}"
+          node scripts/prepare-android-probe.mjs --output "$RUNNER_TEMP/android-probe" --tls-fixtures "$RUNNER_TEMP/probe-tls" --target "${{ matrix.target }}" --transport-probe "${{ matrix.transport }}"
       - name: Audit isolated candidate dependencies
         run: pnpm --dir "$RUNNER_TEMP/android-probe" audit --audit-level=moderate
       - name: Ensure Android build packages
@@ -67,3 +74,4 @@ jobs:
           --release "$RUNNER_TEMP/android-probe/android/app/build/outputs/apk/release/app-release-unsigned.apk"
           --tls-fixtures "$RUNNER_TEMP/probe-tls"
           --target "${{ matrix.target }}"
+          --transport-probe "${{ matrix.transport }}"

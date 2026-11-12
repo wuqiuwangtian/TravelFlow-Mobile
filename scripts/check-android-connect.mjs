@@ -3,17 +3,18 @@ import assert from "node:assert/strict";
 import {setTimeout as delay} from "node:timers/promises";
 import {connectProbe} from "./lib/android-probe-cdp.mjs";
 
-const [portFlag, port, caseFlag, scenario] = process.argv.slice(2);
-assert.ok(process.argv.length === 6 && portFlag === "--port" && caseFlag === "--case" &&
-  ["baseline", "syn", "dns", "dns-deadline"].includes(scenario),
-  "Usage: check-android-connect.mjs --port PORT --case baseline|syn|dns|dns-deadline");
+const [portFlag, port, caseFlag, scenario, clientFlag, client = "platform"] = process.argv.slice(2);
+assert.ok([6, 8].includes(process.argv.length) && portFlag === "--port" && caseFlag === "--case" &&
+  ["baseline", "syn", "dns", "dns-system", "dns-deadline"].includes(scenario) &&
+  (!clientFlag || clientFlag === "--client") && ["platform", "okhttp"].includes(client),
+  "Usage: check-android-connect.mjs --port PORT --case baseline|syn|dns|dns-system|dns-deadline [--client platform|okhttp]");
 const page = await connectProbe(port);
 const control = async (path, method = "GET") => {
   const response = await fetch(`http://127.0.0.1:18517/${path}`, {method, signal: AbortSignal.timeout(4000)});
   assert.equal(response.status, 200);
   return response.json();
 };
-const report = {scenario};
+const report = {scenario, client};
 const requestId = `connect_${crypto.randomUUID()}`;
 const state = "window.__connectionCheck";
 try {
@@ -21,7 +22,7 @@ try {
   await page.evaluate(`(async () => {
     const api = await import('./capacitor-core.js');
     if (api.Capacitor.getPlatform() !== 'android') throw Error('Not native Android');
-    const stream = api.registerPlugin('ProbeStream');
+    const stream = api.registerPlugin(${JSON.stringify(client === "okhttp" ? "ProbeAsyncStream" : "ProbeStream")});
     ${state} = {stream, store: api.registerPlugin('ProbeStore'), events: []};
     ${state}.listener = await stream.addListener('stream', event => {
       if (event.requestId === ${JSON.stringify(requestId)}) {
@@ -31,13 +32,17 @@ try {
     });
   })()`);
   const before = await page.evaluate(`${state}.store.read()`);
-  await page.evaluate(`${state}.stream.start(${JSON.stringify({requestId, transport: scenario.startsWith("dns") ? "dns" : "http"})})`);
+  await page.evaluate(`${state}.stream.start(${JSON.stringify({requestId, transport: scenario.startsWith("dns") ? "dns" : "http", resolver: scenario === "dns-system" ? "system" : "auto"})})`);
   if (scenario !== "baseline") {
     const end = Date.now() + 5000;
     while (true) {
       report.faultBeforeCancel = await control("state");
-      if (scenario === "syn" ? report.faultBeforeCancel.synPackets > 0 && report.faultBeforeCancel.synSockets > 0 :
-          report.faultBeforeCancel.dns.held > 0) break;
+      if (client === "okhttp" && scenario.startsWith("dns")) {
+        const resources = await page.evaluate(`${state}.stream.resources()`);
+        report.expectedDnsHost = resources.dnsHost;
+      }
+      const dnsObserved = client === "okhttp" ? Boolean(report.expectedDnsHost && report.faultBeforeCancel.dns.heldNames.includes(report.expectedDnsHost)) : report.faultBeforeCancel.dns.held > 0;
+      if (scenario === "syn" ? report.faultBeforeCancel.synPackets > 0 && report.faultBeforeCancel.synSockets > 0 : dnsObserved) break;
       assert.ok(Date.now() < end, "Required SYN_SENT or held DNS query was not observed");
       assert.equal((await page.evaluate(`${state}.events`)).length, 0, "Request ended before controlled fault");
       await delay(20);
@@ -67,13 +72,32 @@ try {
       assert.equal(local.once.entries.length, before.entries.length + 1);
       const entries = new Map(local.once.entries.map(entry => [entry.id, entry]));
       for (const entry of before.entries) assert.deepEqual(entries.get(entry.id), entry);
-      if (scenario === "dns") {
+      if (["dns", "dns-system"].includes(scenario)) {
         await delay(1200);
         report.terminalBeforeDnsRelease = await page.evaluate(`${state}.events`);
       }
     }
     if (scenario.startsWith("dns")) {
       report.dnsHoldObservedMs = Date.now() - stoppedAt;
+      if (client === "okhttp" && scenario !== "dns-system") {
+        report.resourcesBeforeDnsRelease = await page.evaluate(`${state}.stream.resources()`);
+        const resources = report.resourcesBeforeDnsRelease;
+        assert.equal(resources.active, false);
+        for (const key of ["workers", "resolutions", "dnsSockets", "httpCalls", "connections"]) assert.equal(resources[key], 0, key);
+        assert.equal(report.terminalBeforeDnsRelease.length, 1, "Candidate still waits for DNS release");
+        const reuse = await page.evaluate(`(async () => {
+          const id = 'reuse_${crypto.randomUUID()}';
+          ${state}.reuseEvents = [];
+          ${state}.reuseListener = await ${state}.stream.addListener('stream', event => {
+            if (event.requestId === id) ${state}.reuseEvents.push(event);
+          });
+          await ${state}.stream.start({requestId: id, transport: 'http'});
+          return id;
+        })()`);
+        report.reusedBeforeDnsRelease = await page.until(`${state}.reuseEvents.some(e => e.type !== 'chunk') ? ${state}.reuseEvents : null`);
+        assert.equal(report.reusedBeforeDnsRelease.at(-1).type, "done", reuse);
+        await page.evaluate(`${state}.reuseListener.remove()`);
+      }
       report.released = await control("release", "POST");
     }
     const events = await page.until(`${state}.events.some(e => e.type !== 'chunk') ? ${state}.events : null`, 10000);
@@ -85,6 +109,10 @@ try {
     report.cancelToTerminalMs = scenario === "dns-deadline" ? null :
       await page.evaluate(`${state}.terminalAt - ${state}.cancelAt`);
     report.promptCancellationPassed = scenario === "dns-deadline" ? null : report.cancelToTerminalMs < 1000;
+    if (client === "okhttp" && scenario !== "dns-system") {
+      if (scenario === "dns-deadline") assert.ok(events[0].elapsedMs >= 5900 && events[0].elapsedMs < 6500);
+      else assert.equal(report.promptCancellationPassed, true, "Candidate must really cancel within one second");
+    }
     report.faultAfterTerminal = await control("state");
     assert.equal(report.faultAfterTerminal.synSockets, 0, "Socket remained in SYN_SENT after terminal");
   } else {

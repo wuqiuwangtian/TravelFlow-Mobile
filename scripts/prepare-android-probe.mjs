@@ -10,15 +10,17 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const source = path.join(root, "prototypes/android-runtime");
 const args = process.argv.slice(2);
 const options = new Map();
-const usage = "Usage: prepare-android-probe.mjs --output NEW_DIRECTORY [--tls-fixtures FIXTURE_DIRECTORY] [--target emulator|usb]";
+const usage = "Usage: prepare-android-probe.mjs --output NEW_DIRECTORY [--tls-fixtures FIXTURE_DIRECTORY] [--target emulator|usb] [--transport-probe platform|okhttp]";
 for (let i = 0; i < args.length; i += 2) {
-  if (!["--output", "--tls-fixtures", "--target"].includes(args[i]) || options.has(args[i]) ||
+  if (!["--output", "--tls-fixtures", "--target", "--transport-probe"].includes(args[i]) || options.has(args[i]) ||
       !args[i + 1] || args[i + 1].startsWith("--")) throw new Error(usage);
   options.set(args[i], args[i + 1]);
 }
 const hosts = {emulator: "10.0.2.2", usb: "127.0.0.1"};
 const target = options.get("--target") ?? "emulator";
-if (!options.has("--output") || !Object.hasOwn(hosts, target)) throw new Error(usage);
+const transportProbe = options.get("--transport-probe") ?? "platform";
+if (!options.has("--output") || !Object.hasOwn(hosts, target) || !["platform", "okhttp"].includes(transportProbe) ||
+    (transportProbe === "okhttp" && (target !== "emulator" || !options.has("--tls-fixtures")))) throw new Error(usage);
 const probeHost = hosts[target];
 let testCa;
 if (options.has("--tls-fixtures")) {
@@ -28,6 +30,8 @@ if (options.has("--tls-fixtures")) {
   const manifest = JSON.parse(readFileSync(path.join(fixtures, "fixture.json"), "utf8"));
   testCa = readFileSync(path.join(fixtures, "ca.pem"));
   if (manifest.kind !== "travelflow-synthetic-tls-v1" || (manifest.host ?? hosts.emulator) !== probeHost ||
+      (manifest.transportProbe ?? "platform") !== transportProbe ||
+      (transportProbe === "okhttp" && manifest.dnsHost !== "valid.p0-dns.invalid") ||
       createHash("sha256").update(testCa).digest("hex") !== manifest.ca_sha256 ||
       !/^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*$/.test(testCa.toString("utf8"))) {
     throw new Error("Invalid synthetic TLS fixture");
@@ -70,6 +74,23 @@ const java = path.join(output, "android/app/src/main/java/org/travelflow/p0");
 const appGradle = path.join(output, "android/app/build.gradle");
 writeFileSync(appGradle, readFileSync(appGradle, "utf8") + "\nandroid { buildFeatures { buildConfig = true } }\n");
 for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPlugin.java", "ProbeCredentials.java"]) cpSync(path.join(source, name), path.join(java, name));
+if (transportProbe === "okhttp") {
+  const experimental = path.join(output, "android/app/src/debug/java/org/travelflow/p0");
+  mkdirSync(experimental, {recursive: true});
+  cpSync(path.join(root, "prototypes/okhttp-probe/ProbeAsyncStreamPlugin.java"), path.join(experimental, "ProbeAsyncStreamPlugin.java"));
+  const notices = path.join(output, "android/app/src/debug/assets/third-party");
+  mkdirSync(notices, {recursive: true});
+  cpSync(path.join(root, "prototypes/okhttp-probe/LICENSE.txt"), path.join(notices, "okhttp-apache-2.0.txt"));
+  cpSync(path.join(root, "prototypes/okhttp-probe/NOTICE.txt"), path.join(notices, "okhttp-notice.txt"));
+  writeFileSync(appGradle, readFileSync(appGradle, "utf8") + '\ndependencies { debugImplementation("com.squareup.okhttp3:okhttp-android:5.3.2") }\n');
+  const activity = path.join(java, "MainActivity.java");
+  writeFileSync(activity, readFileSync(activity, "utf8").replace("        super.onCreate(savedInstanceState);", `        if (BuildConfig.DEBUG) {
+            try {
+                registerPlugin(Class.forName("org.travelflow.p0.ProbeAsyncStreamPlugin").asSubclass(com.getcapacitor.Plugin.class));
+            } catch (ClassNotFoundException error) { throw new IllegalStateException("Missing experimental debug plugin", error); }
+        }
+        super.onCreate(savedInstanceState);`));
+}
 writeFileSync(path.join(java, "ProbeEndpoint.java"), `package org.travelflow.p0;\nfinal class ProbeEndpoint {\n    static final String HOST = ${JSON.stringify(probeHost)};\n    private ProbeEndpoint() {}\n}\n`);
 const manifest = path.join(output, "android/app/src/main/AndroidManifest.xml");
 writeFileSync(manifest, readFileSync(manifest, "utf8").replace('android:allowBackup="true"',
@@ -85,11 +106,13 @@ if (testCa) {
   writeFileSync(path.join(debug, "res/raw/p0_test_ca.pem"), testCa);
 }
 const anchors = testCa ? '<trust-anchors><certificates src="system"/><certificates src="@raw/p0_test_ca"/></trust-anchors>' : '';
-writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">${probeHost}</domain>${anchors}</domain-config></network-security-config>\n`);
+const dnsPolicy = transportProbe === "okhttp" ? `<domain-config cleartextTrafficPermitted="false"><domain includeSubdomains="false">valid.p0-dns.invalid</domain>${anchors}</domain-config>` : "";
+writeFileSync(path.join(debug, "res/xml/p0_network_security.xml"), `<network-security-config><base-config cleartextTrafficPermitted="false"/><domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="false">${probeHost}</domain>${anchors}</domain-config>${dnsPolicy}</network-security-config>\n`);
 console.log(JSON.stringify({
   project: output,
   appId: "org.travelflow.p0",
   target,
+  transportProbe,
   probeHost,
   phase: "prepared_only",
   sdkInstalledByThisCommand: false,

@@ -48,7 +48,7 @@ def parse_policy(dump):
     return root
 
 
-def check(aapt2, debug, release, fixtures, target="emulator"):
+def check(aapt2, debug, release, fixtures, target="emulator", transport_probe="platform"):
     ca = (fixtures / "ca.pem").read_bytes()
     host = {"emulator": "10.0.2.2", "usb": "127.0.0.1"}[target]
 
@@ -76,11 +76,16 @@ def check(aapt2, debug, release, fixtures, target="emulator"):
             endpoint = archive.read("assets/public/probe-endpoint.js").decode()
             assert endpoint == f"export const probeHost = {json.dumps(host)};\n", f"{name}: unexpected endpoint asset"
             ca_files = []
+            dex_files = [entry.filename for entry in archive.infolist() if re.fullmatch(r"classes[0-9]*\.dex", entry.filename)]
+            has_client = any(b"Lokhttp3/OkHttpClient;" in archive.read(entry) for entry in dex_files)
+            has_experiment = any(b"Lorg/travelflow/p0/ProbeAsyncStreamPlugin;" in archive.read(entry) for entry in dex_files)
+            assert (has_client and has_experiment) if name == "debug" and transport_probe == "okhttp" else not (has_client or has_experiment), "Unexpected experimental client packaging"
             native_libraries = [entry.filename for entry in archive.infolist() if entry.filename.startswith("lib/") and entry.filename.endswith(".so")]
             for entry in archive.infolist():
                 data = archive.read(entry)
                 if name == "release" and re.fullmatch(r"classes[0-9]*\.dex", entry.filename):
                     assert b".p0-dns.invalid" not in data, "debug DNS fixture leaked into release DEX"
+                    assert b"Lokhttp3/OkHttpClient;" not in data and b"ProbeAsyncStreamPlugin" not in data, "experimental client leaked into release"
                 assert not re.search(rb"-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----", data), f"{name}: private key packaged"
                 assert not entry.filename.endswith((".key", ".csr")), f"{name}: TLS private artifact packaged"
                 if data == ca:
@@ -94,6 +99,13 @@ def check(aapt2, debug, release, fixtures, target="emulator"):
             domain = policy_node("domain", {"includeSubdomains": "false"}, text=[host])
             expected_policy = policy_node("network-security-config", children=[base,
                 policy_node("domain-config", {"cleartextTrafficPermitted": "true"}, children=[domain, anchors])])
+            if transport_probe == "okhttp":
+                assert target == "emulator", "Experimental client is emulator-only"
+                expected_policy["children"].append(policy_node("domain-config", {"cleartextTrafficPermitted": "false"}, children=[
+                    policy_node("domain", {"includeSubdomains": "false"}, text=["valid.p0-dns.invalid"]), anchors]))
+                with ZipFile(apk) as archive:
+                    assert "assets/third-party/okhttp-apache-2.0.txt" in archive.namelist(), "Missing experimental license"
+                    assert "assets/third-party/okhttp-notice.txt" in archive.namelist(), "Missing experimental notice"
         else:
             assert not ca_files and "p0_test_ca" not in resources, "test CA leaked into release"
             assert "domain-config" not in config and "cleartextTrafficPermitted=true" not in config, "debug network exception leaked into release"
@@ -103,7 +115,7 @@ def check(aapt2, debug, release, fixtures, target="emulator"):
         assert actual_policy == expected_policy, f"{name}: network policy broad or mismatched: {actual_policy}"
         report[name] = {"testCaFiles": len(ca_files), "backupAllowed": False,
                         "testHostCleartextAllowed": name == "debug", "nativeLibraries": native_libraries}
-    print(json.dumps({"passed": True, "target": target, "probeHost": host, **report}, indent=2))
+    print(json.dumps({"passed": True, "target": target, "transportProbe": transport_probe, "probeHost": host, **report}, indent=2))
 
 
 if __name__ == "__main__":
@@ -111,5 +123,6 @@ if __name__ == "__main__":
     for name in ["aapt2", "debug", "release", "tls-fixtures"]:
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--target", choices=["emulator", "usb"], default="emulator")
+    parser.add_argument("--transport-probe", choices=["platform", "okhttp"], default="platform")
     args = parser.parse_args()
-    check(args.aapt2, args.debug, args.release, args.tls_fixtures, args.target)
+    check(args.aapt2, args.debug, args.release, args.tls_fixtures, args.target, args.transport_probe)

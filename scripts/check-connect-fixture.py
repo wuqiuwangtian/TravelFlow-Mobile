@@ -11,7 +11,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from lib.connect_fixture import DnsServer, HeldDns
+from lib.connect_fixture import DnsServer, HeldDns, positive_reply
 
 
 def query(name, kind=1):
@@ -20,6 +20,17 @@ def query(name, kind=1):
 
 
 class DnsProtocol(unittest.TestCase):
+    def test_fixed_positive_a_and_aaaa_nodata(self):
+        for kind in (1, 28):
+            packet = query("valid.p0-dns.invalid", kind)
+            reply = positive_reply(packet)
+            self.assertEqual(struct.unpack("!6H", reply[:12]), (0x1234, 0x8180, 1, int(kind == 1), 0, 0))
+            self.assertEqual(reply[12:len(packet)], packet[12:])
+            if kind == 1:
+                self.assertEqual(reply[len(packet):], b"\xc0\x0c\x00\x01\x00\x01\x00\x00\x00\x00\x00\x04\x0a\x00\x02\x02")
+            else:
+                self.assertEqual(len(reply), len(packet))
+
     def test_wire_hold_release_and_refusal(self):
         state = HeldDns()
         with DnsServer(state, port=0) as server, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
@@ -70,7 +81,7 @@ spec.loader.exec_module(runner)
 
 class DeviceGuards(unittest.TestCase):
     def options(self, **changes):
-        values = dict(adb=Path("/never/call/adb"), serial="emulator-5558", expect_avd="travelflow_p0_connect35", expect_sdk=35, port=19238)
+        values = dict(adb=Path("/never/call/adb"), serial="emulator-5558", expect_avd="travelflow_p0_connect35", expect_sdk=35, port=19238, client="platform", case="all")
         return argparse.Namespace(**(values | changes))
 
     def test_real_serial_rejected_without_running_any_command(self):

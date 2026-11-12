@@ -20,6 +20,7 @@ def require(condition, message):
 
 
 def run(args):
+    require(args.case == "all" or args.client == "okhttp", "TLS-only checks require the optional client")
     def adb(*command, check=True):
         result = subprocess.run([str(args.adb), "-s", args.serial, *command], check=False,
                                 capture_output=True, text=True, timeout=20)
@@ -129,7 +130,10 @@ def run(args):
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 stack.callback(server.shutdown)
             stack.callback(state.release)
-            for scenario in ("baseline", "syn", "dns", "dns-deadline", "baseline"):
+            scenarios = ("baseline", "syn", "dns-system", "dns", "dns-deadline", "dns-tls", "baseline") if args.client == "okhttp" else ("baseline", "syn", "dns", "dns-deadline", "baseline")
+            if args.case == "tls":
+                scenarios = ("dns-tls",)
+            for scenario in scenarios:
                 state.reset()
                 if scenario == "syn":
                     make_rule("filter", "P0_SYN_PROBE",
@@ -161,8 +165,9 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                result = subprocess.run(["node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario],
-                                        text=True, capture_output=True, timeout=40)
+                command = ["node", str(Path(__file__).with_name("check-android-async.mjs")), "--port", str(args.port)] if scenario == "dns-tls" else [
+                    "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
+                result = subprocess.run(command, text=True, capture_output=True, timeout=100 if scenario == "dns-tls" else 40)
                 require(result.returncode == 0, result.stderr or result.stdout)
                 reports.append(json.loads(result.stdout))
                 remove_rules()
@@ -180,7 +185,7 @@ def run(args):
                 if forwarded:
                     adb("forward", "--remove", f"tcp:{args.port}")
 
-    print(json.dumps({"fixtureAssertionsPassed": True, "sdk": args.expect_sdk, "avd": args.expect_avd,
+    print(json.dumps({"fixtureAssertionsPassed": True, "sdk": args.expect_sdk, "avd": args.expect_avd, "client": args.client,
                       "scope": "isolated_emulator_fixed_synthetic_endpoints", "experiments": reports}, indent=2))
 
 
@@ -191,6 +196,8 @@ if __name__ == "__main__":
     parser.add_argument("--expect-avd", required=True)
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
+    parser.add_argument("--case", choices=["all", "tls"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18518), "Choose a separate CDP port")
     run(options)
