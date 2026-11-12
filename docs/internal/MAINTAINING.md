@@ -113,7 +113,7 @@ AVD工具本机曾报告缺少镜像`devices.xml`但创建成功；必须核对�
 
 更新后强停／启动P0、更新PID与转发，运行诊断、`check-android-tls.mjs`和`check-android-stream.mjs`。再按前文离线步骤显式改用`emulator-5582`及其CDP端口；网络恢复后`--cold-start`不重新准备凭据，预期HTTPS完成，新增与重放记录保持。诊断的layout／visual宽度都记录，窄视口控件应无横向溢出；这不是正式手机交互验收。触摸脚本等待滚动绘制并将布局坐标换算为`visualViewport`坐标，不以JS `.click()`替代原生触摸。
 
-API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26已补Google镜像的Chrome69启动保护，新版匹配提供方仍待验证，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
+API26/default/x86_64 revision1的本机AVD`travelflow_p0_api26`仅是失败调查缓存，不是可用验收基线：系统允许的提供方为Chrome／Google包，自带与安装的`com.android.webview`不在列表；`dumpsys webviewupdate`无当前提供方，P0在WebView创建前报`MissingWebViewPackageException`。安装包minSdk匹配也不能绕过系统提供方策略。未修改该系统白名单；API24／26已补Google镜像的Chrome69启动保护及后述Chrome119的32／64位匹配路径，不据此宣布应用不支持Android7／8。结束后仅关闭自己的实例、服务和端口转发，保留既有记录。
 
 ### API33官方提供方组合复现
 
@@ -168,6 +168,27 @@ python3 scripts/inspect-webview-apk.py --apk /path/to/candidate.apk --aapt2 "$AN
 API24／26的 `cmd connectivity` 没有shell实现，且可能退出0；不能仅看退出码判断切网。直接发送飞行模式广播被系统拒绝，本轮未用root绕过。断网验收改用系统设置UI：先记录 `settings get global airplane_mode_on` 原值，执行 `adb -s <序列号> shell am start -a android.settings.AIRPLANE_MODE_SETTINGS`；用 `uiautomator dump` 检查当前“Airplane mode”行和开关真实状态，再通过该明确设备的 `input tap` 触摸实际坐标，等待设置值变为1。不可复用其他系统的坐标，也不可仅写global设置值冒充网络已关闭。
 
 确认状态1后强停冷启动P0，更新PID／转发，运行 `check-android-stream.mjs --port <端口> --offline`；应网络失败、余额保留、新增123分且重放不增加。再从同一系统设置UI恢复原值（本轮为0），确认后强停冷启动、更新PID／转发，运行 `check-android-tls.mjs --port <端口> --cold-start`，应不重新准备凭据就成功HTTPS，记录数／金额前后一致。本轮各最终3条／369分。设置值、网络失败与冷启动后的行为分别核对，不把服务停止当真实断网。结束后移除自己创建的uiautomator暂存文件、转发、测试服务及实例；保留AVD数据。更多结果与未验边界见PROJECT_STATUS。
+
+### API24／26的64位Chrome119组合复现
+
+2026-11-12沿用官方Google APIs/x86_64专用AVD：`travelflow_p0_api24_google`为revision27，`travelflow_p0_api26_google`为revision16。本轮分别5560／19239、5558／19238；先确认端口空闲与实例归属，再按前文启动，不清库、不覆盖AVD。这是64位组合，对应32位实例及数据继续保留。
+
+组件来自[Downzen119候选页](https://downzen.com/en/android/chrome-browser-google/download/11906045193/)的x86_64正常下载入口，仓库外缓存为`~/.cache/travelflow-p0-android/google-chrome119-193-x64-fixture.apks`及`chrome119-193-x64-splits/`。APKS只是ZIP容器，不安装网站推荐的额外安装器；先检查下载完整性与路径，再只提取其中8个APK到新目录，不执行容器内容。容器／主包摘要、精确分包集合及来源结果见PROJECT_STATUS，短期签名下载URL不写入仓库。下载HTML、403响应或未完成文件不能继续安装。
+
+主包沿前述准入命令检查，指定`--require-abi x86_64`，API24／26分别核对SDK；该主包versionCode604519327、minSdk24／maxSdk28，含两种ABI且没有Trichrome静态库依赖。必须另对8个APK逐个执行`apksigner verify --print-certs`，只比较`Signer #... certificate SHA-256 digest`（不要误把Source Stamp证书当应用签名）；均须与官方Chrome69同包签名一致。用aapt2核对相同包名／versionCode及唯一split名称，检查ZIP完整性，保留原始签名。不因主包准入通过便假定其他分包有效／齐全，也不从其他版本混入分包。
+
+核验完成后，在已确认的目标实例运行（目录只含本次8份已核验文件）：
+
+```sh
+"$ANDROID_HOME/platform-tools/adb" -s <明确序列号> install-multiple -r /path/to/verified-splits/*.apk
+"$ANDROID_HOME/platform-tools/adb" -s <同一序列号> shell pm path com.android.chrome
+```
+
+API26本轮安装成功并选中119。API24的ADB提交返回异常，但系统PackageManager日志显示已完成，pm path包含base和七个split，随后完整原型路径通过；不能只凭命令异常反复重装，也不能只凭包列表算运行通过。API24的提供方dumpsys仍为空，工具报告未知，实际加载由页面和原生进程另证。用`run-as org.travelflow.p0 readlink /proc/<当前PID>/exe`确认app_process64，结合内核／提供方库；API26的navigator.platform显示i686也不能代替此检查。
+
+本轮11月9日测试证书已过期，须生成新的两天TLS材料和独立emulator工程，按前文构建debug／unsigned release、完整lint及实际打包检查；本轮生成目录为`/tmp/travelflow-p0-{tls,app}-20261112-x64`，临时目录不是接续前提。安装新的原型debug后，按当前PID转发CDP，依次运行能力、完整TLS、完整HTTP脚本。再沿32位小节的设置UI流程真实切换飞行模式、强停冷启动及`--offline`；不要套用坐标，API24与26的设置布局不同，触摸后要等实际状态并核对。恢复原值后再强停冷启动，TLS `--cold-start`必须不重新准备凭据而成功、本地不增记录。
+
+两组本轮各从0到TLS后123、HTTP后246、断网新增／重放后369分，冷读前后3条／369分保持；再次复验须从已有记录计算，不能清库凑期望值。可用`check-android-local.mjs --port <端口> --expect-local 3 369`复核本轮持久结果；该只读断言不发网络请求。结束后确认飞行模式恢复原值、移除自己的UI暂存文件和转发、停止自己的服务与实例，保留数据。不要把历史Chrome119安装到用户手机，或把两个模拟器结果当所有旧ARM设备已支持。
 
 ### 本地触摸与强停恢复验收
 
@@ -243,7 +264,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；下一项按用户确认的旧系统＋可更新WebView优先顺序，补API24／26的匹配提供方组合，再完善系统／ABI边界。TCP／DNS取消和真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；下一项按路线图核对TCP SYN／DNS取消边界，整理正式凭据生命周期及框架／支持范围提案。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 
