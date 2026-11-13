@@ -27,7 +27,7 @@ def run(args):
         result = subprocess.run([str(args.adb), "-s", args.serial, *command], check=False,
                                 capture_output=True, text=True, timeout=20)
         if check and result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "ADB command failed")
+            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"ADB command failed (exit {result.returncode}: {' '.join(command[:3])})")
         return result
 
     def shell(*command, check=True):
@@ -56,7 +56,7 @@ def run(args):
     for table, chain in [("filter", "P0_SYN_PROBE"), ("nat", "P0_DNS_PROBE")]:
         require(adb("shell", "iptables", "-t", table, "-S", chain, check=False).returncode != 0, "Fixture chain already exists")
 
-    require(args.case not in ("codec", "budget") or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
+    require(args.case not in ("codec", "budget", "worker") or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
     state = CodecDns()
     backup_state = CodecDns()
     created = []
@@ -135,7 +135,14 @@ def run(args):
                 remote = fields[2]
                 if remote.endswith("0302000A:0035") or any(remote.endswith(f"0202000A:{port:04X}") for port in range(18510, 18519)):
                     owned_sockets += 1
-        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000), "backupDns": backup_state.snapshot() if args.case == "budget" else None}
+        helpers = []
+        for pid in shell("pidof", "org.travelflow.p0:p0_dns", check=False).split():
+            require(pid.isdigit(), "Invalid DNS worker PID")
+            command = shell("cat", f"/proc/{pid}/cmdline", check=False).replace("\x00", "").strip()
+            if not command: continue  # 退出可能发生在pidof与读取之间，下次快照再查。
+            require(command == "org.travelflow.p0:p0_dns", "Unexpected DNS worker process")
+            helpers.append(pid)
+        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000), "dnsWorkerPids": helpers, "mainPid": shell("pidof", "org.travelflow.p0"), "backupDns": backup_state.snapshot() if args.case == "budget" else None}
 
     class ControlHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -174,6 +181,16 @@ def run(args):
                 backup_state.reset(self.path.removeprefix("/backup/"))
                 self.respond(backup_state.snapshot())
                 return
+            if args.case == "worker" and self.path == "/worker-exit":
+                helpers = shell("pidof", "org.travelflow.p0:p0_dns", check=False).split()
+                require(len(helpers) == 1 and helpers[0].isdigit(), "One live owned worker required")
+                pid = helpers[0]
+                require(shell("cat", f"/proc/{pid}/cmdline").replace("\x00", "").strip() == "org.travelflow.p0:p0_dns", "Wrong worker")
+                status = shell("cat", f"/proc/{pid}/status")
+                require(re.search(r"^Uid:\s+" + uid + r"\s", status, re.M), "Worker must retain probe UID")
+                shell("kill", "-9", pid)
+                self.respond({"terminatedWorkerPid": pid})
+                return
             if self.path == "/release":
                 state.release()
             elif self.path.removeprefix("/mode/") in state.MODES:
@@ -211,6 +228,8 @@ def run(args):
                 scenarios = ("dns-" + args.case,)
             if args.case == "budget":
                 scenarios = ("budget",)
+            if args.case == "worker":
+                scenarios = ("dns-worker",)
             for scenario in scenarios:
                 state.reset()
                 if scenario == "proxy-guard":
@@ -256,14 +275,14 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                special = {"budget": "check-android-dns-budget.mjs", "dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
+                special = {"dns-worker": "check-android-dns-worker.mjs", "budget": "check-android-dns-budget.mjs", "dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
                 command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
                 if scenario == "network-offline-cold":
                     command.append("--offline")
                 if scenario in ("dns-reconnect", "dns-reconnect-negative"):
                     command.append("--" + scenario.removeprefix("dns-"))
-                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec", "budget") else 40)
+                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec", "budget", "dns-worker") else 40)
                 if result.returncode != 0:
                     try:
                         partial = json.loads(result.stdout)
@@ -311,7 +330,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative", "budget"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative", "budget", "worker"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18519), "Choose a separate CDP port")
     run(options)

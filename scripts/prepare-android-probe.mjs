@@ -77,10 +77,10 @@ for (const name of ["MainActivity.java", "ProbeStorePlugin.java", "ProbeStreamPl
 if (transportProbe === "okhttp") {
   const experimental = path.join(output, "android/app/src/debug/java/org/travelflow/p0");
   mkdirSync(experimental, {recursive: true});
-  for (const name of ["ProbeAsyncStreamPlugin.java", "CancelableDnsLookup.java"]) {
+  for (const name of ["ProbeAsyncStreamPlugin.java", "CancelableDnsLookup.java", "SystemDnsLookup.java", "SystemDnsWorkerService.java"]) {
     cpSync(path.join(root, "prototypes/okhttp-probe", name), path.join(experimental, name));
   }
-  writeFileSync(path.join(output, "android/app/src/debug/AndroidManifest.xml"), '<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/></manifest>\n');
+  writeFileSync(path.join(output, "android/app/src/debug/AndroidManifest.xml"), '<manifest xmlns:android="http://schemas.android.com/apk/res/android"><uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/><application><service android:name="org.travelflow.p0.SystemDnsWorkerService" android:exported="false" android:process=":p0_dns"/></application></manifest>\n');
   const notices = path.join(output, "android/app/src/debug/assets/third-party");
   mkdirSync(notices, {recursive: true});
   cpSync(path.join(root, "prototypes/okhttp-probe/LICENSE.txt"), path.join(notices, "okhttp-apache-2.0.txt"));

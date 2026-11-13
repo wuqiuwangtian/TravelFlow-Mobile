@@ -83,11 +83,27 @@ def check(aapt2, debug, release, fixtures, target="emulator", transport_probe="p
             assert ("android.permission.ACCESS_NETWORK_STATE" in manifest) == (name == "debug" and transport_probe == "okhttp"), "Unexpected network-state permission"
             has_experiment = any(b"Lorg/travelflow/p0/ProbeAsyncStreamPlugin;" in archive.read(entry) for entry in dex_files)
             assert (has_client and has_experiment) if name == "debug" and transport_probe == "okhttp" else not (has_client or has_experiment), "Unexpected experimental client packaging"
+            manifest_tree = parse_policy("\n".join(row for row in manifest.splitlines() if not row.lstrip().startswith("N:")))
+            apps = [node for node in manifest_tree["children"] if node["name"] == "application"]
+            assert len(apps) == 1, "Expected one application"
+            def attrs(node):
+                return {key.rsplit(":", 1)[-1].split("(", 1)[0]: value for key, value in node["attrs"].items()}
+            worker_services = [node for node in apps[0]["children"] if node["name"] == "service" and
+                               attrs(node).get("name") == "org.travelflow.p0.SystemDnsWorkerService"]
+            expected_worker = name == "debug" and transport_probe == "okhttp"
+            assert len(worker_services) == int(expected_worker), "Unexpected DNS worker service packaging"
+            has_worker_code = any(b"Lorg/travelflow/p0/SystemDnsWorkerService;" in archive.read(entry) for entry in dex_files)
+            assert has_worker_code == expected_worker, "Unexpected DNS worker code packaging"
+            if worker_services:
+                worker_attrs = attrs(worker_services[0])
+                assert worker_attrs.get("process") in (":p0_dns", "org.travelflow.p0:p0_dns"), "DNS worker must use its private process"
+                assert worker_attrs.get("exported") == "false", "DNS worker must not be exported"
             native_libraries = [entry.filename for entry in archive.infolist() if entry.filename.startswith("lib/") and entry.filename.endswith(".so")]
             for entry in archive.infolist():
                 data = archive.read(entry)
                 if name == "release" and re.fullmatch(r"classes[0-9]*\.dex", entry.filename):
                     assert b".p0-dns.invalid" not in data, "debug DNS fixture leaked into release DEX"
+                    assert b"SystemDnsWorkerService" not in data and b"SystemDnsLookup" not in data, "DNS worker leaked into release"
                     assert b"Lokhttp3/OkHttpClient;" not in data and b"ProbeAsyncStreamPlugin" not in data, "experimental client leaked into release"
                 assert not re.search(rb"-----BEGIN (?:RSA |EC |ENCRYPTED )?PRIVATE KEY-----", data), f"{name}: private key packaged"
                 assert not entry.filename.endswith((".key", ".csr")), f"{name}: TLS private artifact packaged"

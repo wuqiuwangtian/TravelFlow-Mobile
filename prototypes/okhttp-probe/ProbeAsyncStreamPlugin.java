@@ -82,6 +82,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         volatile String stage = "connecting";
         volatile String networkPhase = "preparing";
         volatile int dnsRcode = -1, dnsErrorCode = -1, dnsErrno = -1;
+        volatile int dnsWorkerPidUsed;
         volatile int status;
         volatile String dnsHost = "";
         ScheduledFuture<?> deadline;
@@ -98,8 +99,9 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         if (!"10.0.2.2".equals(ProbeEndpoint.HOST) || !id.matches("[a-zA-Z0-9_-]{1,80}") ||
             !Set.of("http", "https", "dns", "dns-valid", "dns-hostname", "dns-untrusted", "dns-expired", "hostname", "untrusted", "expired", "handshake").contains(transport) ||
             !Set.of("normal", "stall", "drop", "http-error", "drip", "no-auth", "unauthorized", "redirect").contains(mode) ||
-            !Set.of("auto", "system", "fixture-pair").contains(resolver) ||
-            ("fixture-pair".equals(resolver) && (Build.VERSION.SDK_INT >= 29 || !"dns-valid".equals(transport))) || after < 0 || after > 3) {
+            !Set.of("auto", "system", "fixture-pair", "os-worker", "os-worker-bind-delay").contains(resolver) ||
+            ("fixture-pair".equals(resolver) && (Build.VERSION.SDK_INT >= 29 || !"dns-valid".equals(transport))) ||
+            (resolver.startsWith("os-worker") && (Build.VERSION.SDK_INT >= 29 || !("dns".equals(transport) || transport.startsWith("dns-")))) || after < 0 || after > 3) {
             call.reject("Invalid experimental options", "INVALID_OPTIONS"); return;
         }
         long timeoutMillis = "drip".equals(mode) ? 2500 : 6000;
@@ -129,6 +131,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         event.put("networkLostMs", job.lostAt < 0 ? -1 : job.lostAt - job.started);
         event.put("networkPhase", job.networkPhase);
         event.put("dnsRcode", job.dnsRcode); event.put("dnsErrorCode", job.dnsErrorCode); event.put("dnsErrno", job.dnsErrno);
+        event.put("dnsWorkerPidUsed", job.dnsWorkerPidUsed);
         event.put("clockEpochMs", System.currentTimeMillis());
         notifyListeners("stream", event);
     }
@@ -142,6 +145,14 @@ public class ProbeAsyncStreamPlugin extends Plugin {
             lookup = new Lookup() {
                 public List<InetAddress> lookup(String name) throws UnknownHostException { return Dns.SYSTEM.lookup(name); }
                 public void cancel() { /* 保留阻塞式系统解析，作为仅更换HTTP库的对照。 */ }
+            };
+        } else if (resolver.startsWith("os-worker")) {
+            SystemDnsLookup delegate = new SystemDnsLookup(getContext().getApplicationContext(), job.network, job.deadlineNanos, () -> stop(job, "DEADLINE"), "os-worker-bind-delay".equals(resolver));
+            lookup = new Lookup() {
+                public List<InetAddress> lookup(String name) throws UnknownHostException {
+                    try { return delegate.lookup(name); } finally { job.dnsWorkerPidUsed = delegate.observedPid(); }
+                }
+                public void cancel() { delegate.cancel(); }
             };
         } else if ("fixture-pair".equals(resolver)) {
             InetAddress endpoint = InetAddress.getByAddress(new byte[]{10, 0, 2, 2});
@@ -294,6 +305,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         value.put("resolutions", resolutions.get()); value.put("dnsSockets", dnsSockets.get());
         value.put("httpCalls", base.dispatcher().runningCallsCount()); value.put("connections", base.connectionPool().connectionCount());
         value.put("networkWatches", networkWatches.get());
+        value.put("dnsWorkerBindings", SystemDnsLookup.bindings()); value.put("dnsWorkerPid", SystemDnsLookup.workerPid());
         value.put("boundNetwork", job == null || job.network == null ? "" : job.network.toString());
         ConnectivityManager manager = getContext().getSystemService(ConnectivityManager.class);
         Network current = manager.getActiveNetwork();

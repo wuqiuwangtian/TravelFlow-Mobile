@@ -48,6 +48,7 @@ jobs:
           node --check scripts/check-android-async.mjs
           node --check scripts/check-android-dns-codec.mjs
           node --check scripts/check-android-dns-budget.mjs
+          node --check scripts/check-android-dns-worker.mjs
           node --check scripts/check-android-proxy-guard.mjs
           node --check scripts/check-android-network.mjs
           node --check scripts/lib/android-probe-cdp.mjs
