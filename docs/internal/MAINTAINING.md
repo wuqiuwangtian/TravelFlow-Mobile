@@ -303,7 +303,7 @@ API24替换为其明确实例5560、travelflow_p0_connect24、SDK24及端口1923
 
 API29+自动分支使用平台DnsResolver与CancellationSignal；旧分支现在由MiniDNS core解码A／AAAA、CNAME及TCP帧，本项目持有可关闭UDP／TCP I/O，替换上轮固定A报文实验。每次请求从当前Network的LinkProperties读取DNS服务器，并绑定DNS／HTTP套接字，平台查询也传同一Network；没有公共DNS回退。CNAME循环最多8跳，错误ID／问题不采纳，不缓存或补搜索域。外层6000ms总时限关闭实际资源后才发终态。固定域直连返回10.0.2.2，AAAA默认无记录；随机tf前缀继续挂起，其他名字立即否定、不转发。URL保留原域名，TLS仍使用平台信任与默认主机名校验；别名不增加CA信任域。
 
-这仍不是完整生产DNS实现：已有受控多服务器预算证据，缓存、搜索域、类型份额／部分成功、真实IPv6网络、代理／Private DNS、VPN及网络变化仍需评审和验证。可选客户端遇代理或活动Private DNS明确拒绝，不能绕开系统配置；Private DNS拒绝尚未实测。不要把这个实验限制写成用户已接受的正式支持范围。
+这仍不是完整生产DNS实现：已有受控多服务器预算证据，缓存、搜索域、类型份额／部分成功、真实IPv6网络、代理／Private DNS、VPN及网络变化仍需评审和验证。可选客户端遇代理或活动Private DNS明确拒绝，不能绕开系统配置；API35已补严格配置下新请求拒绝与原设置恢复，未证明DoT兼容。不要把这个实验限制写成用户已接受的正式支持范围。
 
 只复验凭据／TLS／SSE的增补，可在完整命令末尾加`--case tls`，不新增账目；会移除／重建专用公开虚构凭据。预期缺失凭据不发请求、401／307／503、证书拒绝、分块／截断／Last-Event-ID恢复、握手和读取取消／超时、总时限、立即取消、并发和错误ID拒绝均满足断言，请求结束后工作项／解析／DNS套接字／HTTP调用／连接计数归零。它只证明固定对端上的组合能力；真实供应商、代理、切网和正式凭据策略仍未完成。
 
@@ -326,7 +326,7 @@ vendor/design为固定提交样式快照，更新时逐文件对照上游，更�
 python3 scripts/check-dns-codec.py --jar "$PROBE_APP/android/app/build/probe-deps/minidns-core-1.1.1.jar"
 ```
 
-预期`passed=true`且26组通过：原12组覆盖A、CNAME、UDP转TCP、AAAA解码、污染地址的错误ID／问题响应过滤、畸形包、循环、NXDOMAIN、截断TCP及UDP／TCP实际取消；新增14组覆盖多服务器丢包／SERVFAIL／REFUSED回退、连续错误ID、UDP与TCP共用预算、A与AAAA／CNAME共享总期限、已过期拒绝、清理后结果过期及备用TCP取消。TCP取消还须由对端观察关闭，不能只看Future状态。主机预算用800ms／120ms（TCP回退切片300ms），不等于Android实验阈值；清理后过期用例故意在计数钩子阻塞，不声称能抢占任意阻塞清理。它不证明Android或真实IPv6路由；临时class文件和端口自动清理。`PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`另执行9项本机协议／设备拒绝／监听独占、无线原值／部分失败恢复及对端关闭归因检查。
+预期`passed=true`且26组通过：原12组覆盖A、CNAME、UDP转TCP、AAAA解码、污染地址的错误ID／问题响应过滤、畸形包、循环、NXDOMAIN、截断TCP及UDP／TCP实际取消；新增14组覆盖多服务器丢包／SERVFAIL／REFUSED回退、连续错误ID、UDP与TCP共用预算、A与AAAA／CNAME共享总期限、已过期拒绝、清理后结果过期及备用TCP取消。TCP取消还须由对端观察关闭，不能只看Future状态。主机预算用800ms／120ms（TCP回退切片300ms），不等于Android实验阈值；清理后过期用例故意在计数钩子阻塞，不声称能抢占任意阻塞清理。它不证明Android或真实IPv6路由；临时class文件和端口自动清理。`PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`另执行12项本机协议／设备拒绝／监听独占、无线与Private DNS原值／部分失败恢复及对端关闭归因检查。
 
 完整`--client okhttp`在API24自动加入协议组；API29+使用平台分支，不用这组测试冒充旧分支。只重跑协议组时：
 
@@ -377,7 +377,7 @@ API24覆盖挂起UDP DNS、转TCP后的DNS与TLS读取；API35覆盖平台DNS与
 
 每阶段在离线状态新增固定123分并重放，逐条保护旧记录；再关闭无线、强停本包并冷启动，比较完整旧快照，联网应NETWORK_UNAVAILABLE而本地仍可新增／重放。恢复原设置后再次冷启动正常HTTP。完整组API24新增4条、API35新增3条，原始金额不限；失败前已保存的记录保留。finally还恢复无线设置、删除自己的故障链／转发并强停本包；操作者最后停止自己启动的服务和AVD，保留数据。
 
-`PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现在有9项检查，包含无线原值与缺失键恢复、部分写入失败恢复、飞行模式前置拒绝，以及主动对端清理不冒充peer_closed；不连接ADB。JVM26组及既有可选TLS／codec检查继续可用，终态资源断言增加networkWatches。三配置CI只运行这些主机检查与构建／lint／打包，不执行切网。实际覆盖为蜂窝虚拟网络断开／重建；并存Wi-Fi／蜂窝、VPN、真实供应商和真机切网未验。API35首次恢复请求失败及复验边界见PROJECT_STATUS，不能删去失败来宣布完整切网支持。
+`PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现在有12项检查，另含Private DNS原值／存在性及两种部分写入失败恢复；包含无线原值与缺失键恢复、部分写入失败恢复、飞行模式前置拒绝，以及主动对端清理不冒充peer_closed；不连接ADB。JVM26组及既有可选TLS／codec检查继续可用，终态资源断言增加networkWatches。三配置CI只运行这些主机检查与构建／lint／打包，不执行切网。实际覆盖为蜂窝虚拟网络断开／重建；并存Wi-Fi／蜂窝、VPN、真实供应商和真机切网未验。API35首次恢复请求失败及复验边界见PROJECT_STATUS，不能删去失败来宣布完整切网支持。
 
 
 ## 恢复首请求的只读诊断（仅专用AVD）
@@ -420,13 +420,30 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 预期14项通过：原域名HTTPS及三段中文、挂起DNS手动取消／约6000ms总期限、意外终止辅助进程、三种终止之后旧DNS仍挂起时的新ID成功、绑定期间取消、三次立即取消、三类错误证书拒绝。绑定负例仅用os-worker-bind-delay将辅助进程的onBind固定延迟400ms，不接收任意延时。控制器仅在worker组开放本机worker-exit；它必须先核对本包专用进程名和UID，再终止该辅助PID，不能以它操作主进程或其他设备。取消／绑定取消分别须在1秒／1.5秒内检查到结束；总时限预期5900–7000ms，这些是本实验验收窗口，不是硬实时保证。
 
-开始前须实际看到固定随机DNS名挂起、本包辅助PID及一条绑定；结束检查绑定／工作项／监听归零、辅助进程不在、主应用PID不变、完整账本快照逐条一致、只有一个终态且无晚到事件。服务解除绑定后结束自身，调用方等待对应Binder死亡；不以stopService、Future或普通断连代替实际退出，也不接收外部待终止PID。系统共享DNS服务可继续处理旧查询；这项实验只证明本包辅助工作结束。当前API24默认codec与API35平台TLS回归入口保持可用，后者另检查两个os-worker选项被拒绝；未证明辅助路径的网络丢失、Private DNS／代理／VPN或所有进程竞态。
+开始前须实际看到固定随机DNS名挂起、本包辅助PID及一条绑定；结束检查绑定／工作项／监听归零、辅助进程不在、主应用PID不变、完整账本快照逐条一致、只有一个终态且无晚到事件。服务解除绑定后结束自身，调用方等待对应Binder死亡；不以stopService、Future或普通断连代替实际退出，也不接收外部待终止PID。系统共享DNS服务可继续处理旧查询；这项实验只证明本包辅助工作结束。当前API24默认codec与API35平台TLS回归入口保持可用，后者另检查两个os-worker选项被拒绝；已增补下一节两组只读网络丢失与API35严格Private DNS新请求拒绝，仍未证明代理／有效DoT／动态配置变化或所有进程竞态。
 
 失败时JS尽量保留在途事件／资源与可取到的对端状态，父控制器保留匹配场景的部分报告；读不到的项显式标记，不能把未观察到当零。ADB空错误会给出退出码及固定命令前缀；首次一次内核读取失败的实际边界见PROJECT_STATUS。finally删除本轮链／转发并强停本包；最后停自己启动的对端与AVD，保留数据，不重启全局ADB。
 
+## 辅助路径网络丢失与严格Private DNS（仅专用AVD）
+
+沿用上一节当前可选debug工程、匹配TLS对端、Node22+／Python3.9+与已核对的root专用AVD，SDK／工程／证书均在仓库外。两个组只读比较完整账本，会准备公开虚构凭据；不自动加入all，不用于手机，端口／规则／转发须无现有占用。
+
+```sh
+python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5560 --expect-avd travelflow_p0_connect24 --expect-sdk 24 --port 19239 --client okhttp --case worker-network
+python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" --serial emulator-5558 --expect-avd travelflow_p0_connect35 --expect-sdk 35 --port 19238 --client okhttp --case private-dns
+```
+
+先后运行，沿用18510–18517对端；第一组只允许API24–28的辅助路径，显式临时关闭本AVD无线／数据后精确恢复，原飞行模式必须0。实际覆盖DNS挂起、TLS读取两阶段：开始须看到本包辅助PID／绑定及正确随机DNS名，或读取首块与应用FD；终态NETWORK_LOST、监听／绑定／工作项／辅助进程与应用FD归零，离线新请求NETWORK_UNAVAILABLE。恢复后Network标识改变，新ID通过原域HTTPS／SNI／授权／三段中文，DNS阶段旧回复仍未释放，旧事件不得追加。主应用PID和完整账本前后相同；不执行原network组的123分写入或冷启动步骤，未证明并存网络无缝切换。
+
+第二组只允许API28+，本轮实际API35平台分支。启动前若已有严格模式或非空服务器名即拒绝；只临时设置固定dot.p0-dns.invalid及hostname模式。此名的A／AAAA只由回环虚构DNS回答10.0.2.2，可能的本AVD10.0.2.2:853连接用专用P0_DOT_PROBE链导向既有18515握手停顿对端；不接收任意DNS服务器、不改宿主网络或CA，应用CA域也不增加dot。检查实际LinkProperties严格标志后，三个新请求均PRIVATE_DNS_UNVERIFIED且没有应用DNS／HTTP／辅助工作；先恢复Private DNS原值与键的存在性，再清理规则，实际运行标志清除、原域HTTPS恢复、主PID／账本不变才记通过。
+
+引导查询、853计数与握手观测单列报告；本轮均未观察到，不把这一段算DoT通过。严格LinkProperties状态是本次拒绝验收的正例，验证范围仅“新请求启动前”的拒绝及恢复，不涵盖有效加密解析、API28、机会模式或请求中的配置变化。最终API35完整TLS回归仍单独执行`--case tls`。SDK、构建、运行与CI结果分别见PROJECT_STATUS。
+
+`PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现有12项，新增Private DNS原值／缺失键恢复、原值被修改后抛错的两种恢复、已有严格配置无写入拒绝，并通过真实回环UDP验证固定DoT引导名白名单；两个新case的物理serial在任何ADB调用前拒绝。内核状态读失败继续使验收失败，不将缺失数据当零、不自动重试；ADB错误会附退出码、固定命令前缀、stdout字节数及有界stderr。finally精确恢复设置、移除自己的规则／转发并强停本包；最后停自己的AVD和对端，保留数据，不重启全局ADB。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；API35恢复首请求已补有界只读复现与分阶段诊断，原失败未再复现、仍待证据；已补旧分支共享绝对期限与固定双DNS备用回退；固定源码与平台／项目的维护责任、候选对照及完成条件已列在ANDROID_FRAMEWORK_REVIEW的“维护责任、已确认地址范围与辅助进程对照”；辅助进程已补可选debug机制与API24证据，下一项验证这一路径在网络丢失时的退出／解绑／新网络新请求，并收口Private DNS拒绝／恢复条件与正式维护路线；具体边界见PROJECT_STATUS。服务地址已确认预设＋高级自定义，优先完整域名／局域网地址、默认HTTPS及按目标隔离凭据，特殊名称／明文／证书继续评审，尚未正式实现；正式凭据生命周期及框架／支持范围仍需评审。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；API35恢复首请求已补有界只读复现与分阶段诊断，原失败未再复现、仍待证据；已补旧分支共享绝对期限与固定双DNS备用回退；固定源码与平台／项目的维护责任、候选对照及完成条件已列在ANDROID_FRAMEWORK_REVIEW的“维护责任、已确认地址范围与辅助进程对照”；辅助进程已补可选debug机制与API24证据，已补辅助路径网络丢失与严格Private DNS启动前拒绝／恢复，下一项整理正式维护路线、框架／支持范围及凭据生命周期的采纳提案，列清采用前必过项与待定取舍；具体边界见PROJECT_STATUS。服务地址已确认预设＋高级自定义，优先完整域名／局域网地址、默认HTTPS及按目标隔离凭据，特殊名称／明文／证书继续评审，尚未正式实现；正式凭据生命周期及框架／支持范围仍需评审。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 

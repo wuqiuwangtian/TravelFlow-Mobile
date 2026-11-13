@@ -225,7 +225,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
             if (links == null) throw new IOException("NETWORK_UNAVAILABLE");
             // 尚未验证代理／加密DNS，明确拒绝，避免实验兼容层静默绕开用户配置。
             if (manager.getDefaultProxy() != null) throw new IOException("PROXY_UNVERIFIED");
-            if (Build.VERSION.SDK_INT >= 28 && links.isPrivateDnsActive()) throw new IOException("PRIVATE_DNS_UNVERIFIED");
+            if (Build.VERSION.SDK_INT >= 28 && (links.isPrivateDnsActive() || links.getPrivateDnsServerName() != null)) throw new IOException("PRIVATE_DNS_UNVERIFIED");
             watchNetwork(job, manager);
             job.dnsServers = new ArrayList<>();
             for (InetAddress server : links.getDnsServers()) job.dnsServers.add(new InetSocketAddress(server, 53));
@@ -314,6 +314,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         value.put("currentDnsServers", currentLinks == null ? 0 : currentLinks.getDnsServers().size());
         value.put("currentProxyConfigured", manager.getDefaultProxy() != null);
         value.put("currentPrivateDnsActive", Build.VERSION.SDK_INT >= 28 && currentLinks != null && currentLinks.isPrivateDnsActive());
+        value.put("currentPrivateDnsStrict", Build.VERSION.SDK_INT >= 28 && currentLinks != null && currentLinks.getPrivateDnsServerName() != null);
         value.put("clockEpochMs", System.currentTimeMillis());
         value.put("currentNetwork", current == null ? "" : current.toString());
         value.put("currentTransport", capabilities == null ? "none" : capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ? "wifi" :

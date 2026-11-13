@@ -59,7 +59,7 @@ class HeldDns:
         except (ValueError, UnicodeError, struct.error):
             return
         controlled = re.fullmatch(r"tf[0-9a-f]{32}\.p0-dns\.invalid", name) and kind in (1, 28)
-        positive = name == "valid.p0-dns.invalid" and kind in (1, 28)
+        positive = name in ("valid.p0-dns.invalid", "dot.p0-dns.invalid") and kind in (1, 28)
         with self.lock:
             if controlled or positive:
                 self.queries.append({"type": kind, "name": name})
@@ -104,7 +104,7 @@ def dns_name(name):
 
 
 class CodecDns(HeldDns):
-    """封闭的协议边界对端；仅两个固定正例域名，不递归、不转发。"""
+    """封闭的协议边界对端；仅固定业务／别名及DoT引导名，不递归、不转发。"""
     MODES = ("direct", "cname", "tcp", "tcp-hold", "loop", "ipv6", "wrong-id", "wrong-question", "truncated-tcp", "nxdomain", "malformed", "drop", "servfail", "refused", "tcp-delay", "a-delay-aaaa-drop", "cname-slow", "wrong-id-stream")
 
     def __init__(self):

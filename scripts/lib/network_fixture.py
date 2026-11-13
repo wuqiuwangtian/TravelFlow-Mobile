@@ -43,3 +43,48 @@ class RadioFixture:
                 raise RuntimeError("Radio settings did not restore exactly")
             time.sleep(0.05)
         self.original = None
+
+
+class PrivateDnsFixture:
+    """只允许固定本地DoT引导名；保留键的原值及存在性，不接收用户提供的地址。"""
+    KEYS = ("private_dns_mode", "private_dns_specifier")
+
+    def __init__(self, shell):
+        self.shell = shell
+        self.original = None
+
+    def settings(self):
+        rows = dict(row.split("=", 1) for row in self.shell("settings", "list", "global").splitlines() if "=" in row)
+        return {key: rows[key] for key in self.KEYS if key in rows}
+
+    def preflight(self):
+        values = self.settings()
+        if values.get("private_dns_mode") not in (None, "off", "opportunistic") or values.get("private_dns_specifier") not in (None, ""):
+            raise RuntimeError("Do not replace an existing strict Private DNS configuration")
+        return values
+
+    def strict(self):
+        if self.original is not None:
+            raise RuntimeError("Private DNS fixture already active")
+        self.original = self.preflight()
+        self.shell("settings", "put", "global", "private_dns_specifier", "dot.p0-dns.invalid")
+        self.shell("settings", "put", "global", "private_dns_mode", "hostname")
+
+    def status(self):
+        values = self.settings()
+        return {"mode": values.get("private_dns_mode"), "specifierPresent": "private_dns_specifier" in values,
+                "specifierConfigured": bool(values.get("private_dns_specifier")), "fixtureActive": self.original is not None}
+
+    def restore(self):
+        if self.original is None:
+            return
+        # 先结束严格模式，避免清理名称时仍以严格策略尝试解析。
+        self.shell("settings", "put", "global", "private_dns_mode", "off")
+        for key in ("private_dns_specifier", "private_dns_mode"):
+            if key in self.original:
+                self.shell("settings", "put", "global", key, self.original[key])
+            else:
+                self.shell("settings", "delete", "global", key)
+        if self.settings() != self.original:
+            raise RuntimeError("Private DNS settings did not restore exactly")
+        self.original = None

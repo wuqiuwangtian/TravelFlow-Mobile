@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from lib.connect_fixture import DnsServer, HeldDns, CodecDns, TcpDnsServer, positive_reply
-from lib.network_fixture import RadioFixture
+from lib.network_fixture import RadioFixture, PrivateDnsFixture
 
 
 def query(name, kind=1):
@@ -22,8 +22,8 @@ def query(name, kind=1):
 
 class DnsProtocol(unittest.TestCase):
     def test_fixed_positive_a_and_aaaa_nodata(self):
-        for kind in (1, 28):
-            packet = query("valid.p0-dns.invalid", kind)
+        for name, kind in [(n,k) for n in ("valid.p0-dns.invalid","dot.p0-dns.invalid") for k in (1,28)]:
+            packet = query(name, kind)
             reply = positive_reply(packet)
             self.assertEqual(struct.unpack("!6H", reply[:12]), (0x1234, 0x8180, 1, int(kind == 1), 0, 0))
             self.assertEqual(reply[12:len(packet)], packet[12:])
@@ -58,6 +58,13 @@ class DnsProtocol(unittest.TestCase):
                     self.assertEqual(reply[12:], packet[12:])
                     state.reset()
                     client.settimeout(0.15)
+                # DoT仅开放固定引导名；通过真实UDP验证白名单入口，不只测试报文生成器。
+                client.settimeout(2)
+                packet = query("dot.p0-dns.invalid")
+                client.sendto(packet, server.server_address)
+                self.assertEqual(client.recv(4096), positive_reply(packet))
+                self.assertEqual(state.snapshot()["queries"][0]["name"], "dot.p0-dns.invalid")
+                state.reset()
                 # 非实验域名立即否定，不挂起、不记录、不转发到真实DNS。
                 packet = query("unrelated.invalid")
                 client.settimeout(2)
@@ -181,6 +188,58 @@ class RadioRecovery(unittest.TestCase):
         self.assertEqual(values, original)
 
 
+class PrivateDnsRecovery(unittest.TestCase):
+    def fixture(self, original=None, fail=None):
+        values = dict(original or {})
+        values["unrelated"] = "preserve"
+        initial, writes = dict(values), []
+        def shell(*command):
+            nonlocal fail
+            if command == ("settings", "list", "global"):
+                return "\n".join(f"{key}={value}" for key,value in values.items())
+            writes.append(command)
+            if command[:2] == ("settings", "put"):
+                values[command[3]] = command[4]
+                if fail == command[3]:
+                    fail = None
+                    raise RuntimeError("Injected Private DNS failure after write")
+            elif command[:2] == ("settings", "delete"):
+                values.pop(command[3],None)
+            else:
+                raise AssertionError("Unexpected Private DNS mutation")
+            return ""
+        return PrivateDnsFixture(shell),values,initial,writes
+
+    def test_exact_values_and_absent_keys_restore(self):
+        for original in ({}, {"private_dns_mode":"opportunistic"}, {"private_dns_mode":"off","private_dns_specifier":""}):
+            fixture,values,initial,writes = self.fixture(original)
+            fixture.strict()
+            self.assertEqual(values["private_dns_specifier"],"dot.p0-dns.invalid")
+            self.assertEqual(values["private_dns_mode"],"hostname")
+            fixture.restore()
+            self.assertEqual(values,initial)
+            count = len(writes)
+            fixture.restore()
+            self.assertEqual(len(writes),count)
+
+    def test_partial_write_can_restore(self):
+        for key in PrivateDnsFixture.KEYS:
+            fixture,values,initial,_ = self.fixture(fail=key)
+            with self.assertRaisesRegex(RuntimeError,"after write"):
+                fixture.strict()
+            fixture.restore()
+            self.assertEqual(values,initial)
+
+    def test_existing_strict_or_named_config_rejected_without_writes(self):
+        for original in ({"private_dns_mode":"hostname"},{"private_dns_mode":"off","private_dns_specifier":"existing.invalid"}):
+            fixture,values,initial,writes = self.fixture(original)
+            with self.assertRaisesRegex(RuntimeError,"existing strict"):
+                fixture.strict()
+            fixture.restore()
+            self.assertEqual(writes,[])
+            self.assertEqual(values,initial)
+
+
 spec = importlib.util.spec_from_file_location("connect_runner", Path(__file__).with_name("run-android-connect.py"))
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
@@ -193,7 +252,7 @@ class DeviceGuards(unittest.TestCase):
 
     def test_real_serial_rejected_without_running_any_command(self):
         with patch.object(runner.subprocess, "run") as process:
-            for scenario in ("all", "network", "reconnect", "reconnect-negative", "budget", "worker"):
+            for scenario in ("all", "network", "reconnect", "reconnect-negative", "budget", "worker", "worker-network", "private-dns"):
                 with self.assertRaisesRegex(RuntimeError, "emulator serial"):
                     runner.run(self.options(serial="physical-device", client="okhttp", case=scenario))
             process.assert_not_called()

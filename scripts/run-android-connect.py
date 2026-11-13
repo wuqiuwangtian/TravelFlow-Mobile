@@ -13,7 +13,7 @@ import time
 import urllib.request
 
 from lib.connect_fixture import DnsServer, CodecDns, TcpDnsServer
-from lib.network_fixture import RadioFixture
+from lib.network_fixture import RadioFixture, PrivateDnsFixture
 
 
 def require(condition, message):
@@ -27,7 +27,7 @@ def run(args):
         result = subprocess.run([str(args.adb), "-s", args.serial, *command], check=False,
                                 capture_output=True, text=True, timeout=20)
         if check and result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"ADB command failed (exit {result.returncode}: {' '.join(command[:3])})")
+            raise RuntimeError(f"ADB command failed (exit {result.returncode}: {' '.join(command[:3])}; stdoutBytes={len(result.stdout)}; stderr={result.stderr.strip()[:300]})")
         return result
 
     def shell(*command, check=True):
@@ -53,12 +53,15 @@ def run(args):
     require(not any(row[1] == f"tcp:{args.port}" for row in forwards), "CDP port already owned")
     with urllib.request.urlopen("http://127.0.0.1:18510/observations?requestId=connect_preflight", timeout=3) as response:
         require(response.status == 200, "Start the existing synthetic HTTP service first")
-    for table, chain in [("filter", "P0_SYN_PROBE"), ("nat", "P0_DNS_PROBE")]:
+    for table, chain in [("filter", "P0_SYN_PROBE"), ("nat", "P0_DNS_PROBE"), ("nat", "P0_DOT_PROBE")]:
         require(adb("shell", "iptables", "-t", table, "-S", chain, check=False).returncode != 0, "Fixture chain already exists")
 
-    require(args.case not in ("codec", "budget", "worker") or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
+    require(args.case not in ("codec", "budget", "worker", "worker-network") or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
     state = CodecDns()
     backup_state = CodecDns()
+    require(args.case != "private-dns" or args.expect_sdk >= 28, "Private DNS checks require API28+")
+    private_dns = PrivateDnsFixture(shell)
+    if args.case == "private-dns": private_dns.preflight()
     created = []
     jumps = []
     forwarded = False
@@ -142,7 +145,13 @@ def run(args):
             if not command: continue  # 退出可能发生在pidof与读取之间，下次快照再查。
             require(command == "org.travelflow.p0:p0_dns", "Unexpected DNS worker process")
             helpers.append(pid)
-        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000), "dnsWorkerPids": helpers, "mainPid": shell("pidof", "org.travelflow.p0"), "backupDns": backup_state.snapshot() if args.case == "budget" else None}
+        dot_packets = 0
+        if any(chain == "P0_DOT_PROBE" for _, chain in created):
+            listing = shell("iptables", "-t", "nat", "-nvxL", "P0_DOT_PROBE")
+            counter = re.search(r"^\s*([0-9]+)\s+[0-9]+\s+DNAT\b", listing, re.M)
+            require(counter, "DoT packet counter unavailable")
+            dot_packets = int(counter.group(1))
+        return {"dotPackets": dot_packets, "privateDns": private_dns.status() if args.case == "private-dns" else None, "synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000), "dnsWorkerPids": helpers, "mainPid": shell("pidof", "org.travelflow.p0"), "backupDns": backup_state.snapshot() if args.case == "budget" else None}
 
     class ControlHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -170,12 +179,17 @@ def run(args):
                 state.retire_tcp()
                 self.respond(state.snapshot())
                 return
-            if args.case in ("network", "reconnect", "reconnect-negative") and self.path in ("/network/off", "/network/restore"):
+            if args.case in ("network", "reconnect", "reconnect-negative", "worker-network") and self.path in ("/network/off", "/network/restore"):
                 if self.path == "/network/off":
                     radios.offline()
                 else:
                     radios.restore()
                 self.respond({"radioSettings": radios.settings()})
+                return
+            if args.case == "private-dns" and self.path in ("/private-dns/on", "/private-dns/restore"):
+                if self.path.endswith("/on"): private_dns.strict()
+                else: private_dns.restore()
+                self.respond({"privateDns": private_dns.status()})
                 return
             if args.case == "budget" and self.path.removeprefix("/backup/") in backup_state.MODES:
                 backup_state.reset(self.path.removeprefix("/backup/"))
@@ -230,8 +244,16 @@ def run(args):
                 scenarios = ("budget",)
             if args.case == "worker":
                 scenarios = ("dns-worker",)
+            if args.case == "worker-network":
+                scenarios = ("dns-worker-network",)
+            if args.case == "private-dns":
+                scenarios = ("dns-private-dns",)
             for scenario in scenarios:
                 state.reset()
+                if scenario == "dns-private-dns":
+                    make_rule("nat", "P0_DOT_PROBE",
+                              ["-p", "tcp", "-d", "10.0.2.2", "--dport", "853", "-j", "P0_DOT_PROBE"],
+                              ["-p", "tcp", "-j", "DNAT", "--to-destination", "10.0.2.2:18515"])
                 if scenario == "proxy-guard":
                     original = proxy_settings()
                     require(original["http_proxy"] in (None, ":0", "") and
@@ -275,14 +297,15 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                special = {"dns-worker": "check-android-dns-worker.mjs", "budget": "check-android-dns-budget.mjs", "dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
+                special = {"dns-private-dns": "check-android-private-dns.mjs", "dns-worker-network": "check-android-dns-worker.mjs", "dns-worker": "check-android-dns-worker.mjs", "budget": "check-android-dns-budget.mjs", "dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
                 command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
+                if scenario == "dns-worker-network": command.append("--network")
                 if scenario == "network-offline-cold":
                     command.append("--offline")
                 if scenario in ("dns-reconnect", "dns-reconnect-negative"):
                     command.append("--" + scenario.removeprefix("dns-"))
-                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec", "budget", "dns-worker") else 40)
+                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative", "dns-worker-network", "dns-private-dns") else 100 if scenario in ("dns-tls", "dns-codec", "budget", "dns-worker") else 40)
                 if result.returncode != 0:
                     try:
                         partial = json.loads(result.stdout)
@@ -295,6 +318,7 @@ def run(args):
                 if scenario == "network-offline-cold":
                     require(report["before"] == reports[-1]["local"], "Offline cold start changed existing records")
                 reports.append(report)
+                private_dns.restore()
                 remove_rules()
                 restore_proxy()
                 radios.restore()
@@ -307,7 +331,10 @@ def run(args):
         finally:
             try:
                 adb("shell", "am", "force-stop", "--user", "0", "org.travelflow.p0", check=False)
-                remove_rules()
+                try:
+                    private_dns.restore()
+                finally:
+                    remove_rules()
             finally:
                 try:
                     try:
@@ -330,7 +357,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative", "budget", "worker"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative", "budget", "worker", "worker-network", "private-dns"], default="all")
     options = parser.parse_args()
     require(1024 <= options.port <= 65535 and options.port not in range(18510, 18519), "Choose a separate CDP port")
     run(options)

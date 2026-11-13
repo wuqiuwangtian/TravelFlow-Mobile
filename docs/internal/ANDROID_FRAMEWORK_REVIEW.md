@@ -53,7 +53,7 @@
 | 同版MiniDNS async | [取消路径](https://github.com/MiniDNS/minidns/blob/1.1.1/minidns-async/src/main/java/org/minidns/source/async/AsyncDnsRequest.java)显式取消SelectionKey并通知数据源；该路径未显式关闭通道 | 源码不足以证明符合“取消后立即释放I/O”，本轮未做该客户端的Android行为验收；没有把Future.cancel当完成证据 |
 | [dnsjava 3.6.3](https://github.com/dnsjava/dnsjava/tree/v3.6.3) | BSD-3-Clause；SimpleResolver使用Duration／CompletionStage及NIO，需核对旧Android脱糖、附加依赖和取消传播；不能仅因sendAsync返回Future便推定关闭 | 本轮源码对比，未集成／实测；没有据此宣称旧Android不兼容 |
 
-本次旧分支支持CNAME、A／AAAA解码、UDP截断转TCP及显式套接字关闭；API24验证域名HTTPS身份、TCP取消和硬时限，API35平台分支回归通过。每次请求选择当前Network，DNS服务器和HTTP套接字绑定同一网络；此后已补两组蜂窝虚拟网络丢失／重建与监听清理，详见PROJECT_STATUS；并存网络切换／VPN仍未证明。仅可选debug增加网络状态权限；代理和活动Private DNS明确拒绝，代理拒绝／完整恢复已实测，Private DNS未实测。这些拒绝是实验边界，不能直接当正式产品的降级政策。
+本次旧分支支持CNAME、A／AAAA解码、UDP截断转TCP及显式套接字关闭；API24验证域名HTTPS身份、TCP取消和硬时限，API35平台分支回归通过。每次请求选择当前Network，DNS服务器和HTTP套接字绑定同一网络；此后已补两组蜂窝虚拟网络丢失／重建与监听清理，详见PROJECT_STATUS；并存网络切换／VPN仍未证明。仅可选debug增加网络状态权限；代理和活动Private DNS明确拒绝，代理拒绝／完整恢复已实测，Private DNS已补API35启动前严格配置拒绝与恢复，未证明DoT兼容。这些拒绝是实验边界，不能直接当正式产品的降级政策。
 
 2026-11-13又补共享期限与服务器回退：旧兼容层使用请求创建时的同一绝对截止时间，UDP转TCP、换服务器、A／AAAA及CNAME均不重置。非末台每次最多1000ms且不超过剩余时间的均分份额，末台使用剩余量；SERVFAIL／REFUSED可换下一台，NXDOMAIN立即失败。响应码含义依据[RFC1035 §4.1.1](https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1)，整体工作应受限见[§7.2](https://datatracker.ietf.org/doc/html/rfc1035#section-7.2)；1000ms是本项目实验取值，并非RFC要求或正式产品策略。主机26项真实回环I/O与API24固定双对端域名HTTPS、API35平台分支回归通过。实验两服务器同IP不同端口，不是实际多DNS地址／公网环境；正常auto仍读取当前Network的DNS列表，平台分支继续由系统解析。
 
@@ -69,7 +69,7 @@ P0网络丢失实验已补“绑定Network消失→真正结束旧请求→离�
 | 缓存 | 旧兼容层无缓存；平台分支FLAG_EMPTY未主动禁用系统缓存 | 建议P0不增应用DNS缓存；若后续选择自行维护，需按Network／名称／类型隔离并处理CNAME TTL、并发与失效。不存在和解析失败分开，依据[RFC2308](https://datatracker.ietf.org/doc/html/rfc2308)及更新它的[RFC9520](https://datatracker.ietf.org/doc/html/rfc9520)评审；不能把超时记成NXDOMAIN |
 | 搜索域／主机名 | 当前仅固定完整实验域名，无搜索域扩展 | 明确正式供应商URL与自定义短主机名需求；不能未经确认丢掉短名称，也不能擅自扩展鉴权请求目标 |
 | 服务器与总预算 | 旧分支已共享请求绝对期限与有界服务器切片；丢包、TCP停顿、SERVFAIL／REFUSED的备用接手已测；A后AAAA仍顺序，无类型保底或部分A返回 | 尚需评审类型公平性／部分成功、真实不同DNS地址及网络条件；缓存等不能重置期限。实验仅同次DNS查询切换服务器，没有HTTP自动重发，阈值未成为产品策略 |
-| 代理／Private DNS | 实验明确拒绝；尚未实现兼容，Private DNS拒绝未实测 | 优先保留系统配置及域名TLS身份；评估成熟客户端代理路径与旧系统加密解析的维护成本，不默认绕过、硬编码公共DNS或删除目标能力 |
+| 代理／Private DNS | 代理拒绝／恢复及API35严格Private DNS启动前拒绝／恢复已测，尚未实现兼容 | 优先保留系统配置及域名TLS身份；评估成熟客户端代理路径与旧系统加密解析的维护成本，不默认绕过、硬编码公共DNS或删除目标能力 |
 
 正式采纳前需说明上表哪些由平台承担、哪些由项目维护及如何验收；P0证据支持继续评审Capacitor＋原生传输候选，不等于正式采用MiniDNS兼容层，也不要求先改变UI框架。凭据提案仍需独立确认。
 
@@ -83,7 +83,7 @@ P0网络丢失实验已补“绑定Network消失→真正结束旧请求→离�
 | 双栈结果 | 固定API35源码按网络能力发A／AAAA，收齐所发查询后汇总并排序；有有效地址时可保留另一查询失败下的结果 | 外层截止先到仍会取消整体；不能说首个A到达即返回，也不能将此行为移植结论套到旧兼容层 |
 | 缓存／搜索域 | FLAG_EMPTY未设置NO_CACHE_LOOKUP／STORE；Network.getAllByName是绑定指定网络的系统地址解析 | DnsResolver.query是指定名称的DNS查询，不能等同完整getaddrinfo或宣称已继承搜索域／hosts／DNS64；自有UDP／TCP还需维护正负TTL、类型与Network隔离、搜索顺序等 |
 | 代理路由 | 固定OkHttp默认可用ProxySelector；HTTP代理时路由解析代理主机，SOCKS路径可保留未解析目标 | 当前探针明确拒绝代理；仅移除拒绝不等于支持。须验证代理主机解析、CONNECT、原目标TLS身份、取消、407及失败时无意外直连；PAC与代理认证单列 |
-| Private DNS | [LinkProperties官方约束](https://developer.android.com/reference/android/net/LinkProperties#getPrivateDnsServerName())要求自定义解析器遵从严格／机会加密模式，系统解析承担相应处理 | 旧层直连LinkProperties的UDP／TCP53不等于遵从加密DNS；当前只证明代理拒绝，Private DNS仍未实测。平台分支也未获完整行为背书，不能直接删除保护或硬编码DoH供应商 |
+| Private DNS | [LinkProperties官方约束](https://developer.android.com/reference/android/net/LinkProperties#getPrivateDnsServerName())要求自定义解析器遵从严格／机会加密模式，系统解析承担相应处理 | 旧层直连LinkProperties的UDP／TCP53不等于遵从加密DNS；已有代理拒绝与API35严格配置启动前拒绝／恢复；该AVD未观察到引导查询／DoT连接，未证明加密DNS兼容。平台分支也未获完整行为背书，不能直接删除保护或硬编码DoH供应商 |
 
 工程判断：**优先复用系统地址解析，再验证旧系统如何真正结束挂起工作；暂不继续补应用缓存或搜索域。** 依据是当前核心缺口已从报文编解码转到平台语义，继续补功能会使项目长期维护一个解析客户端。该建议不据此排除自定义地址，也不提高最低Android；用户在理解收益与风险后已确认“预设服务商＋高级自定义地址”，优先完整域名与局域网地址，凭据按目标服务隔离、默认HTTPS；短名称／搜索域、内网HTTP、自定义CA继续单独评审。该产品范围尚未实现，不等于正式采纳传输／凭据架构。
 
@@ -106,7 +106,11 @@ P0网络丢失实验已补“绑定Network消失→真正结束旧请求→离�
 
 本轮API24机制组14项通过：原域HTTPS、DNS挂起取消与6000ms总期限、仅意外终止已核对UID／名称的辅助进程、三个终止条件后的显式新请求、固定400ms绑定延迟中的取消、三次立即取消及三类错误证书。调用方先解绑，再由辅助进程结束自身，只在对应Binder死亡后减绑定计数；普通断连／重连不能代替死亡证据或触发旧请求重试。主进程PID与完整账本不变，结束无辅助进程／晚到事件；实际APK的非导出／独立进程属性已按XML树检查。取消后约156ms检查到结束、总期限终态6034ms（调度与退出仍有开销，不是硬实时上限），绑定延迟取消约461ms；这些是正确性验收时钟，不是性能调查。构建、默认分支回归及一次未定因ADB读取失败均分列于PROJECT_STATUS，不能用后续通过抹掉首次失败。
 
-该实验说明可以用本包进程生命周期替代自有报文I/O作为旧系统候选，但未证明完整系统缓存／搜索域／双栈策略、该路径网络丢失、严格Private DNS、代理／VPN、后台／省电或所有Binder竞态；没有宣称系统共享DNS服务停止。下一项有界验证辅助工作在实际网络丢失时的退出／解绑／新网络新请求，并评审Private DNS拒绝与恢复的可控验收条件，再整理维护路线、正式凭据及框架／支持范围的采纳提案。若出现不能真实退出或不受控重启，回到候选表评审，不以提前终态掩盖。性能调查继续暂缓，正式采纳与支持范围仍交用户确认。
+此后已补API24辅助路径的DNS挂起与TLS读取网络丢失：两者均实际触发onLost并返回NETWORK_LOST，辅助工作／监听及应用FD释放，离线新请求NETWORK_UNAVAILABLE；恢复后不同Network上的显式新ID完成原域HTTPS，旧DNS仍挂起时也能进行新工作，主PID／完整账本不变。API35另补真实LinkProperties显示严格Private DNS时的新请求拒绝与原设置恢复；实验客户端同时检查isPrivateDnsActive和非空严格服务器名，但本次观察两者均为true，未单独触发“仅名称非空”的分支。
+
+Private DNS引导域固定为dot.p0-dns.invalid，可能的853连接仅在本AVD导向宿主现有握手停顿对端，不新增信任或访问公网。本轮未观察到引导查询／DoT连接；最终验收正例采用真实严格LinkProperties状态，不能把未启动的TLS步骤算通过。完整域DNS、随机挂起域及无需DNS的IP HTTP新请求均PRIVATE_DNS_UNVERIFIED，无应用DNS／HTTP；恢复键的原值及存在性后原域HTTPS正常。该限制仍是实验策略，未获用户接受为正式产品政策。
+
+本轮关闭的是辅助进程的两组网络丢失机制与严格配置下启动前拒绝／恢复的证据缺口，未证明完整系统缓存／搜索域／双栈策略、API28实际行为、机会模式有效DoT、请求进行中的Private DNS／代理配置变化、代理／VPN、后台／省电或所有Binder竞态；没有宣称系统共享DNS服务停止。下一项整理正式传输维护路线、框架／支持范围及凭据生命周期采纳提案，分清可采用部分、采用前必过项和用户待定取舍，不默认继续堆同类DNS实验。若出现不能真实退出或不受控重启，回到候选表评审，不以提前终态掩盖。性能调查继续暂缓，正式采纳与支持范围仍交用户确认。
 
 正式凭据生命周期目前只有下列**评审建议，尚未实现或获用户确认**；固定公开token实验不代表这些能力完成：
 
