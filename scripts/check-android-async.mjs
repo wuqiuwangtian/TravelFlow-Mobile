@@ -41,6 +41,17 @@ try {
     });
   })()`);
   const before = await page.evaluate(`${state}.store.read()`);
+  if ((await page.evaluate(`${state}.stream.resources()`)).resolver === "android-dnsresolver") {
+    const id = `reject_pair_${crypto.randomUUID()}`;
+    const code = await page.evaluate(`(async () => {
+      try { await ${state}.stream.start({requestId:${JSON.stringify(id)},transport:'dns-valid',resolver:'fixture-pair'}); }
+      catch (error) { return error.code; }
+      return null;
+    })()`);
+    assert.equal(code,"INVALID_OPTIONS","New platforms must reject the legacy fixture resolver");
+    assert.equal(await observation("observations",id),null);
+    report.legacyFixtureRejected = true;
+  }
   await page.evaluate(`${state}.credentials.clearCredentialFixture()`);
   const missing = await start("dns-valid");
   report.missingCredential = await finished(missing, "error", "CREDENTIAL_UNAVAILABLE");

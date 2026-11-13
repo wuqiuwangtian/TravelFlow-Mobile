@@ -69,6 +69,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
     private static class Job {
         final String id;
         final long started = SystemClock.elapsedRealtime();
+        final long deadlineNanos;
         final AtomicReference<String> reason = new AtomicReference<>();
         volatile Call call;
         volatile Lookup lookup;
@@ -84,7 +85,7 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         volatile int status;
         volatile String dnsHost = "";
         ScheduledFuture<?> deadline;
-        Job(String id) { this.id = id; }
+        Job(String id, long timeoutMillis) { this.id = id; this.deadlineNanos = System.nanoTime() + timeoutMillis * 1_000_000L; }
     }
 
     @PluginMethod
@@ -97,13 +98,15 @@ public class ProbeAsyncStreamPlugin extends Plugin {
         if (!"10.0.2.2".equals(ProbeEndpoint.HOST) || !id.matches("[a-zA-Z0-9_-]{1,80}") ||
             !Set.of("http", "https", "dns", "dns-valid", "dns-hostname", "dns-untrusted", "dns-expired", "hostname", "untrusted", "expired", "handshake").contains(transport) ||
             !Set.of("normal", "stall", "drop", "http-error", "drip", "no-auth", "unauthorized", "redirect").contains(mode) ||
-            !Set.of("auto", "system").contains(resolver) || after < 0 || after > 3) {
+            !Set.of("auto", "system", "fixture-pair").contains(resolver) ||
+            ("fixture-pair".equals(resolver) && (Build.VERSION.SDK_INT >= 29 || !"dns-valid".equals(transport))) || after < 0 || after > 3) {
             call.reject("Invalid experimental options", "INVALID_OPTIONS"); return;
         }
-        Job job = new Job(id);
+        long timeoutMillis = "drip".equals(mode) ? 2500 : 6000;
+        Job job = new Job(id, timeoutMillis);
         if (!active.compareAndSet(null, job)) { call.reject("A stream is still running", "STREAM_BUSY"); return; }
         call.resolve();
-        job.deadline = timer.schedule(() -> stop(job, "DEADLINE"), "drip".equals(mode) ? 2500 : 6000, TimeUnit.MILLISECONDS);
+        job.deadline = timer.schedule(() -> stop(job, "DEADLINE"), timeoutMillis, TimeUnit.MILLISECONDS);
         worker.execute(() -> run(job, transport, mode, resolver, after));
     }
 
@@ -140,10 +143,13 @@ public class ProbeAsyncStreamPlugin extends Plugin {
                 public List<InetAddress> lookup(String name) throws UnknownHostException { return Dns.SYSTEM.lookup(name); }
                 public void cancel() { /* 保留阻塞式系统解析，作为仅更换HTTP库的对照。 */ }
             };
+        } else if ("fixture-pair".equals(resolver)) {
+            InetAddress endpoint = InetAddress.getByAddress(new byte[]{10, 0, 2, 2});
+            lookup = new CodecLookup(job, List.of(new InetSocketAddress(endpoint, 18516), new InetSocketAddress(endpoint, 18518)));
         } else if (Build.VERSION.SDK_INT >= 29) {
             lookup = new PlatformLookup(job);
         } else {
-            lookup = new CodecLookup(job);
+            lookup = new CodecLookup(job, job.dnsServers);
         }
         resolutions.incrementAndGet();
         job.lookup = lookup;
@@ -341,18 +347,21 @@ public class ProbeAsyncStreamPlugin extends Plugin {
 
     private final class CodecLookup implements Lookup {
         final CancelableDnsLookup delegate;
-        CodecLookup(Job job) {
-            delegate = new CancelableDnsLookup(job.dnsServers, new CancelableDnsLookup.Binding() {
+        final Job job;
+        CodecLookup(Job job, List<InetSocketAddress> servers) {
+            this.job = job;
+            delegate = new CancelableDnsLookup(servers, new CancelableDnsLookup.Binding() {
                 public void bind(DatagramSocket socket) throws IOException { job.network.bindSocket(socket); }
                 public void bind(Socket socket) throws IOException { job.network.bindSocket(socket); }
                 public void opened() { dnsSockets.incrementAndGet(); }
                 public void closed() { dnsSockets.decrementAndGet(); }
-            });
+            }, job.deadlineNanos, 1000);
         }
         public void cancel() { delegate.cancel(); }
         public List<InetAddress> lookup(String host) throws UnknownHostException {
             try { return delegate.lookup(host); }
             catch (IOException failure) {
+                if (failure instanceof CancelableDnsLookup.DeadlineExceeded) stop(job, "DEADLINE");
                 UnknownHostException error = new UnknownHostException("DNS codec lookup failed");
                 error.initCause(failure); throw error;
             }

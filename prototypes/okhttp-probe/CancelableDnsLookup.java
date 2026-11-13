@@ -36,14 +36,26 @@ final class CancelableDnsLookup {
 
     private final List<InetSocketAddress> servers;
     private final Binding binding;
-    private final long end = System.nanoTime() + 10_000_000_000L;
+    static final class DeadlineExceeded extends SocketTimeoutException {
+        DeadlineExceeded() { super("DNS absolute deadline"); }
+    }
+
+    private final long end;
+    private final long retrySliceNanos;
     private Closeable owned;
     private boolean cancelled;
 
     CancelableDnsLookup(List<InetSocketAddress> servers, Binding binding) {
+        this(servers, binding, System.nanoTime() + 10_000_000_000L, 1000);
+    }
+
+    CancelableDnsLookup(List<InetSocketAddress> servers, Binding binding, long absoluteDeadlineNanos, int retrySliceMillis) {
         if (servers.isEmpty() || servers.stream().anyMatch(server -> server.isUnresolved())) {
             throw new IllegalArgumentException("Explicit resolved network DNS servers required");
         }
+        if (retrySliceMillis < 1 || retrySliceMillis > 10000) throw new IllegalArgumentException("Invalid retry slice");
+        this.end = absoluteDeadlineNanos;
+        this.retrySliceNanos = retrySliceMillis * 1_000_000L;
         this.servers = new ArrayList<>(servers);
         this.binding = binding;
     }
@@ -71,7 +83,7 @@ final class CancelableDnsLookup {
 
     private synchronized void check() throws IOException {
         if (cancelled) throw new IOException("DNS cancelled");
-        if (System.nanoTime() >= end) throw new SocketTimeoutException("DNS operation timeout");
+        if (end - System.nanoTime() <= 0) throw new DeadlineExceeded();
     }
 
     private int remaining(long attemptEnd) throws IOException {
@@ -85,6 +97,7 @@ final class CancelableDnsLookup {
         List<InetAddress> addresses = new ArrayList<>();
         addresses.addAll(resolveType(DnsName.from(host), TYPE.A));
         addresses.addAll(resolveType(DnsName.from(host), TYPE.AAAA));
+        check();
         if (addresses.isEmpty()) throw new UnknownHostException("DNS has no address records");
         return addresses;
     }
@@ -135,24 +148,34 @@ final class CancelableDnsLookup {
 
     private DnsMessage exchange(DnsMessage query) throws IOException {
         IOException last = null;
-        for (InetSocketAddress server : servers) {
+        for (int index = 0; index < servers.size(); index++) {
             check();
+            long now = System.nanoTime();
+            int left = servers.size() - index;
+            // 有备用服务器时保留余量；最后一个服务器沿用剩余总预算，绝不重置期限。
+            long attemptEnd = now + (left == 1 ? end - now : Math.min(retrySliceNanos, (end - now) / left));
+            InetSocketAddress server = servers.get(index);
             try {
-                DnsMessage answer = udp(server, query);
-                return answer.truncated ? tcp(server, query) : answer;
+                remaining(attemptEnd);
+                DnsMessage answer = udp(server, query, attemptEnd);
+                if (answer.truncated) answer = tcp(server, query, attemptEnd);
+                remaining(attemptEnd);
+                if (answer.responseCode == DnsMessage.RESPONSE_CODE.SERVER_FAIL || answer.responseCode == DnsMessage.RESPONSE_CODE.REFUSED) {
+                    throw new IOException("Retryable DNS server response");
+                }
+                return answer;
             } catch (IOException failure) { last = failure; }
         }
         check();
         throw last == null ? new IOException("No DNS response") : last;
     }
 
-    private DnsMessage udp(InetSocketAddress server, DnsMessage query) throws IOException {
+    private DnsMessage udp(InetSocketAddress server, DnsMessage query, long attemptEnd) throws IOException {
         DatagramSocket socket = new DatagramSocket(null);
         install(socket);
         try {
             binding.bind(socket); socket.connect(server);
             byte[] bytes = query.toArray(); socket.send(new DatagramPacket(bytes, bytes.length));
-            long attemptEnd = System.nanoTime() + 10_000_000_000L;
             while (true) {
                 socket.setSoTimeout(remaining(attemptEnd));
                 byte[] buffer = new byte[4096]; DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
@@ -175,15 +198,14 @@ final class CancelableDnsLookup {
         return bytes;
     }
 
-    private DnsMessage tcp(InetSocketAddress server, DnsMessage query) throws IOException {
+    private DnsMessage tcp(InetSocketAddress server, DnsMessage query, long attemptEnd) throws IOException {
         Socket socket = new Socket();
         install(socket);
         try {
-            binding.bind(socket); socket.connect(server, 1500);
+            binding.bind(socket); socket.connect(server, Math.min(1500, remaining(attemptEnd)));
             byte[] bytes = query.toArray();
             socket.getOutputStream().write(bytes.length >>> 8); socket.getOutputStream().write(bytes.length & 255);
             socket.getOutputStream().write(bytes); socket.getOutputStream().flush();
-            long attemptEnd = System.nanoTime() + 10_000_000_000L;
             InputStream input = socket.getInputStream();
             byte[] header = readExactly(socket, input, 2, attemptEnd);
             int length = ((header[0] & 255) << 8) | (header[1] & 255);

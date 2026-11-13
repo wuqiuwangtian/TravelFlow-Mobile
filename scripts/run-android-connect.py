@@ -56,8 +56,9 @@ def run(args):
     for table, chain in [("filter", "P0_SYN_PROBE"), ("nat", "P0_DNS_PROBE")]:
         require(adb("shell", "iptables", "-t", table, "-S", chain, check=False).returncode != 0, "Fixture chain already exists")
 
-    require(args.case != "codec" or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
+    require(args.case not in ("codec", "budget") or args.expect_sdk < 29, "Codec-specific checks require the legacy branch")
     state = CodecDns()
+    backup_state = CodecDns()
     created = []
     jumps = []
     forwarded = False
@@ -132,9 +133,9 @@ def run(args):
                 if len(fields) <= 9 or fields[7] != uid or fields[9] == "0":
                     continue
                 remote = fields[2]
-                if remote.endswith("0302000A:0035") or any(remote.endswith(f"0202000A:{port:04X}") for port in range(18510, 18516)):
+                if remote.endswith("0302000A:0035") or any(remote.endswith(f"0202000A:{port:04X}") for port in range(18510, 18519)):
                     owned_sockets += 1
-        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000)}
+        return {"synPackets": packets, "synSockets": sockets, "dns": state.snapshot(), "probeOwnedSockets": owned_sockets, "hostEpochMs": int(time.time() * 1000), "backupDns": backup_state.snapshot() if args.case == "budget" else None}
 
     class ControlHandler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -169,6 +170,10 @@ def run(args):
                     radios.restore()
                 self.respond({"radioSettings": radios.settings()})
                 return
+            if args.case == "budget" and self.path.removeprefix("/backup/") in backup_state.MODES:
+                backup_state.reset(self.path.removeprefix("/backup/"))
+                self.respond(backup_state.snapshot())
+                return
             if self.path == "/release":
                 state.release()
             elif self.path.removeprefix("/mode/") in state.MODES:
@@ -183,11 +188,16 @@ def run(args):
             dns = stack.enter_context(DnsServer(state))
             tcp_dns = stack.enter_context(TcpDnsServer(state, 18516))
             control = stack.enter_context(ThreadingHTTPServer(("127.0.0.1", 18517), ControlHandler))
-            for server in (dns, tcp_dns, control):
+            listeners = [dns, tcp_dns, control]
+            if args.case == "budget":
+                listeners.extend([stack.enter_context(DnsServer(backup_state, 18518)), stack.enter_context(TcpDnsServer(backup_state, 18518))])
+            for server in listeners:
                 threading.Thread(target=server.serve_forever, daemon=True).start()
                 stack.callback(server.shutdown)
             stack.callback(state.release)
             stack.callback(state.retire_tcp)
+            stack.callback(backup_state.release)
+            stack.callback(backup_state.retire_tcp)
             scenarios = ("baseline", "syn", "dns-system", "dns", "dns-deadline", "dns-codec", "dns-tls", "baseline") if args.client == "okhttp" else ("baseline", "syn", "dns", "dns-deadline", "baseline")
             if args.expect_sdk >= 29:
                 scenarios = tuple(item for item in scenarios if item != "dns-codec")
@@ -199,6 +209,8 @@ def run(args):
                 scenarios = ("dns-network", "network-offline-cold", "baseline")
             if args.case in ("reconnect", "reconnect-negative"):
                 scenarios = ("dns-" + args.case,)
+            if args.case == "budget":
+                scenarios = ("budget",)
             for scenario in scenarios:
                 state.reset()
                 if scenario == "proxy-guard":
@@ -244,14 +256,14 @@ def run(args):
                         pass
                     require(time.monotonic() < end, "Probe WebView did not become available")
                     time.sleep(0.05)
-                special = {"dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
+                special = {"budget": "check-android-dns-budget.mjs", "dns-codec": "check-android-dns-codec.mjs", "dns-tls": "check-android-async.mjs", "proxy-guard": "check-android-proxy-guard.mjs", "dns-reconnect": "check-android-network.mjs", "dns-reconnect-negative": "check-android-network.mjs", "dns-network": "check-android-network.mjs", "network-offline-cold": "check-android-network.mjs"}
                 command = ["node", str(Path(__file__).with_name(special[scenario])), "--port", str(args.port)] if scenario in special else [
                     "node", str(Path(__file__).with_name("check-android-connect.mjs")), "--port", str(args.port), "--case", scenario, "--client", args.client]
                 if scenario == "network-offline-cold":
                     command.append("--offline")
                 if scenario in ("dns-reconnect", "dns-reconnect-negative"):
                     command.append("--" + scenario.removeprefix("dns-"))
-                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec") else 40)
+                result = subprocess.run(command, text=True, capture_output=True, timeout=150 if scenario in ("dns-network", "dns-reconnect", "dns-reconnect-negative") else 100 if scenario in ("dns-tls", "dns-codec", "budget") else 40)
                 if result.returncode != 0:
                     try:
                         partial = json.loads(result.stdout)
@@ -299,7 +311,7 @@ if __name__ == "__main__":
     parser.add_argument("--expect-sdk", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--client", choices=["platform", "okhttp"], default="platform")
-    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative"], default="all")
+    parser.add_argument("--case", choices=["all", "tls", "codec", "proxy", "network", "reconnect", "reconnect-negative", "budget"], default="all")
     options = parser.parse_args()
-    require(1024 <= options.port <= 65535 and options.port not in range(18510, 18518), "Choose a separate CDP port")
+    require(1024 <= options.port <= 65535 and options.port not in range(18510, 18519), "Choose a separate CDP port")
     run(options)

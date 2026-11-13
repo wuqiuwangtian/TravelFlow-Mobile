@@ -193,7 +193,7 @@ class DeviceGuards(unittest.TestCase):
 
     def test_real_serial_rejected_without_running_any_command(self):
         with patch.object(runner.subprocess, "run") as process:
-            for scenario in ("all", "network", "reconnect", "reconnect-negative"):
+            for scenario in ("all", "network", "reconnect", "reconnect-negative", "budget"):
                 with self.assertRaisesRegex(RuntimeError, "emulator serial"):
                     runner.run(self.options(serial="physical-device", client="okhttp", case=scenario))
             process.assert_not_called()

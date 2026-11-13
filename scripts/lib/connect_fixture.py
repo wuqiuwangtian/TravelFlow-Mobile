@@ -5,6 +5,7 @@ import socket
 import socketserver
 import struct
 import threading
+import time
 
 
 def question(packet):
@@ -104,7 +105,7 @@ def dns_name(name):
 
 class CodecDns(HeldDns):
     """封闭的协议边界对端；仅两个固定正例域名，不递归、不转发。"""
-    MODES = ("direct", "cname", "tcp", "tcp-hold", "loop", "ipv6", "wrong-id", "wrong-question", "truncated-tcp", "nxdomain", "malformed")
+    MODES = ("direct", "cname", "tcp", "tcp-hold", "loop", "ipv6", "wrong-id", "wrong-question", "truncated-tcp", "nxdomain", "malformed", "drop", "servfail", "refused", "tcp-delay", "a-delay-aaaa-drop", "cname-slow", "wrong-id-stream")
 
     def __init__(self):
         super().__init__()
@@ -155,12 +156,20 @@ class CodecDns(HeldDns):
             return super().handle(packet, address, sock)
         with self.lock:
             mode = self.mode
-            self.queries.append({"name": name, "type": kind, "protocol": "tcp" if tcp else "udp"})
-        if mode == "nxdomain":
+            self.queries.append({"name": name, "type": kind, "protocol": "tcp" if tcp else "udp", "receivedMs": int(time.monotonic() * 1000)})
+        if mode == "drop" or (mode == "a-delay-aaaa-drop" and kind == 28):
+            return
+        if mode == "a-delay-aaaa-drop" or mode == "cname-slow":
+            time.sleep(0.5)
+        if mode == "tcp-delay" and not tcp:
+            time.sleep(0.2)
+        if mode in ("servfail", "refused"):
+            reply = packet[:2] + struct.pack("!5H", 0x8182 if mode == "servfail" else 0x8185, 1, 0, 0, 0) + query
+        elif mode == "nxdomain":
             reply = negative_reply(packet)
-        elif mode in ("tcp", "tcp-hold", "truncated-tcp") and not tcp:
+        elif mode in ("tcp", "tcp-hold", "truncated-tcp", "tcp-delay") and not tcp:
             reply = packet[:2] + struct.pack("!5H", 0x8380, 1, 0, 0, 0) + query
-        elif mode in ("cname", "loop") and (name == "valid.p0-dns.invalid" or mode == "loop"):
+        elif mode in ("cname", "loop", "cname-slow") and (name == "valid.p0-dns.invalid" or mode == "loop"):
             target = "answer.p0-dns.invalid" if name == "valid.p0-dns.invalid" else "valid.p0-dns.invalid"
             data = dns_name(target)
             answer = b"\xc0\x0c" + struct.pack("!2HIH", 5, 1, 0, len(data)) + data
@@ -177,8 +186,13 @@ class CodecDns(HeldDns):
                 bad = bad[:-1] + b"\x63"  # 错误响应带污染地址，若被采纳，结果断言必定失败。
             sock.sendto(bad, address)
             # 给客户端辨识错误响应的机会，再提供正确响应；错误数据不可污染结果。
-            import time
             time.sleep(0.03)
+        if mode == "wrong-id-stream":
+            bad = bytes([reply[0] ^ 1]) + reply[1:]
+            for _ in range(32):
+                sock.sendto(bad, address)
+                time.sleep(0.03)
+            return
         sock.sendto(reply, address)
 
 
@@ -212,7 +226,7 @@ class TcpDnsServer(socketserver.ThreadingTCPServer):
                         state.tcp_connections.add(self.request)
                         mode = state.mode
                     try:
-                        if mode == "tcp-hold":
+                        if mode in ("tcp-hold", "tcp-delay"):
                             with state.lock:
                                 state.queries.append({"name": name, "type": question(packet)[1], "protocol": "tcp"})
                             if self.request.recv(1) == b"":
