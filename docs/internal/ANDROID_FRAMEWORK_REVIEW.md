@@ -66,12 +66,45 @@ P0网络丢失实验已补“绑定Network消失→真正结束旧请求→离�
 | 语义 | 当前限制 | 拟验证／评审的边界 |
 | --- | --- | --- |
 | 网络生命周期 | 请求快照绑定及实际丢失已有证据；重建Network不复用旧标识 | 同时存在多个网络、旧网仍存续、VPN及代理改变需分开验证；Network存在不等于对端可达 |
-| 缓存 | 旧兼容层无缓存；平台缓存另由系统管理 | 若实现，按Network、规范化域名、类型隔离，正确处理A／AAAA／CNAME TTL；负缓存参考[RFC2308](https://www.rfc-editor.org/info/rfc2308/)，不能将超时当NXDOMAIN长期缓存 |
+| 缓存 | 旧兼容层无缓存；平台分支FLAG_EMPTY未主动禁用系统缓存 | 建议P0不增应用DNS缓存；若后续选择自行维护，需按Network／名称／类型隔离并处理CNAME TTL、并发与失效。不存在和解析失败分开，依据[RFC2308](https://datatracker.ietf.org/doc/html/rfc2308)及更新它的[RFC9520](https://datatracker.ietf.org/doc/html/rfc9520)评审；不能把超时记成NXDOMAIN |
 | 搜索域／主机名 | 当前仅固定完整实验域名，无搜索域扩展 | 明确正式供应商URL与自定义短主机名需求；不能未经确认丢掉短名称，也不能擅自扩展鉴权请求目标 |
 | 服务器与总预算 | 旧分支已共享请求绝对期限与有界服务器切片；丢包、TCP停顿、SERVFAIL／REFUSED的备用接手已测；A后AAAA仍顺序，无类型保底或部分A返回 | 尚需评审类型公平性／部分成功、真实不同DNS地址及网络条件；缓存等不能重置期限。实验仅同次DNS查询切换服务器，没有HTTP自动重发，阈值未成为产品策略 |
 | 代理／Private DNS | 实验明确拒绝；尚未实现兼容，Private DNS拒绝未实测 | 优先保留系统配置及域名TLS身份；评估成熟客户端代理路径与旧系统加密解析的维护成本，不默认绕过、硬编码公共DNS或删除目标能力 |
 
 正式采纳前需说明上表哪些由平台承担、哪些由项目维护及如何验收；P0证据支持继续评审Capacitor＋原生传输候选，不等于正式采用MiniDNS兼容层，也不要求先改变UI框架。凭据提案仍需独立确认。
+
+### 维护责任与下一项对照（2026-11-13，建议未正式采纳）
+
+本轮核对固定OkHttp Android5.3.2发布的[源码Jar](https://repo.maven.apache.org/maven2/com/squareup/okhttp3/okhttp-android/5.3.2/okhttp-android-5.3.2-sources.jar)、AOSP [android-15.0.0_r1 DnsResolver](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/tags/android-15.0.0_r1/framework/src/android/net/DnsResolver.java)与[Network](https://android.googlesource.com/platform/packages/modules/Connectivity/+/refs/tags/android-15.0.0_r1/framework/src/android/net/Network.java)，没有把最新网页新增的HTTPS记录查询接口混入当前API35实现，也未升级依赖。源码核对是接口／维护归属证据，不是新的Android行为验收。
+
+| 需要承担的语义 | 平台可提供什么 | 项目仍须负责什么 |
+| --- | --- | --- |
+| 查询与取消 | API29+ DnsResolver提供Network、CancellationSignal与查询标志；既有平台取消实验有效 | 同一请求期限、真实资源回收、单终态、迟到回调及网络生命周期；API24–28没有因此获得这个API |
+| 双栈结果 | 固定API35源码按网络能力发A／AAAA，收齐所发查询后汇总并排序；有有效地址时可保留另一查询失败下的结果 | 外层截止先到仍会取消整体；不能说首个A到达即返回，也不能将此行为移植结论套到旧兼容层 |
+| 缓存／搜索域 | FLAG_EMPTY未设置NO_CACHE_LOOKUP／STORE；Network.getAllByName是绑定指定网络的系统地址解析 | DnsResolver.query是指定名称的DNS查询，不能等同完整getaddrinfo或宣称已继承搜索域／hosts／DNS64；自有UDP／TCP还需维护正负TTL、类型与Network隔离、搜索顺序等 |
+| 代理路由 | 固定OkHttp默认可用ProxySelector；HTTP代理时路由解析代理主机，SOCKS路径可保留未解析目标 | 当前探针明确拒绝代理；仅移除拒绝不等于支持。须验证代理主机解析、CONNECT、原目标TLS身份、取消、407及失败时无意外直连；PAC与代理认证单列 |
+| Private DNS | [LinkProperties官方约束](https://developer.android.com/reference/android/net/LinkProperties#getPrivateDnsServerName())要求自定义解析器遵从严格／机会加密模式，系统解析承担相应处理 | 旧层直连LinkProperties的UDP／TCP53不等于遵从加密DNS；当前只证明代理拒绝，Private DNS仍未实测。平台分支也未获完整行为背书，不能直接删除保护或硬编码DoH供应商 |
+
+工程判断：**优先复用系统地址解析，再验证旧系统如何真正结束挂起工作；暂不继续补应用缓存或搜索域。** 依据是当前核心缺口已从报文编解码转到平台语义，继续补功能会使项目长期维护一个解析客户端。该建议不据此排除自定义地址，也不提高最低Android；服务地址是否允许自定义、是否要求短名称／搜索域已向用户澄清。用户要求先解释意义、收益与风险，尚未作出选择；均保持待定，不能当作只支持预设供应商。
+
+自定义服务地址的含义是按用户配置选择在线服务的目标URL，不是输入任意DNS服务器，也不是替用户建立公网中转。正式交互尚未设计／实现；建议保留预设服务商入口，并评审高级自定义配置，凭据按目标服务隔离。完整域名（例如`https://api.example.net/v1`）、局域网IP（例如`https://192.168.1.20:8443/v1`）、短名称（例如`https://llm:8443/v1`）须分开：前两者仍需可达性、证书与协议验收，短名称另涉及搜索域及原名称的TLS身份，不能只把字符串变成URL就算支持。
+
+收益是手机可独立切换兼容供应商、自建服务或局域网模型；用户选局域网服务时该服务须可达，但不把电脑在线变成其他手机功能的前提。代价包括目标服务可能接收请求内容及其对应凭据、地址误填或重定向导致的凭据错误发送、证书／内网可达性失败、同名兼容接口的流式与错误行为差异。拟在正式实现前评审目标确认、按目标绑定凭据、默认HTTPS且不以忽略证书解决局域网接入、明确错误与保留本地数据；这些仍是建议，不能冒充已有安全能力。代理、Private DNS与服务地址是不同配置，不自动替用户互换。
+
+| 旧系统候选路线 | 已有证据／潜在收益 | 额外维护与进入条件 |
+| --- | --- | --- |
+| 保留MiniDNS core＋自有I/O | API24取消、总期限、多服务器、CNAME与TLS已有证据 | 项目继续维护缓存／搜索域／双栈合并、排序、加密DNS等；这些成本未被一份core依赖覆盖，不能用当前固定对端验证替代 |
+| 系统地址解析放在本包私有辅助进程 | Network.getAllByName可将地址解析交给该Network的系统路径；辅助进程结束可能释放应用自己的阻塞工作 | **尚无实现或行为证据。** 新增Binder／服务生命周期、进程死亡与迟到结果处理；系统共享DNS服务是否继续后台工作另计。只能先做可选debug机制对照，不能直接替换正式架构 |
+
+[Android进程文档](https://developer.android.com/guide/components/processes-and-threads)允许为本包组件指定进程；[Process.killProcess](https://developer.android.com/reference/android/os/Process#killProcess(int))受UID权限约束。这只是第二条路线可调查的机制依据，不证明取消、时限或低开销已经满足。这里的“私有辅助进程”与主应用同UID，不是isolatedProcess安全沙箱；不在那里初始化账本、凭据或HTTP，不为结束DNS强停主应用，不将终止其他应用作为方案。
+
+下一项只做一次有界的旧系统机制对照：保留现有客户端，新增显式可选debug路径，在固定虚构域名与明确专用API24 AVD中验证同Network系统解析。完成条件为：
+
+1. 确认真实DNS查询正在挂起后，取消及6000ms期限均使本次辅助工作／进程实际结束，解绑与监听释放后才发一个终态；主应用PID和账本快照不变。不能只看Future、Binder确认或stopService返回，也不宣称系统共享DNS服务被停止。
+2. 下一次显式新ID可启动新工作并完成原域HTTPS、Host／SNI、公开虚构授权及错误证书拒绝；不自动重试旧HTTP。覆盖绑定期间立即取消、迟到连接／结果和意外进程死亡，避免误杀新工作或自动重启循环。
+3. 辅助服务不导出，只进入该可选debug；默认emulator／usb与release的实际APK不含它，不新增权限／业务／共享契约；API35既有平台分支保持独立回归。不得操作手机、其他ADB设备或宿主网络。
+
+若机制无法满足真实退出或引入不受控重启，本次对照记失败并回到上表评审，不以继续加线程或缩短表面终态时间掩盖。若通过，再决定是否值得承担进程生命周期成本，并单列系统语义、代理／Private DNS与实际网络的行为验收。暂不估算未测工期或性能，继续遵守性能调查暂缓；正式采纳与支持范围仍交用户确认。
 
 正式凭据生命周期目前只有下列**评审建议，尚未实现或获用户确认**；固定公开token实验不代表这些能力完成：
 
