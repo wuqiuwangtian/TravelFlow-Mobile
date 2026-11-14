@@ -35,6 +35,7 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       - run: pnpm check:contracts
       - run: pnpm check:ledger
+      - run: pnpm check:p1-review
       - run: pnpm typecheck
       - name: Check probe script syntax (native interaction requires an isolated emulator)
         run: |

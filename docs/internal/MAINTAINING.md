@@ -443,13 +443,15 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 ## 正式主线与P1设计的只读复核
 
-先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的“正式实现主线决定与采用门槛（2026-11-14）”：核对已确认的Capacitor8.6.0主线／分层、服务地址／分级支持／锁屏使用规则及候选传输门槛。再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：核对固定依据、金额／日期区别、原生事务顺序、18项保护样例及实现前差异。此入口是设计复核，无需SDK、ADB、设备或真实凭据；文中字段／命令是草案，不是已注册API或两端已接受的协议。
+先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的“正式实现主线决定与采用门槛（2026-11-14）”：核对已确认的Capacitor8.6.0主线／分层、服务地址／分级支持／锁屏使用规则及候选传输门槛。再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：核对固定依据、金额／日期区别、原生事务顺序、18项保护样例及第7节具体评审要求；[评审JSON](fixtures/p1-review-cases.json)记录12项固定源码场景和金额／日期计算资料。此入口无需SDK、ADB、Python依赖、设备或真实凭据；文中字段／命令是草案，不是已注册API或两端已接受的协议。
 
-在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm typecheck`，预期固定快照／只读契约、14组汇总样例及类型通过。它们只说明现有基线未被文档改坏，不验收草案18项写入／故障样例、密钥轮换、锁屏或后台能力；无需本机重建APK或重跑历史模拟器。复核应能指出“汇总允许旧孤立回款”与“新写入拒绝孤立回款”、行程日与付款日、已提交重放与过期基线检查的区别。下一步按PRODUCT_ROADMAP的P1条目形成跨仓共同样例与版本差异，再固化契约／接口和恢复设计。
+在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-review`、`pnpm typecheck`。前三者分别预期固定快照通过、14组既有汇总样例通过，以及评审JSON输出6组只读金额、2组时区换算、2组跨日算术和12项源码场景编目；后者预期类型通过。新入口必须仍输出desktop_joint_review=pending、python_backend_executed=false、mobile_write_scenarios_executed=0，不验收草案18项写入／故障样例、凭据、锁屏或后台能力；无需本机重建APK或重跑历史模拟器。
+
+可将JSON复制到仓库外，修改金额预期、日期、跨日偏移、重复场景ID或伪造联合通过，再运行`node scripts/check-p1-review.mjs PATH`，预期非零退出；不要为修复检查而盲改预期或将pending改为已通过。该检查器不会联网验证源文件blob、执行JSON中的业务步骤或生成共享协议。复核还应能区分原操作回执与当前分支状态、删除后重放与过期基线拒绝，以及“旧数据可读”与“新写入有效”。下一步按设计第7节与路线图P1核对电脑侧结果，再固化契约／接口和恢复设计。
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：收口设计草案中的金额／日期／身份与版本差异，形成共同保护样例及待电脑侧确认项，不直接实现正式写入。Capacitor8.6.0主线与分层已由用户确认；P0实验不直接变产品API，正式适配、支持清单与发布门槛见ANDROID_FRAMEWORK_REVIEW。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：具体候选样例与电脑侧评审要求已在设计第7节准备，需获得固定版本的参考结果／语义确认，记录接受／修改／待定项后再收口契约，不直接实现正式写入。Capacitor8.6.0主线与分层已由用户确认；P0实验不直接变产品API，正式适配、支持清单与发布门槛见ANDROID_FRAMEWORK_REVIEW。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

@@ -11,6 +11,7 @@
   "scripts": {
     "check:contracts": "node scripts/check-contracts.mjs",
     "check:ledger": "node scripts/check-ledger.mjs",
+    "check:p1-review": "node scripts/check-p1-review.mjs",
     "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck src/domain/ledger.ts",
     "prepare:android": "node scripts/prepare-android-probe.mjs"
   },
