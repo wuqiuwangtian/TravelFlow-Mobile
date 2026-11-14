@@ -441,9 +441,15 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 `PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现有12项，新增Private DNS原值／缺失键恢复、原值被修改后抛错的两种恢复、已有严格配置无写入拒绝，并通过真实回环UDP验证固定DoT引导名白名单；两个新case的物理serial在任何ADB调用前拒绝。内核状态读失败继续使验收失败，不将缺失数据当零、不自动重试；ADB错误会附退出码、固定命令前缀、stdout字节数及有界stderr。finally精确恢复设置、移除自己的规则／转发并强停本包；最后停自己的AVD和对端，保留数据，不重启全局ADB。
 
+## 正式采纳提案的只读复核
+
+先读ANDROID_FRAMEWORK_REVIEW的“正式实现主线采纳提案（2026-11-14）”：核对已确认的服务地址／分级支持／锁屏使用规则、尚待确认的Capacitor主线、候选传输与采用前门槛。此入口是设计复核，无需SDK、ADB、设备或真实凭据；浏览文中的官方Chrome更新线与Android Keystore资料，不能由历史组件能运行推导持续维护。
+
+在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm typecheck`，预期固定快照／只读契约、14组汇总样例及类型通过。它们只说明现有基线未被提案改坏，不验收新的业务写入、密钥轮换、锁屏或后台能力；无需重建APK或重跑历史模拟器。正式主线确认后，下一步仅起草P1写入／本地事务契约与保护样例，按PRODUCT_ROADMAP及提案门槛完成跨仓版本评审，再决定实现。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；API35恢复首请求已补有界只读复现与分阶段诊断，原失败未再复现、仍待证据；已补旧分支共享绝对期限与固定双DNS备用回退；固定源码与平台／项目的维护责任、候选对照及完成条件已列在ANDROID_FRAMEWORK_REVIEW的“维护责任、已确认地址范围与辅助进程对照”；辅助进程已补可选debug机制与API24证据，已补辅助路径网络丢失与严格Private DNS启动前拒绝／恢复，下一项整理正式维护路线、框架／支持范围及凭据生命周期的采纳提案，列清采用前必过项与待定取舍；具体边界见PROJECT_STATUS。服务地址已确认预设＋高级自定义，优先完整域名／局域网地址、默认HTTPS及按目标隔离凭据，特殊名称／明文／证书继续评审，尚未正式实现；正式凭据生命周期及框架／支持范围仍需评审。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
+本仓库下一项由[移动路线P0](PRODUCT_ROADMAP.md)安排。已核对`node_modules/@capacitor/android/capacitor/src/main/java/com/getcapacitor/plugin/CapacitorHttp.java`及同目录下的`util/HttpRequestHandler.java`：8.6.0实现读取完整响应后才resolve，公开请求接口没有单请求取消；销毁插件时的disconnect不等于用户可取消请求。原生适配探针已有上面的分块／取消／读取与TLS连接超时／总时限／显式恢复、HTTPS与虚构凭据验收入口，实际证据见PROJECT_STATUS；这只证明此环境中自建适配可行，不正式选定框架。框架与兼容性评审已形成，见ANDROID_FRAMEWORK_REVIEW；旧系统＋可更新WebView已补API24／26的32／64位匹配组合；连接故障实验已补SYN正例与DNS取消／硬时限失败；可选客户端已补平台及MiniDNS报文层的取消／TLS组合、当前网络绑定与代理拒绝／恢复；已补蜂窝虚拟网络断开／重建与监听释放；API35恢复首请求已补有界只读复现与分阶段诊断，原失败未再复现、仍待证据；已补旧分支共享绝对期限与固定双DNS备用回退；固定源码与平台／项目的维护责任、候选对照及完成条件已列在ANDROID_FRAMEWORK_REVIEW的“维护责任、已确认地址范围与辅助进程对照”；辅助进程已补可选debug机制与API24证据，已补辅助路径网络丢失与严格Private DNS启动前拒绝／恢复，采纳提案已整理，支持分级与锁屏使用规则已确认；下一项由用户确认正式实现主线，再进入P1契约／本地事务设计，正式传输／凭据仍须通过各自采用门槛；具体边界见PROJECT_STATUS。服务地址已确认预设＋高级自定义，优先完整域名／局域网地址、默认HTTPS及按目标隔离凭据，特殊名称／明文／证书继续评审，尚未正式实现；正式凭据生命周期及框架／支持范围仍需评审。真实凭据／供应商仍未覆盖。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)与[Android连接说明](https://developer.android.com/reference/java/net/HttpURLConnection)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 
