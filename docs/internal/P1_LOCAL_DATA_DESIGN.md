@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-15已完成两轮电脑侧材料复核，第11节记录d0cd2b6第二轮反馈、E01／E02修正及E03原型命名策略。原74项样例保留，补14项后Node／Python共88项一致；修订候选仍未共同定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线／分层和第9节产品规则；本页不批准正式写入、迁移、联网／凭据实现或发布。未注册桥接API、建表或更新vendor，值原型不打包进APK或处理持久存储。
+状态：2026-11-15已接收电脑d30e41b第三轮复核，第12节限定关闭E01／E02旧缺口并记录88项接受结论；第13节新增58项原始JSON宿主候选，两路一致、待电脑独立复核。原74＋14项样例保持原字节，正式联合协议仍未定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线／分层和第9节产品规则；本页不批准正式写入、迁移、联网／凭据实现或发布。未注册桥接API、建表或更新vendor，两个原型不打包进APK或处理持久存储。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -317,3 +317,39 @@ Node原型新增同目录JSON资产，复跑须保留它；Python入口接受可
 本机Node v26.3.0／ICU78.3／tz2026b、Python3.14.10／系统tz2026f；没有把此次本机结果写成电脑Python3.13.13已复跑新修订。另用六份改坏的边界预期核对拒绝行为，包括把下溢误标resolution、允许大小写／别名、错算半小时DST及错误拒绝合法最小年；临时副本删除。
 
 电脑RAW1小数舍入、RAW2重复键证据与本原型声明的缺口一致，本轮没有修复解码器：输入在Number／float前丢失的信息不能靠值片段恢复。raw_json_decoder_verified仍false，联合契约仍pending，Android／存储仍未执行。下一项先请电脑侧复核本轮范围修正、词表策略与补充向量，再收口保真解码／重复键／规范化字节和完整命令；当前不分配正式版本、不导入vendor或执行真实写入／迁移。
+
+## 12. 电脑第三轮反馈：88项修订候选接受
+
+用户提供[电脑d30e41b评审第9节](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/d30e41b236a9876280c69b6bccf4c96ea86b5243/docs/internal/P1_CROSS_REPO_REVIEW.md#L208)，文档blob `f803fca2d5ff83ce4e40203090cce4608ed17911`。相对d0cd2b6仅一次提交、12个相关资料／测试路径变化，无生产实现或0.1.0升级。本机核对其四份固定副本与移动0ff3913逐字节一致：补充14项、Node值原型、Python值原型和共同词表分别为`d56491142e61b93c5d86aa78934542c133d22c91`、`198d960d4b2fd43005b944a171d0e4d6d056f18b`、`21426a1ad83239cb4ca3e5e1b47ee70851b2ec12`、`ef05011f7c4687617a7db6215d32215c2965b2e6`；设计依据blob `474595b2fa0e67c99558b6059eacb106487c01d3`也匹配。
+
+接受电脑结论：E01／E02的上一轮建议修改在**隔离原型及已执行输入范围内关闭**，不扩展为所有日期／平台都已验证；E03精确登记策略可用于原型，完整IANA主名／链接名／别名／版本与能力协商仍待定。E04半小时DST、付款日年份边界、原74项和新增14项均被接受；五项词表不成为全球产品支持清单，旧未知时区记录不被强制转换。没有新增产品规则需用户决定。
+
+审读[新显式测试](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/d30e41b236a9876280c69b6bccf4c96ea86b5243/backend/tests/p1_values_followup_review.py)（blob `aa25516750ed36395d7471e639214524d3627b08`），静态展开5个测试函数为96项：4个来源、1个清单／词表、88个三路对照、2个CLI参数与1组额外名称。电脑报告新96＋旧80共176项通过，以及实际用电脑Python3.13.13运行原移动88项入口；本机未执行电脑pytest，不把旧80项成功复现缺口算作当前修复。RAW1／RAW2、规范化字节、完整命令／能力、持久回执及事务／恢复仍未共同收口。
+
+## 13. 原始JSON输入候选：先保真，再判断字段
+
+### 本轮目标与复用选择
+
+独立[58项原始输入](fixtures/p1-json-cases.json)接续电脑RAW1／RAW2，不改写历史三份JSON或vendor。每例提供`raw_json`字符串的UTF-8编码或`raw_utf8_hex`原字节，不能先用普通JSON.parse／float解码成业务数值再交本候选。资料自身的格式版本1只是样例容器，shared_contract_version仍null，desktop_joint_review仍pending。
+
+检查[Microsoft jsonc-parser固定3.3.1接口](https://github.com/microsoft/node-jsonc-parser/blob/v3.3.1/README.md)与安装内容后，以MIT开发依赖固定在根锁文件；无传递运行依赖，使用语法树节点位置切回原始数字文本，忽略节点里已经舍入的number值。库本身容错，故必须启用disallowComments、关闭尾逗号／空文档，并在消费语法树前拒绝全部errors；不能直接使用其普通对象求值接口。
+
+未采用[lossless-json 4.3.3](https://github.com/josdejong/lossless-json/blob/v4.3.3/src/parse.ts#L69)：其重复键分支还要求新旧值不深度相等，同名同值会被放过；[LosslessNumber.valueOf](https://github.com/josdejong/lossless-json/blob/v4.3.3/src/LosslessNumber.ts#L48)亦允许部分浮点截断，不能直接作为精确整分判定。此结论针对固定版本与本轮需求，不评价所有用途。原生JSON.parse的source reviver不能恢复已覆盖的重复字段，亦不能默认旧WebView具备该能力。本次只选择宿主检查组件，正式移动端／原生解析器仍须分别验收。
+
+### 候选处理顺序与可检查表达
+
+1. 严格UTF-8解码，坏续字节、截断及直接编码的代理项拒绝encoding；BOM不静默删除，本候选拒绝json。
+2. 严格JSON语法；注释、尾逗号、空文档、第二根值、NaN／Infinity、前导零／缺小数位与非法空白拒绝json。语法先于后续字段检查；不能消费容错恢复树。
+3. 逐对象、按源码顺序检查**解码后的键名**，任何同名键均拒绝duplicate_key，包括同值、嵌套、数组内对象、转义后相同与`__proto__`。不同对象的同名键可用；不把这些键赋值到普通JS对象原型。键和值中的未配对代理项拒绝unicode，合法代理对可用；不做NFC、大小写或时区别名归一化。
+4. 通用json profile保留数字词形为字符串，不全局强制整数或缩成双精度：大整数、普通小数、极大／极小指数都只作保真诊断，**不代表完整命令接受这些值**。有类型的诊断树使用`["object", [[key, child], ...]]`、`["array", children]`、`["number", lexeme]`、string／boolean／null等节点；对象／数组顺序保留，省略与显式null不合并。
+5. 独立cny-amount profile只检查`currency`与`amount_cents`两字段片段：精确十进制值为正整数且不超9999999999分，显式CNY；Number／float之前的非零小数不能靠舍入通过。100、100.0、1e2均是整数值100；文本录入仍沿原MT严格语法，不因此允许用户输入指数。Node按十进制系数／指数做有界整数转换，Python用Decimal独立判断，不复用Node算法。
+
+encoding／json／duplicate_key／unicode／amount等仅是候选错误类别，未注册产品码。诊断树保留数字词形和字符串语义，不保留全部空白／转义拼写，**不是规范化JSON、签名字节、命令摘要或同步载荷**。原值适配的raw_json_decoder_verified=false继续准确描述其解码后片段入口；新检查器另报宿主原型范围，不将其改成全局已验证。
+
+### 58项结果与下一道边界
+
+[Node候选](../../prototypes/p1-json/decode.mjs)和[独立Python标准库参考](../../scripts/check-p1-json.py)由[检查入口](../../scripts/check-p1-json.mjs)对同一原始输入核对，`pnpm check:p1-json`共58项，17接受／41按预期拒绝，两路一致、输入不改。含RAW1型9999999999.0000000001、RAW2型覆盖、同值重复、解码后键名、非法UTF-8／代理项、JSONC容错陷阱，以及合法整数小数／指数、普通小数词形、数组顺序、缺省／null和Unicode不归一化正例。本机Node v26.3.0、Python3.14.10；没有执行电脑Python／Pydantic参考、Android原生或存储。另用6份改坏资料检查舍入／同值重复预期、重复ID、伪造联合通过、坏hex、空清单，并验证缺Python直接失败；临时副本已删除。
+
+[RFC8785 §3.1](https://www.rfc-editor.org/rfc/rfc8785.txt)要求先满足I-JSON／IEEE754条件，不能把保留的任意精度数字直接交普通JSON.stringify再声称保真；其字符串处理也不自动NFC。[RFC7493 §2](https://www.rfc-editor.org/rfc/rfc7493.txt)还包含非字符及数值互操作约束，本候选不宣称完整I-JSON／JCS合规。下一项请电脑独立复核本轮原始字节目标，然后共同决定完整命令的数字域、缺省／null与Unicode规则、规范化字节及摘要；体积／深度／数字长度限额和拒绝路径须在正式边界另验。保留通用小数不等于已经定义坐标／预算的正式数字语义。
+
+根CI增加同样的宿主对照。生成器仍只取既有android-runtime及显式可选探针，P1原型／新依赖均不进入APK；没有桥接、建表、真实写入、迁移、联网或凭据实现，不分配共享版本。完整IANA命名／版本、完整命令／能力响应、ID／历史映射、权威事务与恢复继续按P1门槛推进。
