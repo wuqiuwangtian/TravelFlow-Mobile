@@ -77,11 +77,28 @@ def local_text(value):
     return f"{value.year:04}-{value.month:02}-{value.day:02}T{value.hour:02}:{value.minute:02}"
 
 
+def as_zone(value, zone):
+    try:
+        return value.astimezone(zone)
+    except (OverflowError, ValueError):
+        raise CandidateError("booking_range") from None
+
+
 def utc_text(value):
-    return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return as_zone(value, timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def elapsed_booking(value):
+def load_zone_ids(path):
+    registry = json.loads(Path(path).read_text(encoding="utf-8"))
+    ids = registry["time_zone_ids"]
+    if (registry["registry_format_version"] != 1 or registry["status"] != "candidate-name-registry"
+            or type(ids) is not list or not ids or not all(text(item) for item in ids)
+            or len(ids) != len(set(ids))):
+        raise RuntimeError("Invalid candidate time-zone registry")
+    return frozenset(ids)
+
+
+def elapsed_booking(value, zone_ids=None):
     shape(value, ("local_start", "time_zone", "utc_offset", "start_instant", "duration_minutes", "duration_semantics"))
     require(value["duration_semantics"] == "elapsed", "duration_semantics")
     require(integer(value["duration_minutes"], 1, 1440), "duration")
@@ -91,22 +108,21 @@ def elapsed_booking(value):
     offset = value["utc_offset"]
     require(type(offset) is str and re.fullmatch(r"[+-](?:[01][0-9]|2[0-3]):[0-5][0-9]", offset)
             and offset != "-00:00", "offset")
-    require(text(value["time_zone"]) and not value["time_zone"].startswith(("+", "-")), "zone")
+    if zone_ids is None:
+        zone_ids = load_zone_ids(Path(__file__).resolve().parent.parent / "prototypes/p1-values/time-zone-ids.json")
+    require(text(value["time_zone"]) and value["time_zone"] in zone_ids, "zone")
     try:
         zone = ZoneInfo(value["time_zone"])
     except (ZoneInfoNotFoundError, ValueError):
         raise CandidateError("zone") from None
-    try:
-        start = datetime.fromisoformat(f"{local}:00{offset}").astimezone(timezone.utc)
-    except OverflowError:
-        raise CandidateError("booking_range") from None
+    start = as_zone(datetime.fromisoformat(f"{local}:00{offset}"), timezone.utc)
     require(value["start_instant"] == utc_text(start), "instant")
-    require(local_text(start.astimezone(zone)) == local, "resolution")
+    require(local_text(as_zone(start, zone)) == local, "resolution")
     try:
         end = start + timedelta(minutes=int(value["duration_minutes"]))
-        local_end = end.astimezone(zone)
     except OverflowError:
         raise CandidateError("booking_range") from None
+    local_end = as_zone(end, zone)
     end_local = local_text(local_end)
     seconds = int(local_end.utcoffset().total_seconds())
     require(seconds % 60 == 0, "booking_range")
@@ -129,14 +145,16 @@ def receipt_view(value):
     return copy.deepcopy(value)
 
 
-def evaluate(entry):
+def evaluate(entry, zone_ids=None):
     try:
         kind = entry["kind"]
         if kind == "payment_date":
             result = payment_date(entry["input"], entry["mode"])
+        elif kind == "elapsed_booking":
+            result = elapsed_booking(entry["input"], zone_ids)
         else:
             functions = {"money_text": money_text, "money_value": money_value,
-                         "elapsed_booking": elapsed_booking, "receipt_view": receipt_view}
+                         "receipt_view": receipt_view}
             result = functions[kind](entry["input"])
         return {"accepted": True, "value": result}
     except CandidateError as error:
@@ -146,8 +164,10 @@ def evaluate(entry):
 def main():
     path = Path(sys.argv[1])
     corpus = json.loads(path.read_text(encoding="utf-8"))
+    registry_path = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).resolve().parent.parent / "prototypes/p1-values/time-zone-ids.json"
+    zone_ids = load_zone_ids(registry_path)
     before = copy.deepcopy(corpus)
-    results = {entry["id"]: evaluate(entry) for entry in corpus["cases"]}
+    results = {entry["id"]: evaluate(entry, zone_ids) for entry in corpus["cases"]}
     if corpus != before:
         raise RuntimeError("Candidate evaluation mutated the corpus")
     tz_version = "unreported"
@@ -160,7 +180,8 @@ def main():
                 tz_version = first.removeprefix("# version ")
             break
     print(json.dumps({"results": results, "python": sys.version.split()[0],
-                      "stdlib_only": True, "system_tz_version": tz_version}))
+                      "stdlib_only": True, "system_tz_version": tz_version,
+                      "booking_zone_ids": sorted(zone_ids)}))
 
 
 if __name__ == "__main__":

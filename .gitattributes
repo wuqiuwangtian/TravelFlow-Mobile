@@ -2,6 +2,7 @@
 vendor/** text eol=lf
 # 跨仓评审样例保持LF；这不是命令规范化字节协议。
 docs/internal/fixtures/** text eol=lf
+prototypes/p1-values/*.json text eol=lf
 *.sh text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf

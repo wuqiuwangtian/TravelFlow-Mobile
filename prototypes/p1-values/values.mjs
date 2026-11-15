@@ -1,4 +1,6 @@
-// P1值片段评审候选：不属于正式命令，不读写存储／网络，不处理原始JSON字节。
+// P1值片段评审候选：不属于正式命令，不读写业务存储／网络，不处理原始JSON字节。
+import zoneRegistry from "./time-zone-ids.json" with { type: "json" };
+const registeredZones = new Set(zoneRegistry.time_zone_ids);
 export class CandidateError extends Error {
   constructor(code) { super(code); this.code = code; }
 }
@@ -53,7 +55,7 @@ export function paymentDate(value, mode) {
 function localParts(formatter, instant) {
   const p = Object.fromEntries(formatter.formatToParts(new Date(instant)).map(part => [part.type, part.value]));
   const date = `${p.year.padStart(4, "0")}-${p.month}-${p.day}`;
-  requireValue(validDate(date) && p.second === "00", "booking_range");
+  requireValue(p.era === "AD" && validDate(date) && p.second === "00", "booking_range");
   return { local: `${date}T${p.hour}:${p.minute}`, date };
 }
 
@@ -65,12 +67,12 @@ export function elapsedBooking(value) {
     && validDate(value.local_start.slice(0, 10)), "date");
   requireValue(typeof value.utc_offset === "string" && value.utc_offset.length === 6 && /^[+-](?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value.utc_offset)
     && value.utc_offset !== "-00:00", "offset");
-  requireValue(text(value.time_zone) && !/^[+-]/.test(value.time_zone), "zone");
+  requireValue(text(value.time_zone) && registeredZones.has(value.time_zone), "zone");
   let formatter;
   try {
     formatter = new Intl.DateTimeFormat("en-US", {
       timeZone: value.time_zone, calendar: "gregory", numberingSystem: "latn", hourCycle: "h23",
-      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      era: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
   } catch { throw new CandidateError("zone"); }
   const start = Date.parse(`${value.local_start}:00${value.utc_offset}`);
@@ -80,13 +82,15 @@ export function elapsedBooking(value) {
   // UTC往返不匹配即拒绝，不选择重复时刻、不挪动不存在的时刻。
   requireValue(localParts(formatter, start).local === value.local_start, "resolution");
   const end = start + value.duration_minutes * 60000;
+  const endInstant = new Date(end).toISOString();
+  requireValue(validDate(endInstant.slice(0, 10)), "booking_range");
   const endLocal = localParts(formatter, end).local;
   const offsetMinutes = (Date.parse(`${endLocal}:00Z`) - end) / 60000;
   requireValue(Number.isInteger(offsetMinutes), "booking_range");
   const absolute = Math.abs(offsetMinutes);
   const offset = `${offsetMinutes < 0 ? "-" : "+"}${String(Math.floor(absolute / 60)).padStart(2, "0")}:${String(absolute % 60).padStart(2, "0")}`;
   return {
-    start_instant: value.start_instant, end_instant: new Date(end).toISOString(),
+    start_instant: value.start_instant, end_instant: endInstant,
     end_local: endLocal, end_utc_offset: offset, duration_semantics: "elapsed",
   };
 }

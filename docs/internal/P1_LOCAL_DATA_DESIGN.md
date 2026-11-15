@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-15已收到电脑侧固定评审并完成移动侧材料／测试代码复核，见第8节；用户已确认第9节的三项产品取舍。第10节新增74项值片段候选及Node／Python标准库对照，仍未共同定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线及TS／Android分层，允许进入P1设计；本页不批准正式写入、迁移、联网／凭据实现或发布。文中命令、字段、状态均为提议，未注册桥接API、建表或更新vendor。已有Android运行证据仍只属于P0探针；值原型不打包进APK，不处理持久存储。
+状态：2026-11-15已完成两轮电脑侧材料复核，第11节记录d0cd2b6第二轮反馈、E01／E02修正及E03原型命名策略。原74项样例保留，补14项后Node／Python共88项一致；修订候选仍未共同定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线／分层和第9节产品规则；本页不批准正式写入、迁移、联网／凭据实现或发布。未注册桥接API、建表或更新vendor，值原型不打包进APK或处理持久存储。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -242,7 +242,7 @@ SQLite和文件系统不在一个事务。建议先把内容导入本应用拥�
 
 ## 10. 值片段与回执视图候选（2026-11-15）
 
-新增[74项候选样例](fixtures/p1-value-cases.json)、[Node值原型](../../prototypes/p1-values/values.mjs)及独立Python标准库对照。它们使用移动设计`f0e8dd6a5034c38f1c6f7cfb6873f5b28dd6281d`、电脑评审`81ff51574b13f3b7e54ea1e75f8ebd7a04630404`作为依据，fixture_format_version=1仅是样例组织格式，shared_contract_version仍为null。电脑正式候选执行、Android原生执行与存储状态均待验证。
+原始[74项候选样例](fixtures/p1-value-cases.json)、[Node值原型](../../prototypes/p1-values/values.mjs)及独立Python标准库对照使用移动设计`f0e8dd6a5034c38f1c6f7cfb6873f5b28dd6281d`、电脑评审`81ff51574b13f3b7e54ea1e75f8ebd7a04630404`作为起草依据，实际首版交付为移动3100d32。fixture_format_version=1仅是资料格式，shared_contract_version仍null。电脑第二轮已报告原74项三路一致；当前修正和补充样例待其复核，见第11节，Android原生／存储仍未执行。
 
 这里刻画**字段值片段**，不是完整消费／预约命令：title、category、day、activity_id、notes、receipt_ids、预算关联、原start_time／start_day_offset、日历基线及其他原有目标字段仍须在完整契约中保留与设计。片段的严格字段检查只用于本片段，不能据此删掉原有业务字段或直接把原型接到桥接／数据库。两个语言适配均在本仓隔离运行，Python没有导入电脑源码，不等于电脑生产实现已经采用新规则。
 
@@ -256,7 +256,7 @@ SQLite和文件系统不在一个事务。建议先把内容导入本应用拥�
 | elapsed_booking | local_start、time_zone、utc_offset、start_instant、duration_minutes、duration_semantics | 只用于明确解析的新预约：当地YYYY-MM-DDTHH:mm、已识别的命名时区、显式±HH:mm偏移、规范UTC毫秒时刻、1–1440真实分钟及elapsed模式；UTC起点须与当地／时区往返一致。不能猜重复时刻或挪动不存在时刻；旧无时区／钟面记录不送入该新片段强制转换 |
 | receipt_view | operation、committed_revision_id、replayed、applied_on_this_call，可选observed_head | 只表达已提交结果视图，不查数据库或证明提交。operation含dataset_id／source_device_id／operation_id非空不改写字符串，编码／碰撞／配对认证另定。重放须未在本次应用；新提交与重放标志不能混用 |
 
-预约候选的start_instant格式暂定为UTC `YYYY-MM-DDTHH:mm:00.000Z`，utc_offset零值用`+00:00`；新片段只有分钟精度，不用于重写已有审计时间或历史预约。当地时钟、偏移及UTC起点互相校验，结束时刻从UTC起点加真实分钟后再展示，不能直接在当地钟面加数。时区别名规范化、资料版本变化、新旧日历／offset映射和完整预约Schema仍未定版。
+预约候选的start_instant格式暂定为UTC `YYYY-MM-DDTHH:mm:00.000Z`，utc_offset零值用`+00:00`；新片段只有分钟精度，不用于重写已有审计时间或历史预约。当地时钟、偏移及UTC起点互相校验，结束时刻从UTC起点加真实分钟后再展示。起止UTC与当地值均须在0001–9999年；第11节修复了原UTC终点及当地转换范围遗漏，并用原型登记词表明确拼写。正式全量命名来源／别名、资料版本变化、新旧日历／offset映射及完整Schema仍未定版。
 
 回执视图分清三个含义：operation＋committed_revision_id表达原提交身份；replayed／applied_on_this_call表达本次交付；observed_head表达另行观察到的头及present／deleted／unknown状态，不保证它始终是返回瞬间的最新头。RV01允许原rev-2与现rev-3并存，RV02允许原rev-2回执与现rev-4删除状态并存；这些只验证表达方式，未实现删除保护或重放执行。客户端不能用原提交修订覆盖较新的本地状态，交付标志也不应混入原持久回执的不可变语义。
 
@@ -276,8 +276,44 @@ SQLite和文件系统不在一个事务。建议先把内容导入本应用拥�
 | BK01–BK16 | 16 | 春季跳时、秋季两次01:30、跨日、显式偏移／UTC一致性、拒绝不存在时刻与未解析旧模式 |
 | RV01–RV12 | 12 | 原修订／当前头分离，删除后视图、交付标志、身份字段与额外／不明确字段拒绝 |
 
-根目录执行`pnpm check:p1-values`，需要Node22+、Python3.9+和IANA时区资料；无新增第三方依赖。Node检查固定预期并冻结输入，再启动独立Python适配核对全部结果；缺Python或时区资料导致失败，不跳过。可用P1_REVIEW_PYTHON指定解释器可执行文件路径，不附shell参数。输出须保留desktop_joint_contract=pending、android_native_executed=false、storage_executed=false及raw_json_decoder_verified=false；实际Node／ICU／时区资料与Python版本也一并记录。
+根目录执行`pnpm check:p1-values`，需要Node22+、Python3.9+和IANA时区资料，无新增第三方依赖。入口现默认检查原74项＋第11节14项边界；Node核对预期并冻结输入，再启动独立Python适配。缺Python或时区资料失败，不跳过。P1_REVIEW_PYTHON可指定解释器可执行文件路径，不附shell参数。输出保留联合契约pending、Android／存储未执行及raw_json_decoder_verified=false；实际版本及所用词表也记录。传单个JSON路径时只核对该文件。
 
 初次本机74项全部一致，Node v26.3.0／ICU78.3／tz2026b，Python3.14.10／系统tz2026f；没有把它们冒充电脑Python3.13.13／Pydantic2.14.0执行结果。原577a41b评审JSON保持逐字节不变，新值候选单独存放，评审样例显式保持LF以便跨仓核对，这不定义命令规范化字节。不改vendor0.1.0、应用或生成器；CI增加相同只读入口，不打包原型进APK。
 
-下一项将本节片段交给电脑侧做目标候选复核，尤其确认严格文本、日历／未知、预约解析与回执视图；同时先收口原始解码／规范化字节，再组合完整命令、能力协商与响应Schema。ID与历史映射、权威事务／恢复、T1／F1仍须独立完成，值片段对照不替代它们；当前不分配正式版本、不执行真实数据写入或迁移。
+本节原74项已获电脑侧样例语义接受，预约整体要求修正后再收口，见第11节。下一项复核修正及命名策略，再推进原始解码／规范化字节和完整命令／能力响应；ID／历史映射、事务／恢复、T1／F1仍须独立完成，当前不分配正式版本、不执行真实写入或迁移。
+
+## 11. 第二轮反馈、预约边界修正与命名候选（2026-11-15）
+
+用户提供[电脑第二轮评审第8节](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/d0cd2b64d60885f2c35fa829dd988620c976d2e9/docs/internal/P1_CROSS_REPO_REVIEW.md#L133)，固定提交`d0cd2b64d60885f2c35fa829dd988620c976d2e9`，评审文件blob为`1e73252d890fd01a5544f0aba5fad61e08369914`。相对81ff515仅两个资料／测试提交、10个相关路径变化，生产实现与0.1.0未改；其中ef438866…是电脑本轮开工基线，不替代实际评审交付d0cd2b6。
+
+移动侧核对电脑保存的样例／Node／Python三份副本，与移动3100d32逐字节一致，blob分别为`7c4a57a4fad775c553e9a5318107853dd561ebe1`、`85bc7ca4ce6cb7ee45a47f1e22ae3d18b35ffc1f`、`18957ea1d1a34839686eae297bc3ad061a188581`。审读[独立参考及显式测试](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/d0cd2b64d60885f2c35fa829dd988620c976d2e9/backend/tests/p1_values_review.py)（blob `249c02f349f9b9bb7f9b22060de56d69f4822550`），静态展开5个函数为80项；本轮未执行电脑pytest。电脑报告原74项Node、移动Python和独立电脑参考一致，以及补充反例实际复现；80项包含“成功复现旧缺口”，不能计作缺口已修复。该提交未查到对应Actions运行，不宣称完整CI通过。
+
+### 移动侧接受与修正
+
+接受MT／MV／PD／RV及原BK样例的语义反馈，保留三项用户产品决定，不新增产品追问。预约整体按反馈修正；本机在修改前独立复现了E01／E02／E03，不仅依赖报告：
+
+| 项目 | 3100d32实际复现 | 本轮修正／候选与目标 |
+| --- | --- | --- |
+| E01 UTC终点上溢 | Node接受并输出+010000年UTC终点，当地仍9999年；Python拒绝booking_range | Node在输出前检查UTC终点日期；起止UTC与当地值都须0001–9999年，不只检查当地日期。目标两者均booking_range |
+| E02 当地转换下溢 | Node拒绝resolution，Python抛出未归类OverflowError | Python统一包住UTC／当地转换的OverflowError／ValueError；Node显式检查公历era，避免把BC年份当AD。范围越界先归booking_range，不让异常逃出批处理 |
+| E03 时区大小写 | Intl接受america/new_york，ZoneInfo拒绝 | 原型改用共同登记的精确拼写，区分大小写，不隐式大小写／别名归一化；未登记值在调用宿主库前拒绝zone。正式全量命名表仍待评审 |
+| E04 半小时DST | 电脑三路报告Lord_Howe真实120分钟结束04:15、偏移+11:00 | 作为正例加入，避免只验证一小时跳变 |
+| E05／E06 付款日范围 | 电脑三路接受0001-01-01／9999-12-31 | 保留正例，不能为修预约错误而笼统收窄所有日期字段 |
+
+booking_range只描述本原型时间域或可表示转换越界；resolution用于范围内但当地／偏移往返不一致。它们是候选检查类别，不是已注册的产品错误码。旧电脑测试继续作为固定3100d32缺口证据，不修改其副本／断言来掩盖旧行为；当前目标另由补充向量验证。
+
+### E03命名策略回复
+
+新增[候选词表](../../prototypes/p1-values/time-zone-ids.json)，由两适配读取相同资料并核对：仅登记本轮隔离样例所需的America/New_York、Australia/Lord_Howe、Etc/GMT+12、Etc/GMT-14和UTC五个ID。匹配区分大小写；小写、部分改写、未登记的US/Eastern等拼写均明确拒绝，不调用宿主自动猜测／重写。
+
+这五项**仅是原型对照词表，不是正式产品的时区支持范围**。未登记不等于宿主不能解析或项目放弃其他地区；完整IANA命名来源、主名／链接名、别名映射、发布版本及不同ICU／tzdb能力的处理仍须在正式协议前确定。用户已确认的全部目标能力、旧预约与未知时区保护不变；不以当前词表给历史记录强制改名。
+
+Node原型新增同目录JSON资产，复跑须保留它；Python入口接受可选第二参数指定该词表路径，Node主检查器总是传入本仓同一词表。复制原型核对时应取本轮完整文件组，不能只替换电脑保存的旧mobile_values文件而遗漏资产，也不能改写3100d32固定证据。
+
+### 88项验证与仍未收口的原始字节
+
+原[74项JSON](fixtures/p1-value-cases.json)保持字节不变，新增[14项边界JSON](fixtures/p1-value-boundaries.json)。默认`pnpm check:p1-values`逐项核对两份资料，88项、29个值接受／59个拒绝，Node／Python一致且输入不改。E01–E06对应电脑补充；E07／E08检查部分大小写和未登记别名，E09检查登记的固定偏移正例，E10–E12覆盖UTC／当地上限与下限，E13／E14保留可表示域两端的预约正例。
+
+本机Node v26.3.0／ICU78.3／tz2026b、Python3.14.10／系统tz2026f；没有把此次本机结果写成电脑Python3.13.13已复跑新修订。另用六份改坏的边界预期核对拒绝行为，包括把下溢误标resolution、允许大小写／别名、错算半小时DST及错误拒绝合法最小年；临时副本删除。
+
+电脑RAW1小数舍入、RAW2重复键证据与本原型声明的缺口一致，本轮没有修复解码器：输入在Number／float前丢失的信息不能靠值片段恢复。raw_json_decoder_verified仍false，联合契约仍pending，Android／存储仍未执行。下一项先请电脑侧复核本轮范围修正、词表策略与补充向量，再收口保真解码／重复键／规范化字节和完整命令；当前不分配正式版本、不导入vendor或执行真实写入／迁移。
