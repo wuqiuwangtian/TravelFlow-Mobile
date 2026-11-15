@@ -1,5 +1,7 @@
 # 固定快照的原始字节，避免Windows自动CRLF转换破坏摘要。
 vendor/** text eol=lf
+# 跨仓评审样例保持LF；这不是命令规范化字节协议。
+docs/internal/fixtures/** text eol=lf
 *.sh text eol=lf
 *.bat text eol=crlf
 *.cmd text eol=crlf

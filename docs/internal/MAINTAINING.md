@@ -4,12 +4,14 @@
 
 ## 独立准备与校验
 
-需要Node 22+、pnpm 12.6.0。仓库根目录执行：
+需要Node 22+、pnpm 12.6.0；完整P1值候选检查另需Python3.9+标准库和IANA时区资料。仓库根目录执行：
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm check:contracts
 pnpm check:ledger
+pnpm check:p1-review
+pnpm check:p1-values
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -443,15 +445,19 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 ## 正式主线与P1设计的只读复核
 
-先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的“正式实现主线决定与采用门槛（2026-11-14）”：核对已确认的Capacitor8.6.0主线／分层、服务地址／分级支持／锁屏使用规则及候选传输门槛。再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第8节是电脑81ff515评审的移动侧复核，第9节是三项已确认产品规则、数据／回执／恢复候选及待定格式；第7节与[评审JSON](fixtures/p1-review-cases.json)保留原始输入与来源。此入口无需SDK、ADB、Python依赖、设备或真实凭据；文中字段／命令尚未注册，不是已定版协议。
+先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的“正式实现主线决定与采用门槛（2026-11-14）”：核对已确认的Capacitor8.6.0主线／分层、服务地址／分级支持／锁屏使用规则及候选传输门槛。再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第8节是电脑81ff515评审的移动侧复核，第9节是三项已确认产品规则及事务方向，第10节给出值字段／回执视图及74项双语言候选；第7节与[原评审JSON](fixtures/p1-review-cases.json)保留历史输入。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式字段／命令。
 
 在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-review`、`pnpm typecheck`。前三者分别预期固定快照通过、14组既有汇总样例通过，以及原评审JSON输出6组只读金额、2组时区换算、2组跨日算术和12项源码场景编目；后者预期类型通过。原JSON已经被电脑逐字节核对，保持其desktop_joint_review=pending等历史字段；命令的python_backend_executed=false／mobile_write_scenarios_executed=0只描述本地检查执行范围。当前收到电脑报告、移动方向复核及候选状态以设计第8／9节为准，不为消除pending改写固定输入；无需本机重建APK或重跑历史模拟器。
 
 可将JSON复制到仓库外，修改金额预期、日期、跨日偏移、重复场景ID或伪造联合通过，再运行`node scripts/check-p1-review.mjs PATH`，预期非零退出；不要为修复检查而盲改预期或将pending改为已通过。该检查器不会联网验证源文件blob、执行JSON中的业务步骤或生成共享协议。复核还应能区分原操作回执与当前分支状态、删除后重放与过期基线拒绝，以及“旧数据可读”与“新写入有效”。下一步按设计第9节与路线图P1细化共同格式／向量、接口和恢复设计，不再等待首次电脑侧评审转交。
 
+独立值候选入口为`pnpm check:p1-values`。它读取[新候选JSON](fixtures/p1-value-cases.json)，Node原型核对74项预期并冻结输入，再用Python标准库对同样例独立计算；预期74项一致、23个值接受／51个拒绝，报告Node／ICU／时区及Python版本。需要Node22+、Python3.9+与IANA时区资料，没有新增第三方包；解释器不在默认命令时设置P1_REVIEW_PYTHON为可执行文件路径，不附shell参数。缺解释器或时区资料会失败，不自动跳过。复核副本用`node scripts/check-p1-values.mjs PATH`；改坏省略／null、夏令时结束时刻或原回执修订应非零退出。
+
+该命令运行的是两个候选值适配，不是电脑后端或Android原生实现，输出应保持desktop_joint_contract=pending、android_native_executed=false、storage_executed=false、raw_json_decoder_verified=false。它不验证原始JSON精度／重复键或规范化字节，不读写账本、不查询真实回执、不执行删除恢复／迁移；完整命令中的原有字段仍需保留。原型不进入APK，CI仅增加同样的主机只读候选检查。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑侧81ff515评审已收到，移动侧已核对输入摘要／测试代码及记录方向接受与差异；当前按设计第9节收口字段／null与缺省、能力／响应、ID与旧版本映射和恢复状态机，准备共同向量后再分配契约版本。电脑报告的39项为现状特征，本机未复跑，且81ff515带skip ci没有对应Actions运行；不能用它们宣称目标契约或完整CI通过。用户已确认CNY首版、付款日可明确未知和新明确时区预约的真实经过分钟规则，不重问既定产品取舍。Capacitor主线与P0实验／正式适配的边界不变。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑侧81ff515评审已接收，74项值候选与字段／回执视图已在第10节准备，下一步让电脑侧核对新目标候选，并收口保真解码／重复键、规范化字节、完整命令／能力响应，再推进ID／旧版本映射与恢复设计。两份JSON分别代表原现状评审与新值候选，均不替代正式共享契约。电脑报告的39项未在本机复跑；新Python标准库对照不冒充该后端执行。用户已确认的产品取舍和主线边界保持，不默认进入正式写入。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

@@ -36,6 +36,7 @@ jobs:
       - run: pnpm check:contracts
       - run: pnpm check:ledger
       - run: pnpm check:p1-review
+      - run: pnpm check:p1-values
       - run: pnpm typecheck
       - name: Check probe script syntax (native interaction requires an isolated emulator)
         run: |

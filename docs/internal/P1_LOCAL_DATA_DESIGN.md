@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-15已收到电脑侧固定评审并完成移动侧材料／测试代码复核，见第8节；用户已确认第9节的三项产品取舍。双方对关键方向一致，字段／格式／兼容及恢复候选尚未共同定版，没有可实施的共享写入契约。用户已确认Capacitor8.6.0主线及TS／Android分层，允许进入P1设计；本页不批准正式写入、迁移、联网／凭据实现或发布。文中命令、字段、状态均为提议，未注册桥接API、建表或更新vendor。已有Android运行证据仍只属于P0探针；第7节评审工具只核算既有汇总与纯日期示例。
+状态：2026-11-15已收到电脑侧固定评审并完成移动侧材料／测试代码复核，见第8节；用户已确认第9节的三项产品取舍。第10节新增74项值片段候选及Node／Python标准库对照，仍未共同定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线及TS／Android分层，允许进入P1设计；本页不批准正式写入、迁移、联网／凭据实现或发布。文中命令、字段、状态均为提议，未注册桥接API、建表或更新vendor。已有Android运行证据仍只属于P0探针；值原型不打包进APK，不处理持久存储。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -238,4 +238,46 @@ SQLite和文件系统不在一个事务。建议先把内容导入本应用拥�
 
 电脑本次票据在SQLite以BLOB保存，上传与消费引用仍分开；Android将来若用私有文件，其故障边界需独立设计。S08只模拟查询不可用，S10只做四个现有调用点OSError注入，均不替代T1／F1目标事务、磁盘满、kill／断电、文件回收或迁移验收。
 
-下一项先将上述候选转成明确字段／缺省／null／能力与响应语义，补严格金额文本、真实日历、显式未知及跨夏令时向量，再核对ID／回执／旧版本映射和恢复状态机；由两端共同确认后，才在契约权威仓库分配版本、保留0.1.0并显式导入移动快照。当前不实现正式写入、不迁移数据、不发布；无需再次征求已确认的三项产品规则。
+值字段与部分响应视图现已具体化为第10节候选。下一项先核对候选语义，补原始JSON精度／重复键处理、规范化字节和完整命令／能力响应，再收口ID／回执／旧版本映射和恢复状态机；由两端共同确认后，才在契约权威仓库分配版本、保留0.1.0并显式导入移动快照。当前不实现正式写入、不迁移数据、不发布；无需再次征求已确认的三项产品规则。
+
+## 10. 值片段与回执视图候选（2026-11-15）
+
+新增[74项候选样例](fixtures/p1-value-cases.json)、[Node值原型](../../prototypes/p1-values/values.mjs)及独立Python标准库对照。它们使用移动设计`f0e8dd6a5034c38f1c6f7cfb6873f5b28dd6281d`、电脑评审`81ff51574b13f3b7e54ea1e75f8ebd7a04630404`作为依据，fixture_format_version=1仅是样例组织格式，shared_contract_version仍为null。电脑正式候选执行、Android原生执行与存储状态均待验证。
+
+这里刻画**字段值片段**，不是完整消费／预约命令：title、category、day、activity_id、notes、receipt_ids、预算关联、原start_time／start_day_offset、日历基线及其他原有目标字段仍须在完整契约中保留与设计。片段的严格字段检查只用于本片段，不能据此删掉原有业务字段或直接把原型接到桥接／数据库。两个语言适配均在本仓隔离运行，Python没有导入电脑源码，不等于电脑生产实现已经采用新规则。
+
+### 候选字段及结果
+
+| 片段 | 候选输入／结果 | 约束与尚未覆盖 |
+| --- | --- | --- |
+| money_text | 十进制文本→amount_cents | ASCII非负整数字段，可带1–2位小数；无前导零、空白、指数或隐式舍入，转换结果须1–9,999,999,999分。Node先做整数文本计算，Python用任意精度整数，不先乘二进制浮点。此严格文本规则是新建议，不描述旧Decimal接口 |
+| money_value | currency、amount_cents | currency显式CNY，已解码金额须为范围内整数值；bool、字符串、小数部分、缺失或多余字段拒绝。不校验整笔消费关联、记录数或预算／回款约束，也不为旧未知币种补CNY |
+| payment_date | 创建片段必须提供paid_on；编辑可省略；日期或null | 省略的编辑结果为unchanged，null为set_unknown，日期为set_date。真实Gregorian日历、年份0001–9999；空串／时间戳／不存在日期拒绝。原型不读取“今天”、不实现表单预填或修改账目 |
+| elapsed_booking | local_start、time_zone、utc_offset、start_instant、duration_minutes、duration_semantics | 只用于明确解析的新预约：当地YYYY-MM-DDTHH:mm、已识别的命名时区、显式±HH:mm偏移、规范UTC毫秒时刻、1–1440真实分钟及elapsed模式；UTC起点须与当地／时区往返一致。不能猜重复时刻或挪动不存在时刻；旧无时区／钟面记录不送入该新片段强制转换 |
+| receipt_view | operation、committed_revision_id、replayed、applied_on_this_call，可选observed_head | 只表达已提交结果视图，不查数据库或证明提交。operation含dataset_id／source_device_id／operation_id非空不改写字符串，编码／碰撞／配对认证另定。重放须未在本次应用；新提交与重放标志不能混用 |
+
+预约候选的start_instant格式暂定为UTC `YYYY-MM-DDTHH:mm:00.000Z`，utc_offset零值用`+00:00`；新片段只有分钟精度，不用于重写已有审计时间或历史预约。当地时钟、偏移及UTC起点互相校验，结束时刻从UTC起点加真实分钟后再展示，不能直接在当地钟面加数。时区别名规范化、资料版本变化、新旧日历／offset映射和完整预约Schema仍未定版。
+
+回执视图分清三个含义：operation＋committed_revision_id表达原提交身份；replayed／applied_on_this_call表达本次交付；observed_head表达另行观察到的头及present／deleted／unknown状态，不保证它始终是返回瞬间的最新头。RV01允许原rev-2与现rev-3并存，RV02允许原rev-2回执与现rev-4删除状态并存；这些只验证表达方式，未实现删除保护或重放执行。客户端不能用原提交修订覆盖较新的本地状态，交付标志也不应混入原持久回执的不可变语义。
+
+### 数字解码与规范化的明确缺口
+
+[JSON Schema数值说明](https://json-schema.org/understanding-json-schema/reference/numeric#integer)按数值语义区分整数，`1`与`1.0`可以是同一整数值。本候选money_value沿用这个含义，因此MV03以`100.0`验证Python与Node一致；它不表示money_text接受指数或多余小数文本。Python也不能因bool属于int的子类而将true当1分。
+
+**本原型从已解码值开始，未验证原始JSON数字词法、重复键或精度保真解码。** 若输入数字在进入JS Number前已经被舍入，片段校验不能恢复原值；不能用74项通过证明原始网络包安全。完整协议需先选择成熟的保真解码／严格编码方案并给字节向量，再确定重复键、超界旧值、键／数组／Unicode／缺省与null的规范化及摘要。paid_on省略与null在输入中保持不同，片段返回的effect也不能代替完整命令指纹。
+
+### 可执行范围与下一项
+
+| 样例 | 数量 | 本轮可验证的候选行为 |
+| --- | --- | --- |
+| MT01–MT18 | 18 | 金额文本精确转换、上界、非ASCII数字、尾换行、指数／空白等拒绝 |
+| MV01–MV12 | 12 | 已解码CNY金额整数值、bool／分数／越界／缺失及额外字段拒绝 |
+| PD01–PD16 | 16 | 创建必须显式日期或未知、编辑省略／null区别、闰年／世纪年与非法日历 |
+| BK01–BK16 | 16 | 春季跳时、秋季两次01:30、跨日、显式偏移／UTC一致性、拒绝不存在时刻与未解析旧模式 |
+| RV01–RV12 | 12 | 原修订／当前头分离，删除后视图、交付标志、身份字段与额外／不明确字段拒绝 |
+
+根目录执行`pnpm check:p1-values`，需要Node22+、Python3.9+和IANA时区资料；无新增第三方依赖。Node检查固定预期并冻结输入，再启动独立Python适配核对全部结果；缺Python或时区资料导致失败，不跳过。可用P1_REVIEW_PYTHON指定解释器可执行文件路径，不附shell参数。输出须保留desktop_joint_contract=pending、android_native_executed=false、storage_executed=false及raw_json_decoder_verified=false；实际Node／ICU／时区资料与Python版本也一并记录。
+
+初次本机74项全部一致，Node v26.3.0／ICU78.3／tz2026b，Python3.14.10／系统tz2026f；没有把它们冒充电脑Python3.13.13／Pydantic2.14.0执行结果。原577a41b评审JSON保持逐字节不变，新值候选单独存放，评审样例显式保持LF以便跨仓核对，这不定义命令规范化字节。不改vendor0.1.0、应用或生成器；CI增加相同只读入口，不打包原型进APK。
+
+下一项将本节片段交给电脑侧做目标候选复核，尤其确认严格文本、日历／未知、预约解析与回执视图；同时先收口原始解码／规范化字节，再组合完整命令、能力协商与响应Schema。ID与历史映射、权威事务／恢复、T1／F1仍须独立完成，值片段对照不替代它们；当前不分配正式版本、不执行真实数据写入或迁移。
