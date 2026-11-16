@@ -13,6 +13,7 @@ pnpm check:ledger
 pnpm check:p1-review
 pnpm check:p1-values
 pnpm check:p1-json
+pnpm check:p1-patch
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -446,7 +447,7 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 ## 正式主线与P1设计的只读复核
 
-先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第8／9节为首轮复核／产品规则，第10–12节是88项值候选与接受，第13／14节为58项原始输入及电脑12a25a7反馈、17项补充，第15节为完整命令语义草案。历史资料保持原字节，正式协议仍待共同定版。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式字段／命令。
+先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第8／9节为首轮复核／产品规则，第10–14节为88项值及75项原始输入，第15／16节是命令语义与电脑e060bab复核、两项产品细化，第17节是70项纯补丁计划与独立查询／预算提案。历史资料保持原字节，正式协议仍待共同定版。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式字段／命令。
 
 在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-review`、`pnpm typecheck`。前三者分别预期固定快照通过、14组既有汇总样例通过，以及原评审JSON输出6组只读金额、2组时区换算、2组跨日算术和12项源码场景编目；后者预期类型通过。原JSON已经被电脑逐字节核对，保持其desktop_joint_review=pending等历史字段；命令的python_backend_executed=false／mobile_write_scenarios_executed=0只描述本地检查执行范围。当前收到电脑报告、移动方向复核及候选状态以设计第8／9节为准，不为消除pending改写固定输入；无需本机重建APK或重跑历史模拟器。
 
@@ -462,9 +463,13 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 `node scripts/check-p1-json.mjs PATH`只检查指定单份副本，省略参数才读两份；可在仓库外改坏RAW1型非整数或有序拒绝的预期、重复ID、hex或伪造共同接受，预期非零退出，两份之间ID重复也拒绝。P1_REVIEW_PYTHON可指定解释器可执行路径，缺少即失败、不跳过。`python3 scripts/check-p1-json.py PATH`只打印独立适配结果，不自动核对预期。交电脑侧应取完整Node原型／入口、Python参考、两份原始资料、根package.json／锁文件，在临时独立目录安装固定开发依赖，不覆盖旧证据副本或使用相邻路径。诊断树不是规范化字节，通用数字保真不代表完整命令有效；数字资源限额、正式解码器、JCS／摘要、完整写入与原生仍未验收。设计第15节Q01–Q12只供语义评审，不能写成75项已经执行完整命令。
 
+纯消费补丁入口为`pnpm check:p1-patch`；同样需Node22+、pnpm12.6.0及Python3.9+标准库，不需要IANA、数据库或设备。读取[70项资料](fixtures/p1-patch-cases.json)，按固定baseline展开各例，预期33接受／37拒绝，两路一致且输入不变；输出storage／Android／durable_receipts／raw_command_decoder／resource_limits／canonical_bytes均false。这是已解码可信虚构基线上的计划，不是完整命令、鉴权或数据库执行；无变化需回执只输出required-not-persisted。
+
+`node scripts/check-p1-patch.mjs PATH`核对仓库外副本，`python3 scripts/check-p1-patch.py PATH`只输出独立参考结果；缺解释器直接失败。可以改坏预算解除、未知币种、无变化回执或备注编辑预期、重复ID和联合版本，预期非零退出。向电脑转交时保留独立Node候选、两份检查器、资料及根命令入口；不导入电脑源码、不覆盖旧证据。第17节文本／预算提案及独立查询结果还须分别核对，不能用70项通过声称查询、写库或资源拒绝不写库已验证。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑12a25a7接受原58项，17项补充本机复跑一致；电脑报告本轮80项，不混算之前值片段176项，本机未跑其pytest。现在请电脑核对设计第15节字段覆盖与语义，重点是未落业务实体的allow_shared_receipts、预算／票据、创建／部分更正与回执先查顺序，以及strip／顺序／旧未知值兼容；再形成完整命令／能力／资源的共同机器向量，随后选择字节／摘要。历史资料、产品决定、全量时区、ID／历史和恢复门槛保持，不分配正式共享版本。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑e060bab接受命令语义方向并建议补联合校验／字符／查询，报告36项；本机未跑其pytest，不混算前轮值／原始输入。设计第16节记录用户确认无变化保存仍保留回执、旧未知币种可保持未知纠错；第17节70项仅核对纯补丁计划，下一项先交电脑复核，再接有界命令／独立查询及完整创建／回款／预约等向量。文本策略／预算只是待评提案，资源拒绝、身份与持久回执／事务必须另验；历史资料、全量时区、ID／历史和恢复门槛保持，不分配正式共享版本。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 
