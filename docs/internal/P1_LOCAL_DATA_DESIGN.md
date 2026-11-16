@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-15已接收电脑d30e41b第三轮复核，第12节限定关闭E01／E02旧缺口并记录88项接受结论；第13节新增58项原始JSON宿主候选，两路一致、待电脑独立复核。原74＋14项样例保持原字节，正式联合协议仍未定版，不是完整命令或可实施的共享写入契约。用户已确认Capacitor8.6.0主线／分层和第9节产品规则；本页不批准正式写入、迁移、联网／凭据实现或发布。未注册桥接API、建表或更新vendor，两个原型不打包进APK或处理持久存储。
+状态：2026-11-16已接收电脑12a25a7对58项原始输入的接受，第14节新增17项补充资料，宿主两路共75项一致；原88项值候选和58项资料保持原字节。第15节提出完整命令字段与语义比较草案，尚未执行或共同定版；资源限额、规范化字节、完整命令／能力和事务仍待定。用户已确认Capacitor8.6.0主线／分层和第9节产品规则；本页不批准正式写入、迁移、联网／凭据实现或发布。未注册桥接API、建表或更新vendor，两个原型不打包进APK或处理持久存储。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -353,3 +353,82 @@ encoding／json／duplicate_key／unicode／amount等仅是候选错误类别，
 [RFC8785 §3.1](https://www.rfc-editor.org/rfc/rfc8785.txt)要求先满足I-JSON／IEEE754条件，不能把保留的任意精度数字直接交普通JSON.stringify再声称保真；其字符串处理也不自动NFC。[RFC7493 §2](https://www.rfc-editor.org/rfc/rfc7493.txt)还包含非字符及数值互操作约束，本候选不宣称完整I-JSON／JCS合规。下一项请电脑独立复核本轮原始字节目标，然后共同决定完整命令的数字域、缺省／null与Unicode规则、规范化字节及摘要；体积／深度／数字长度限额和拒绝路径须在正式边界另验。保留通用小数不等于已经定义坐标／预算的正式数字语义。
 
 根CI增加同样的宿主对照。生成器仍只取既有android-runtime及显式可选探针，P1原型／新依赖均不进入APK；没有桥接、建表、真实写入、迁移、联网或凭据实现，不分配共享版本。完整IANA命名／版本、完整命令／能力响应、ID／历史映射、权威事务与恢复继续按P1门槛推进。
+
+## 14. 电脑第四轮反馈：原始输入接受与17项补充
+
+接收[电脑12a25a7评审第10节](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/docs/internal/P1_CROSS_REPO_REVIEW.md#L260)，评审文件Git blob `d24e00255b77ace081bf0c9ab8db577a71b28c47`。相对d30e41b仅一次提交、10个资料／隔离测试路径变化，无生产实现或契约升级。三份电脑固定副本与本仓6ab3a38逐字节一致：58项JSON `7df637b7d7e6379c14de9330562936225cc9ad24`、Node原型 `beb6198bf46a3cbe02abed5bc5afa63bc3aeba32`、Python参考 `0ed221d6ccdb7d49eb66bccd1d86204a0c12b8bc`；设计／原检查入口／根锁文件blob也分别匹配报告的`963c4239abec993a9de3de008d9c12bd380c994d`、`a8a519d0245390a479b45cc635e24a2b28719b51`、`8cee12e89a1db305bb7457d768510373aba5043a`。
+
+审读[电脑显式检查](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/tests/p1_json_review.py)，blob `da817e5353470eeb1ab9e16d6489831ba649ba61`；AST静态展开5个测试函数为80项：3个来源、1个清单、58个三路对照、17个补充输入、1个CLI。其独立参考采用token reader保留数字词形／对象键对、用Decimal判断金额，不调用移动json.loads hooks；依赖包先验固定SRI再临时解包。本机未执行电脑pytest，80项通过及电脑Python3.13.13复跑移动入口作为报告证据接收，不混算旧值176项或扩大为生产边界通过。
+
+接受58项预期与当前宿主方案。补充输入落在[独立17项容器](fixtures/p1-json-boundaries.json)，RX01–RX17依电脑EXTRA原顺序编码，补齐确定的诊断树预期；这是新本地容器，不是篡改原58项或伪造双方共同版本。包括原RAW1精确1.00000000000000001、极长指数、尾部BOM／非JSON空白、NFC不同键、字段重排，以及有序拒绝：语法先于树遍历，键Unicode先验、重复立即拒绝、随后看值，深度遍历按源码顺序。`{"a":"\ud800","a":1}`归unicode，反向则duplicate_key；Unicode非字符`\uffff`仍可表达，不声称I-JSON合规。
+
+默认`pnpm check:p1-json`核对原58＋补17，共75项、25接受／50拒绝，本机Node v26.3.0与Python3.14.10一致且输入不改；指定PATH仍只检查单份。原Node解码原型／Python参考及原58项均不改字节，仅扩主检查器。候选文件保留pending／null，表示该容器及正式联合协议未定版，不能据此否认已收到的独立复核。没有新增产品取舍；下一项按电脑建议先定完整命令语义，再定字节／摘要，资源与正式运行边界另有门槛。
+
+## 15. 完整命令与重试比较草案：先确定比较的对象
+
+本节是维护者技术提案，未注册字段／命令或共享版本，**以下表格与比较样例尚未执行**。本轮从消费、回款、预约及进度四族落实字段，不代表其他LOCAL／MIXED能力被移出目标；旅行／分支／历史、计划采用／撤销、回顾／高级工程等仍按第4节及能力矩阵逐项覆盖。先明确语义对象，随后再给共同字节向量；不给现有诊断树直接做hash。
+
+### 固定源码与当前行为
+
+本轮只读核对电脑12a25a7的[领域模型](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/app/domain/itinerary.py)、[消费服务](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/app/services/travel_service.py)、[回款服务](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/app/services/adjustment_service.py)、[HTTP路由](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/app/api/routes_itinerary.py)与[预约服务](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/12a25a796fbcf17ed3a658fcd89cad7105e9e470/backend/app/services/replan_service.py)。未导入或执行电脑业务，未修改其工作区。
+
+现状ExpenseInput有10个字段，另由ExpenseCreate增加request_id；expense_values对title使用Python.strip、对receipt_ids按首次出现保序去重，且不把allow_shared_receipts存进Expense。后者由_validate_receipts决定是否允许分项共用凭证，**它是命令控制条件，不能因为不落业务实体就从重试内容比较中删掉**。旧PUT编辑复用完整ExpenseInput及默认值，不是下表提出的新部分更正契约。BookingUpdate的booking必填可null，设置时enrich_itinerary可能进行联网派生计算；移动本地提交不能因此等待地图服务。旧接口继续按原基线，不由本提案直接改写。
+
+### 命令外层与结果分开
+
+| 组成 | 候选内容与比较责任 |
+| --- | --- |
+| 语义配置 | 已支持的契约标识／版本与字段语义配置；尚未分配。未知配置拒绝，不猜测解析、剥字段后继续 |
+| 去重身份 | dataset_id、source_device_id、operation_id三元组定位原操作；它与实体ID分开。任一项改变是另一个去重域／操作，不宣称仍是原重试；ID具体编码与旧request_id映射待定 |
+| 目标与前置条件 | 旅行／分支／实体或活动稳定ID、命令种类、expected_revision_id，均参与同操作语义比较。day等位置提示不能代替稳定活动身份；历史版本不原地修改 |
+| 业务意图 | 经明确字段规则校验的payload及控制字段；只包含调用者明确提交的编辑字段。不能先读当前快照补默认值，再当成原命令语义 |
+| 调用上下文 | 当前配对／调用权限、传输凭据与连接状态在命令外验证；不把秘密、设备本地路径或刷新token放入业务payload／摘要。source_device_id须与已验证身份绑定，不能只信页面自报 |
+| 回执与读取视图 | committed_revision_id、replayed／applied_on_this_call、observed_head、汇总／派生终点和服务端审计时间是结果，不反塞进请求比较；重放后当前头变化不改变原提交 |
+
+同去重键中，换目标、命令类型、基线或任何业务／控制字段均不能伪装成重试；格式错误先拒绝，不必都归为内容冲突。先验证有界格式、支持的语义配置与当前权限，再在受控事务内查回执、比较原语义；同语义已提交返回原结果。只有新操作才检查当前头、关联存在性、票据可用性、回款上限及删除状态。这样当前票据暂不可读、实体后来删除或头已前进，都不会使已提交操作重新写入；权限失效仍不能读取原回执。
+
+### 字段覆盖与创建／更正候选
+
+新命令拟用显式创建载荷、部分更正载荷及独立删除／恢复动作。下列名称用于审查，不是可调用API；旧PUT转接若需要完整替换，须明确展开并核对基线，不能把旧默认覆盖行为伪装成新PATCH。
+
+| 命令族／字段组 | 创建／设置候选 | 部分更正／清除与保护 |
+| --- | --- | --- |
+| 消费身份与金额 | 独立entity_id，title、amount_cents、currency=CNY、paid_on；付款日显式日期或null | 更正只处理提交字段；省略paid_on不改，null明确未知。金额／币种／旧未知事实的联合校验不能靠补今天或CNY通过 |
+| 消费分类／关联 | category、day、activity_id、budget_item_id、settles_budget，创建全部显式给值；day／两种关联可null | day仍为1–60的行程序号，不能替付款日；null才解除可空关联。settles_budget=true须有有效预算行且分类一致；空串不是null。新操作校验活动是真实停留点、行程日存在 |
+| 消费文本／票据控制 | notes、receipt_ids、allow_shared_receipts全部显式给值；空notes／空列表／false可用 | notes空串是明确清空；receipt_ids省略不改、[]解除当前引用而非删除历史文件、null拒绝。候选保留顺序并拒绝重复ID，不能全局排序成集合；更换引用的命令显式提交allow_shared_receipts，且该控制条件参与比较 |
+| 回款 | 独立entity_id，expense_id、kind、amount_cents、currency=CNY、status、notes；保留refund／reimbursement及pending／received | 更正省略不改，null不代替合法枚举／金额。关联／类别／金额／状态任一变化均重新检查同种含pending上限，排除本条旧金额；不新增第二笔来表达到账。回款自身日期未获本轮产品定义，不擅加paid_on或借用消费付款日 |
+| 消费／回款删除与恢复 | 删除是独立操作、明确目标／基线，payload不得夹带覆盖快照 | 消费仍有回款时拒绝删除；重放旧创建只查原回执。恢复另用新操作、同稳定实体ID及明确source_revision_id；按当前约束重新校验，保留删除历史，不将恢复混成创建重试 |
+| 预约设置 | 保留start_time、start_day_offset、duration_minutes、notes；target含活动与行程关联。明确时区的新记录另有local_start、time_zone、utc_offset、start_instant、elapsed语义及日历／解析依据 | 原clock／offset不能被新字段遗漏。输入当地日历／时钟、偏移与UTC须一致；解析依据的资料版本与日历基线参与意图，不能重试时用新tzdb重新推导起点。完整字段名、全量命名／别名及资料标识仍待共同固定 |
+| 预约清除／旧记录 | 预约清除作为明确动作，不把缺省booking当清除；旧clock／未知时区继续保留原解释 | 清除仅移除本地约束，不取消外部订单。设置／清除仍要求真实停留点且progress=not_started；旧记录不被自动升格为elapsed。清除后活动时钟等旧副作用须显式覆盖验证，不能默认为全部置空 |
+| 执行进度 | progress.set显式提交not_started／in_progress／completed／skipped及稳定活动目标 | 新操作沿原规划起点保护；执行记录与预约保护联动。派生审计时间由提交确定一次，不随重放刷新 |
+
+原10个ExpenseInput字段在上表全部有去向；amount转为精确整分，request_id拆成操作／实体身份的映射另评审。原AdjustmentInput五字段expense_id／kind／amount／status／notes保留相应含义，amount替换为amount_cents并新增currency，不按消费表机械增字段。Booking四字段、路由目标、ProgressUpdate一字段均保留。2000消费／4000回款、票据最多6个、分类枚举、标题／备注长度和预算保护继续有效；历史未知／超界资料不能因新创建约束而被删除或强制补全。旧记录非财务更正应保留未触及的未知事实；旧未知币种的金额纠错／恢复如何表达仍需专门兼容设计，不能用禁止旧纠错或默标CNY结案。
+
+### 语义等价候选，不是诊断树相等
+
+建议对象字段顺序不影响合法命令语义；字段解释由命令配置决定，不能对任意JSON全局排序／数值转换。所有保留字符串先按JSON转义解码，保持Unicode标量序列，不隐式NFC、大小写折叠或语言运行时trim。标题旧strip的兼容映射须明示：本提案建议新命令按提交文本比较，表单若清理空白应在生成操作前完成并固定；旧记录／旧接口的显示与保存行为不据此批量重写。标题／备注长度拟按Unicode标量计数，而非JS UTF-16 length；字节预算另计，需补非BMP字符边界。收紧或转换规则需共同向量，不能直接用Python.strip与JS.trim当相同规范。
+
+下表均在同去重键、格式合法、权限通过的前提下比较；“不同”表示不能按原操作重放，“拒绝”表示不能先归一化成合法意图。Q01–Q12是待实现／待电脑评审的设计预期，**不是已通过75项检查的一部分**。
+
+| 设计例 | 两次输入／外部变化 | 候选预期 |
+| --- | --- | --- |
+| Q01 | CNY amount_cents为100／100.0／1e2 | 同金额语义；先精确验证，再归为整数100，原始词形不同不代表改账 |
+| Q02 | amount_cents=1与1.00000000000000001 | 后者拒绝，不能舍入成同语义 |
+| Q03 | 合法payload仅重排对象字段／更换等价JSON转义 | 同语义；不能给保留源码顺序的诊断树直接hash |
+| Q04 | 更正paid_on省略／null／明确日期；票据省略／[] | 分别是保留、置未知／置日期或解除引用；不能补默认后合并 |
+| Q05 | allow_shared_receipts=false／true，其他字段相同 | 不同意图，即使最终Expense对象相同，控制条件也不能丢 |
+| Q06 | budget_item_id、settles_budget或活动／行程关联任一变化 | 不同意图；不能只比较金额／标题 |
+| Q07 | receipt_ids=[A,B]／[B,A]／[A,A] | 前两者按候选保序故不同，第三者拒绝；排序／去重不能掩盖改变 |
+| Q08 | notes／title有NFC不同或空白变化 | 保留文本序列，候选为不同；不能运行时自动归一化。旧title.strip兼容另核对 |
+| Q09 | expected_revision_id从r1改r2；或同键换目标／命令类型 | 不同意图，不能为绕冲突重写已生成操作。另换操作ID才是另一操作，不据此判定允许执行 |
+| Q10 | 原命令不变，当前头r2变r3、附件暂不可读或实体已删 | 若原回执已提交且权限仍有效，确认原提交，不重新应用／复活；当前视图独立表达 |
+| Q11 | 预约同名重复时刻换偏移／确定UTC，或换日历解析依据 | 不同意图；不能仅比较钟面时钟／经过分钟。派生结束展示不是第二个请求输入 |
+| Q12 | pending改received；或仅更新传输token／observed_head | 前者不同业务意图；后者属于调用上下文／响应，不更改原请求意图，仍重新校验当前权限 |
+
+### 资源／能力与下一份共同向量的进入条件
+
+控制命令、完整快照／历史页与附件分开定预算，不能将一个小JSON实验的固定上限套到图片、2000笔消费或全部历史。正式边界至少需独立限制原始字节、嵌套深度、节点／键数、字符串与数字词形长度、并发／队列及总工作量；应在可能的递归解析／BigInt／Decimal分配前执行相应前置检查，成功与超限路径均不改业务库。具体数值、能力标识与原生实施尚未定，当前未做无界压力测试，不给宿主原型增加虚假的“生产安全”标记。
+
+能力响应提案至少区分：可读／可写契约配置、支持命令及字段语义特性（CNY、paid_on未知／省略、elapsed预约）、资源配置、时区目录与解析资料版本、旧未知值可读／可保留、回执查询能力。只有共同支持完整命令所需特性才交换；不同资源预算不能靠截断票据／字段／历史来适配，不兼容时保留本地操作并明确暂停该交换。旧操作查回执与新写入能力分开，升级后超限／不支持不等于原操作未提交。
+
+下一项请电脑先复核字段覆盖、控制字段、创建／部分更正与Q01–Q12等价规则，明确旧strip／票据顺序及旧未知值适配差异；再将完整命令、能力响应与资源配置转成独立机器可读向量。资源预算及拒绝路径验明后，选择规范化／摘要方案并给逐字节共同向量；JCS如被采用也须先满足字段域与字符规则，当前不引入新摘要依赖。之后才进入ID／历史映射、权威事务及T1／F1恢复实现门槛。

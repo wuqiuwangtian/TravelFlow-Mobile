@@ -1,0 +1,274 @@
+{
+  "fixture_format_version": 1,
+  "status": "candidate-raw-json",
+  "shared_contract_version": null,
+  "mobile_baseline_commit": "6ab3a38548254a32cf4f527eefbd6cf26d4ac453",
+  "desktop_review_commit": "12a25a796fbcf17ed3a658fcd89cad7105e9e470",
+  "scope": "电脑第10节17项补充输入在移动侧的独立预期容器；保留原58项字节，不是新增业务格式、规范化或资源限额验收。",
+  "acceptance": {
+    "desktop_joint_review": "pending",
+    "android_native_execution": "not-implemented",
+    "storage_execution": "not-implemented",
+    "canonical_bytes": "not-implemented"
+  },
+  "cases": [
+    {
+      "id": "RX01",
+      "description": "同名位于独立对象",
+      "profile": "json",
+      "raw_json": "{\"a\":[{\"a\":1}],\"b\":{\"a\":2}}",
+      "expected": {
+        "accepted": true,
+        "tree": [
+          "object",
+          [
+            [
+              "a",
+              [
+                "array",
+                [
+                  [
+                    "object",
+                    [
+                      [
+                        "a",
+                        [
+                          "number",
+                          "1"
+                        ]
+                      ]
+                    ]
+                  ]
+                ]
+              ]
+            ],
+            [
+              "b",
+              [
+                "object",
+                [
+                  [
+                    "a",
+                    [
+                      "number",
+                      "2"
+                    ]
+                  ]
+                ]
+              ]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "id": "RX02",
+      "description": "转义后同名且同值",
+      "profile": "json",
+      "raw_json": "{\"a\":1,\"\\u0061\":1}",
+      "expected": {
+        "accepted": false,
+        "error": "duplicate_key"
+      }
+    },
+    {
+      "id": "RX03",
+      "description": "数组内深层对象重复",
+      "profile": "json",
+      "raw_json": "{\"a\":[1,{\"b\":1,\"b\":2}]}",
+      "expected": {
+        "accepted": false,
+        "error": "duplicate_key"
+      }
+    },
+    {
+      "id": "RX04",
+      "description": "合法代理对下界",
+      "profile": "json",
+      "raw_json": "\"\\ud800\\udc00\"",
+      "expected": {
+        "accepted": true,
+        "tree": [
+          "string",
+          "𐀀"
+        ]
+      }
+    },
+    {
+      "id": "RX05",
+      "description": "Unicode非字符仍是本候选可表达标量，不宣称I-JSON",
+      "profile": "json",
+      "raw_json": "\"\\uffff\"",
+      "expected": {
+        "accepted": true,
+        "tree": [
+          "string",
+          "￿"
+        ]
+      }
+    },
+    {
+      "id": "RX06",
+      "description": "尾部BOM也是非法JSON",
+      "profile": "json",
+      "raw_json": "{}﻿",
+      "expected": {
+        "accepted": false,
+        "error": "json"
+      }
+    },
+    {
+      "id": "RX07",
+      "description": "Unicode行分隔符不是JSON外围空白",
+      "profile": "json",
+      "raw_json": " []",
+      "expected": {
+        "accepted": false,
+        "error": "json"
+      }
+    },
+    {
+      "id": "RX08",
+      "description": "源码深度顺序：先遇到值中的未配对代理项",
+      "profile": "json",
+      "raw_json": "{\"a\":\"\\ud800\",\"a\":1}",
+      "expected": {
+        "accepted": false,
+        "error": "unicode"
+      }
+    },
+    {
+      "id": "RX09",
+      "description": "源码深度顺序：重复键先于其值中的坏代理项",
+      "profile": "json",
+      "raw_json": "{\"a\":1,\"a\":\"\\ud800\"}",
+      "expected": {
+        "accepted": false,
+        "error": "duplicate_key"
+      }
+    },
+    {
+      "id": "RX10",
+      "description": "语法失败优先于坏代理项",
+      "profile": "json",
+      "raw_json": "{\"a\":\"\\ud800\",}",
+      "expected": {
+        "accepted": false,
+        "error": "json"
+      }
+    },
+    {
+      "id": "RX11",
+      "description": "电脑原RAW1的精确一分反例",
+      "profile": "cny-amount",
+      "raw_json": "{\"currency\":\"CNY\",\"amount_cents\":1.00000000000000001}",
+      "expected": {
+        "accepted": false,
+        "error": "amount"
+      }
+    },
+    {
+      "id": "RX12",
+      "description": "带零尾的分数指数精确缩放为一分",
+      "profile": "cny-amount",
+      "raw_json": "{\"currency\":\"CNY\",\"amount_cents\":0.10000000000000000000e1}",
+      "expected": {
+        "accepted": true,
+        "value": {
+          "currency": "CNY",
+          "amount_cents": 1
+        }
+      }
+    },
+    {
+      "id": "RX13",
+      "description": "负指数精确缩放为一分",
+      "profile": "cny-amount",
+      "raw_json": "{\"currency\":\"CNY\",\"amount_cents\":10e-1}",
+      "expected": {
+        "accepted": true,
+        "value": {
+          "currency": "CNY",
+          "amount_cents": 1
+        }
+      }
+    },
+    {
+      "id": "RX14",
+      "description": "正指数、负零及微小小数保留词形",
+      "profile": "json",
+      "raw_json": "[1E+400,-0.00,0.00000000000000001]",
+      "expected": {
+        "accepted": true,
+        "tree": [
+          "array",
+          [
+            [
+              "number",
+              "1E+400"
+            ],
+            [
+              "number",
+              "-0.00"
+            ],
+            [
+              "number",
+              "0.00000000000000001"
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "id": "RX15",
+      "description": "NFC不同的键不被合并",
+      "profile": "json",
+      "raw_json": "{\"é\":1,\"e\\u0301\":2}",
+      "expected": {
+        "accepted": true,
+        "tree": [
+          "object",
+          [
+            [
+              "é",
+              [
+                "number",
+                "1"
+              ]
+            ],
+            [
+              "é",
+              [
+                "number",
+                "2"
+              ]
+            ]
+          ]
+        ]
+      }
+    },
+    {
+      "id": "RX16",
+      "description": "金额片段对象字段重排不改变分值",
+      "profile": "cny-amount",
+      "raw_json": "{\"amount_cents\":100,\"currency\":\"CNY\"}",
+      "expected": {
+        "accepted": true,
+        "value": {
+          "currency": "CNY",
+          "amount_cents": 100
+        }
+      }
+    },
+    {
+      "id": "RX17",
+      "description": "极长指数在金额片段中拒绝而不构造十次幂",
+      "profile": "cny-amount",
+      "raw_json": "{\"amount_cents\":1e99999999999999999999999999999999999999,\"currency\":\"CNY\"}",
+      "expected": {
+        "accepted": false,
+        "error": "amount"
+      }
+    }
+  ]
+}

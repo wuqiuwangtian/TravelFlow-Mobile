@@ -8,21 +8,26 @@ import { evaluate } from "../prototypes/p1-json/decode.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 assert.ok(process.argv.length <= 3, "Usage: node scripts/check-p1-json.mjs [candidate.json]");
-const inputPath = path.resolve(process.argv[2] ?? path.join(root, "docs/internal/fixtures/p1-json-cases.json"));
-const corpus = JSON.parse(readFileSync(inputPath, "utf8"));
-assert.equal(corpus.fixture_format_version, 1);
-assert.equal(corpus.status, "candidate-raw-json");
-assert.equal(corpus.shared_contract_version, null);
-assert.deepEqual(corpus.acceptance, {
-  desktop_joint_review: "pending", android_native_execution: "not-implemented",
-  storage_execution: "not-implemented", canonical_bytes: "not-implemented",
-});
-assert.ok(Array.isArray(corpus.cases) && corpus.cases.length > 0);
-const before = JSON.stringify(corpus);
+const inputPaths = process.argv[2] ? [path.resolve(process.argv[2])] : [
+  path.join(root, "docs/internal/fixtures/p1-json-cases.json"),
+  path.join(root, "docs/internal/fixtures/p1-json-boundaries.json"),
+];
+const corpora = inputPaths.map(inputPath => JSON.parse(readFileSync(inputPath, "utf8")));
+for (const corpus of corpora) {
+  assert.equal(corpus.fixture_format_version, 1);
+  assert.equal(corpus.status, "candidate-raw-json");
+  assert.equal(corpus.shared_contract_version, null);
+  assert.deepEqual(corpus.acceptance, {
+    desktop_joint_review: "pending", android_native_execution: "not-implemented",
+    storage_execution: "not-implemented", canonical_bytes: "not-implemented",
+  });
+  assert.ok(Array.isArray(corpus.cases) && corpus.cases.length > 0);
+}
+const before = JSON.stringify(corpora);
 const ids = new Set();
 const results = {};
-for (const entry of corpus.cases) {
-  assert.match(entry.id, /^RJ[0-9]{2}$/);
+for (const entry of corpora.flatMap(corpus => corpus.cases)) {
+  assert.match(entry.id, /^(RJ|RX)[0-9]{2}$/);
   assert.ok(!ids.has(entry.id), `Duplicate candidate ID: ${entry.id}`);
   ids.add(entry.id);
   assert.ok(["json", "cny-amount"].includes(entry.profile));
@@ -39,18 +44,23 @@ for (const entry of corpus.cases) {
   results[entry.id] = evaluate(entry);
   assert.deepEqual(results[entry.id], entry.expected, `${entry.id}: candidate expectation`);
 }
-assert.equal(JSON.stringify(corpus), before, "Candidate evaluation mutated input");
+assert.equal(JSON.stringify(corpora), before, "Candidate evaluation mutated input");
 const interpreter = process.env.P1_REVIEW_PYTHON ?? (process.platform === "win32" ? "python" : "python3");
-const reference = spawnSync(interpreter, [path.join(root, "scripts/check-p1-json.py"), inputPath], {
-  cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024,
-});
-assert.ifError(reference.error);
-assert.equal(reference.status, 0, `Python3.9+ required; no skip: ${reference.stderr}`);
-const python = JSON.parse(reference.stdout);
-assert.equal(python.stdlib_only, true);
-assert.deepEqual(python.results, results, "Node/Python raw-byte candidates disagree");
+let python;
+for (const [index, inputPath] of inputPaths.entries()) {
+  const reference = spawnSync(interpreter, [path.join(root, "scripts/check-p1-json.py"), inputPath], {
+    cwd: root, encoding: "utf8", timeout: 30000, maxBuffer: 2 * 1024 * 1024,
+  });
+  assert.ifError(reference.error);
+  assert.equal(reference.status, 0, `Python3.9+ required; no skip: ${reference.stderr}`);
+  python = JSON.parse(reference.stdout);
+  assert.equal(python.stdlib_only, true);
+  const expected = Object.fromEntries(corpora[index].cases.map(entry => [entry.id, results[entry.id]]));
+  assert.deepEqual(python.results, expected, "Node/Python raw-byte candidates disagree");
+}
 console.log(JSON.stringify({
   candidate_raw_json_cases: ids.size,
+  source_corpora: inputPaths.map((inputPath, index) => ({ file: path.basename(inputPath), cases: corpora[index].cases.length })),
   accepted: Object.values(results).filter(result => result.accepted).length,
   rejected: Object.values(results).filter(result => !result.accepted).length,
   node: process.version, python: python.python, node_parser: "jsonc-parser@3.3.1",
