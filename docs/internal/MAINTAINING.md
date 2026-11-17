@@ -14,6 +14,7 @@ pnpm check:p1-review
 pnpm check:p1-values
 pnpm check:p1-json
 pnpm check:p1-patch
+pnpm check:p1-boundary
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -447,7 +448,7 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 ## 正式主线与P1设计的只读复核
 
-先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第8／9节为首轮复核／产品规则，第10–14节为88项值及75项原始输入，第15／16节是命令语义与电脑e060bab复核、两项产品细化，第17节是70项纯补丁计划与独立查询／预算提案。历史资料保持原字节，正式协议仍待共同定版。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式字段／命令。
+先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第10–17节记录88／75／70项及已确认语义，第18节接收电脑5b221ae、关闭纯补丁分歧，第19节为已运行的有界消费入口、独立查询与共享调度。历史资料保持，完整共享协议仍待定。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式桥接API。
 
 在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-review`、`pnpm typecheck`。前三者分别预期固定快照通过、14组既有汇总样例通过，以及原评审JSON输出6组只读金额、2组时区换算、2组跨日算术和12项源码场景编目；后者预期类型通过。原JSON已经被电脑逐字节核对，保持其desktop_joint_review=pending等历史字段；命令的python_backend_executed=false／mobile_write_scenarios_executed=0只描述本地检查执行范围。当前收到电脑报告、移动方向复核及候选状态以设计第8／9节为准，不为消除pending改写固定输入；无需本机重建APK或重跑历史模拟器。
 
@@ -467,9 +468,13 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 `node scripts/check-p1-patch.mjs PATH`核对仓库外副本，`python3 scripts/check-p1-patch.py PATH`只输出独立参考结果；缺解释器直接失败。可以改坏预算解除、未知币种、无变化回执或备注编辑预期、重复ID和联合版本，预期非零退出。向电脑转交时保留独立Node候选、两份检查器、资料及根命令入口；不导入电脑源码、不覆盖旧证据。第17节文本／预算提案及独立查询结果还须分别核对，不能用70项通过声称查询、写库或资源拒绝不写库已验证。
 
+有界组合入口为`pnpm check:p1-boundary`，需要Node22+及根冻结依赖，不需要Python、IANA、数据库或设备。预期55项原始输入＋42项流程＋7项调度均通过；共享版本null，真实认证／持久回执／SQLite事务／Android／规范化字节仍false。脚本无参数，只读固定[组合资料](fixtures/p1-boundary-cases.json)与既有补丁基线；配置字节／深度／token／标量／词形和全局／作用域队列的计数定义见设计第19节。断言失败或依赖缺失应非零退出，不改坏预期来消除失败。
+
+复现时取完整prototypes/p1-boundary目录、既有p1-json／p1-patch候选与所需资料、检查入口、根package.json／锁文件；jsonc-parser仍固定3.3.1，仅宿主开发依赖。补丁模块新增checkPatchFields供有界入口复用，原70项预期不改。只有同一JS运行时默认实例共用调度池，不是跨进程或Android并发证明；测试使用可控Promise和适配spy／提交陷阱，不运行真实认证／SQLite。104项是本地组合门禁，不新增一次强制跨仓往返。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑e060bab接受命令语义方向并建议补联合校验／字符／查询，报告36项；本机未跑其pytest，不混算前轮值／原始输入。设计第16节记录用户确认无变化保存仍保留回执、旧未知币种可保持未知纠错；第17节70项仅核对纯补丁计划，下一项先交电脑复核，再接有界命令／独立查询及完整创建／回款／预约等向量。文本策略／预算只是待评提案，资源拒绝、身份与持久回执／事务必须另验；历史资料、全量时区、ID／历史和恢复门槛保持，不分配正式共享版本。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑5b221ae已接受70项，本轮104项有界宿主入口可运行；接着直接补回款／预约／进度，再用全虚构隔离SQLite验证持久回执／原子事务与恢复。旧结论引用即可，不重复转交已收口样例作为默认门槛；完整候选冻结、共享语义变化或跨端失败时再定点协调。真实身份、正式原生／事务、字节／摘要、全量时区、ID／历史仍有独立门槛，不分配正式共享版本。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

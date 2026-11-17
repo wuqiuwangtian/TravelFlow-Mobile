@@ -39,6 +39,7 @@ jobs:
       - run: pnpm check:p1-values
       - run: pnpm check:p1-json
       - run: pnpm check:p1-patch
+      - run: pnpm check:p1-boundary
       - run: pnpm typecheck
       - name: Check probe script syntax (native interaction requires an isolated emulator)
         run: |

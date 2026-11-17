@@ -15,6 +15,7 @@
     "check:p1-values": "node scripts/check-p1-values.mjs",
     "check:p1-json": "node scripts/check-p1-json.mjs",
     "check:p1-patch": "node scripts/check-p1-patch.mjs",
+    "check:p1-boundary": "node scripts/check-p1-boundary.mjs",
     "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck src/domain/ledger.ts",
     "prepare:android": "node scripts/prepare-android-probe.mjs"
   },

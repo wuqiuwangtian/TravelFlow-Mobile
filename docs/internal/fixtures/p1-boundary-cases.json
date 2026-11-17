@@ -1,0 +1,781 @@
+{
+  "fixture_format_version": 1,
+  "status": "host-boundary-candidate",
+  "shared_contract_version": null,
+  "mobile_baseline_commit": "eee6cda7f8592fec51ff4a9dba17ce14af2b5974",
+  "desktop_review_commit": "5b221ae188d715afef0f31ed79eed9dbcc44ff3d",
+  "scope": "宿主原始输入／完整消费创建与补丁信封／只读查询及候选预算；非共享契约、真实认证或持久事务。",
+  "templates": {
+    "patch": {
+      "profile": "p1-host-control-1",
+      "kind": "expense.patch",
+      "operation": {
+        "dataset_id": "dataset-1",
+        "source_device_id": "device-1",
+        "operation_id": "operation-1"
+      },
+      "target": {
+        "travel_id": "travel-1",
+        "branch_id": "branch-1",
+        "entity_id": "fictional-expense"
+      },
+      "expected_revision_id": "revision-1",
+      "payload": {
+        "notes": "更正备注"
+      }
+    },
+    "create": {
+      "profile": "p1-host-control-1",
+      "kind": "expense.create",
+      "operation": {
+        "dataset_id": "dataset-1",
+        "source_device_id": "device-1",
+        "operation_id": "operation-1"
+      },
+      "target": {
+        "travel_id": "travel-1",
+        "branch_id": "branch-1",
+        "entity_id": "fictional-expense"
+      },
+      "expected_revision_id": "revision-1",
+      "payload": {
+        "title": "午餐",
+        "amount_cents": 10000,
+        "currency": "CNY",
+        "paid_on": null,
+        "category": "meal",
+        "day": 1,
+        "activity_id": "activity-1",
+        "notes": "",
+        "receipt_ids": [],
+        "allow_shared_receipts": false,
+        "budget_item_id": "budget-1",
+        "settles_budget": true
+      }
+    },
+    "query": {
+      "profile": "p1-host-query-1",
+      "kind": "receipt.lookup",
+      "operation": {
+        "dataset_id": "dataset-1",
+        "source_device_id": "device-1",
+        "operation_id": "operation-1"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "BI01",
+      "entry": "parse",
+      "description": "control原字节恰好限额",
+      "recipe": {
+        "kind": "padded",
+        "text": "null",
+        "bytes": 32768,
+        "channel": "control"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI02",
+      "entry": "parse",
+      "description": "control原字节多1",
+      "recipe": {
+        "kind": "padded",
+        "text": "null",
+        "bytes": 32769,
+        "channel": "control"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_bytes"
+      }
+    },
+    {
+      "id": "BI03",
+      "entry": "parse",
+      "description": "query原字节恰好限额",
+      "recipe": {
+        "kind": "padded",
+        "text": "null",
+        "bytes": 8192,
+        "channel": "query"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI04",
+      "entry": "parse",
+      "description": "query原字节多1",
+      "recipe": {
+        "kind": "padded",
+        "text": "null",
+        "bytes": 8193,
+        "channel": "query"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_bytes"
+      }
+    },
+    {
+      "id": "BI05",
+      "entry": "parse",
+      "description": "根容器深度从1计，恰好16",
+      "recipe": {
+        "kind": "nested",
+        "depth": 16
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI06",
+      "entry": "parse",
+      "description": "深度17在递归解析前拒绝",
+      "recipe": {
+        "kind": "nested",
+        "depth": 17
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_depth"
+      }
+    },
+    {
+      "id": "BI07",
+      "entry": "parse",
+      "description": "2048个含标点token",
+      "recipe": {
+        "kind": "tokens",
+        "items": 1023,
+        "last_object": true
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI08",
+      "entry": "parse",
+      "description": "2049个token",
+      "recipe": {
+        "kind": "tokens",
+        "items": 1024,
+        "last_object": false
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_tokens"
+      }
+    },
+    {
+      "id": "BI09",
+      "entry": "parse",
+      "description": "4096个解码标量",
+      "recipe": {
+        "kind": "string",
+        "character": "a",
+        "count": 4096
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI10",
+      "entry": "parse",
+      "description": "4097个解码标量",
+      "recipe": {
+        "kind": "string",
+        "character": "a",
+        "count": 4097
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_string"
+      }
+    },
+    {
+      "id": "BI11",
+      "entry": "parse",
+      "description": "4096个解码标量",
+      "recipe": {
+        "kind": "string",
+        "character": "😀",
+        "count": 4096
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI12",
+      "entry": "parse",
+      "description": "4097个解码标量",
+      "recipe": {
+        "kind": "string",
+        "character": "😀",
+        "count": 4097
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_string"
+      }
+    },
+    {
+      "id": "BI13",
+      "entry": "parse",
+      "description": "转义串按解码标量而非源码字符计数",
+      "recipe": {
+        "kind": "escaped_string",
+        "count": 4096
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI14",
+      "entry": "parse",
+      "description": "转义串4097标量拒绝",
+      "recipe": {
+        "kind": "escaped_string",
+        "count": 4097
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_string"
+      }
+    },
+    {
+      "id": "BI15",
+      "entry": "parse",
+      "description": "数字词形64字符仅保真不展开",
+      "recipe": {
+        "kind": "number",
+        "digits": 64
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI16",
+      "entry": "parse",
+      "description": "数字词形65字符前置拒绝",
+      "recipe": {
+        "kind": "number",
+        "digits": 65
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_number"
+      }
+    },
+    {
+      "id": "BI17",
+      "entry": "parse",
+      "description": "非法语法不消费恢复树",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"a\":1,}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "json"
+      }
+    },
+    {
+      "id": "BI18",
+      "entry": "parse",
+      "description": "解码后重复键拒绝",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"a\":1,\"\\u0061\":1}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "duplicate_key"
+      }
+    },
+    {
+      "id": "BI19",
+      "entry": "parse",
+      "description": "孤代理项拒绝",
+      "recipe": {
+        "kind": "raw",
+        "text": "\"\\ud800\""
+      },
+      "expected": {
+        "accepted": false,
+        "error": "unicode"
+      }
+    },
+    {
+      "id": "BI20",
+      "entry": "parse",
+      "description": "非法UTF8拒绝",
+      "recipe": {
+        "kind": "hex",
+        "hex": "22eda08022"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "encoding"
+      }
+    },
+    {
+      "id": "BI21",
+      "entry": "parse",
+      "description": "超字节预算优先于坏UTF8",
+      "recipe": {
+        "kind": "oversize_invalid"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_bytes"
+      }
+    },
+    {
+      "id": "BI22",
+      "entry": "parse",
+      "description": "未闭合深度超限先归预算拒绝",
+      "recipe": {
+        "kind": "raw",
+        "text": "[[[[[[[[[[[[[[[[["
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_depth"
+      }
+    },
+    {
+      "id": "BI23",
+      "entry": "control",
+      "description": "完整补丁意图",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"notes\":\"更正备注\"}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI24",
+      "entry": "control",
+      "description": "完整显式CNY创建",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.create\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"title\":\"午餐\",\"amount_cents\":10000,\"currency\":\"CNY\",\"paid_on\":null,\"category\":\"meal\",\"day\":1,\"activity_id\":\"activity-1\",\"notes\":\"\",\"receipt_ids\":[],\"allow_shared_receipts\":false,\"budget_item_id\":\"budget-1\",\"settles_budget\":true}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI25",
+      "entry": "control",
+      "description": "精确整数词形100",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":100}}"
+      },
+      "expected": {
+        "accepted": true,
+        "amount": 100
+      }
+    },
+    {
+      "id": "BI26",
+      "entry": "control",
+      "description": "精确整数词形100.0",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":100.0}}"
+      },
+      "expected": {
+        "accepted": true,
+        "amount": 100
+      }
+    },
+    {
+      "id": "BI27",
+      "entry": "control",
+      "description": "精确整数词形1e2",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":1e2}}"
+      },
+      "expected": {
+        "accepted": true,
+        "amount": 100
+      }
+    },
+    {
+      "id": "BI28",
+      "entry": "control",
+      "description": "不展开或舍入1e1000000000",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":1e1000000000}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI29",
+      "entry": "control",
+      "description": "不展开或舍入1e-1000000000",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":1e-1000000000}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI30",
+      "entry": "control",
+      "description": "不展开或舍入1.00000000000000001",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":1.00000000000000001}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI31",
+      "entry": "control",
+      "description": "不展开或舍入0",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":0}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI32",
+      "entry": "control",
+      "description": "不展开或舍入-1",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":-1}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI33",
+      "entry": "control",
+      "description": "不展开或舍入10000000000",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":10000000000}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "BI34",
+      "entry": "control",
+      "description": "数字字符串不当整数",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":\"100\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "type"
+      }
+    },
+    {
+      "id": "BI35",
+      "entry": "control",
+      "description": "布尔不当整数",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":true}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "type"
+      }
+    },
+    {
+      "id": "BI36",
+      "entry": "control",
+      "description": "补丁联合关联检查留到当前快照",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"budget_item_id\":null}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI37",
+      "entry": "control",
+      "description": "未知字段不默默剥除",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"observed_head\":\"revision-2\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "BI38",
+      "entry": "control",
+      "description": "原始金额重复字段拒绝",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"amount_cents\":1,\"amount_cents\":2}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "duplicate_key"
+      }
+    },
+    {
+      "id": "BI39",
+      "entry": "control",
+      "description": "新创建不能隐式补付款日",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.create\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"title\":\"午餐\",\"amount_cents\":10000,\"currency\":\"CNY\",\"category\":\"meal\",\"day\":1,\"activity_id\":\"activity-1\",\"notes\":\"\",\"receipt_ids\":[],\"allow_shared_receipts\":false,\"budget_item_id\":\"budget-1\",\"settles_budget\":true}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "BI40",
+      "entry": "control",
+      "description": "新创建必须显式CNY",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.create\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"title\":\"午餐\",\"amount_cents\":10000,\"currency\":null,\"paid_on\":null,\"category\":\"meal\",\"day\":1,\"activity_id\":\"activity-1\",\"notes\":\"\",\"receipt_ids\":[],\"allow_shared_receipts\":false,\"budget_item_id\":\"budget-1\",\"settles_budget\":true}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "currency"
+      }
+    },
+    {
+      "id": "BI41",
+      "entry": "control",
+      "description": "新创建不能用旧元金额字段",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.create\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"title\":\"午餐\",\"amount_cents\":10000,\"currency\":\"CNY\",\"paid_on\":null,\"category\":\"meal\",\"day\":1,\"activity_id\":\"activity-1\",\"notes\":\"\",\"receipt_ids\":[],\"allow_shared_receipts\":false,\"budget_item_id\":\"budget-1\",\"settles_budget\":true,\"amount\":\"100\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "BI42",
+      "entry": "control",
+      "description": "只改备注无需重交票据",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"notes\":\"补记\"}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI43",
+      "entry": "control",
+      "description": "提出票据列表必须同时给控制条件",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-control-1\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"receipt_ids\":[]}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "receipt_control"
+      }
+    },
+    {
+      "id": "BI44",
+      "entry": "control",
+      "description": "未知写配置拒绝新写",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"retired-write-profile\",\"kind\":\"expense.patch\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"target\":{\"travel_id\":\"travel-1\",\"branch_id\":\"branch-1\",\"entity_id\":\"fictional-expense\"},\"expected_revision_id\":\"revision-1\",\"payload\":{\"notes\":\"更正备注\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "unsupported_profile"
+      }
+    },
+    {
+      "id": "BI45",
+      "entry": "query",
+      "description": "独立键查询无需旧业务载荷",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI46",
+      "entry": "query",
+      "description": "查询不接收业务载荷",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"},\"payload\":{\"amount_cents\":1}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "BI47",
+      "entry": "query",
+      "description": "查询不使用旧写配置",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"retired-write-profile\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"operation-1\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "unsupported_profile"
+      }
+    },
+    {
+      "id": "BI48",
+      "entry": "query",
+      "description": "不改写不猜测操作键empty",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "identity"
+      }
+    },
+    {
+      "id": "BI49",
+      "entry": "query",
+      "description": "不改写不猜测操作键scalar256",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI50",
+      "entry": "query",
+      "description": "不改写不猜测操作键scalar257",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "identity"
+      }
+    },
+    {
+      "id": "BI51",
+      "entry": "query",
+      "description": "不改写不猜测操作键byte1024",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\"}}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI52",
+      "entry": "query",
+      "description": "不改写不猜测操作键byte1028",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"receipt.lookup\",\"operation\":{\"dataset_id\":\"dataset-1\",\"source_device_id\":\"device-1\",\"operation_id\":\"😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀\"}}"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "identity"
+      }
+    },
+    {
+      "id": "BI53",
+      "entry": "capabilities",
+      "description": "能力查询与候选参数可复现",
+      "recipe": {
+        "kind": "raw",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"capabilities.query\"}"
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI54",
+      "entry": "capabilities",
+      "description": "能力查询8KiB恰好接受",
+      "recipe": {
+        "kind": "padded",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"capabilities.query\"}",
+        "bytes": 8192
+      },
+      "expected": {
+        "accepted": true
+      }
+    },
+    {
+      "id": "BI55",
+      "entry": "capabilities",
+      "description": "能力查询8KiB多1拒绝",
+      "recipe": {
+        "kind": "padded",
+        "text": "{\"profile\":\"p1-host-query-1\",\"kind\":\"capabilities.query\"}",
+        "bytes": 8193
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resource_bytes"
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "status": "host-candidate-not-shared-contract",
+  "control_profile": "p1-host-control-1",
+  "query_profile": "p1-host-query-1",
+  "control_bytes": 32768,
+  "query_bytes": 8192,
+  "depth": 16,
+  "tokens": 2048,
+  "string_scalars": 4096,
+  "number_characters": 64,
+  "key_scalars": 256,
+  "key_bytes": 1024,
+  "running_global": 4,
+  "queued_global": 32,
+  "running_per_scope": 1,
+  "queued_per_scope": 16
+}

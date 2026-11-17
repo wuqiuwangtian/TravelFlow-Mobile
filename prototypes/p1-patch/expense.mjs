@@ -49,6 +49,16 @@ function validatePatch(base, patch) {
   }
 }
 
+// State-independent field validation for the bounded raw candidate. Whether
+// null currency is permissible on a particular record is checked after lookup.
+export function checkPatchFields(patch) {
+  try { validatePatch({ currency: null }, patch); return { accepted: true }; }
+  catch (error) {
+    if (error instanceof Invalid) return { accepted: false, error: error.code };
+    throw error;
+  }
+}
+
 export function evaluate(entry) {
   const { base, patch, context } = entry.input;
   try {
