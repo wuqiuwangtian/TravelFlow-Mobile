@@ -5,7 +5,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.16.0"
   },
   "packageManager": "pnpm@12.6.0",
   "scripts": {
@@ -16,6 +16,8 @@
     "check:p1-json": "node scripts/check-p1-json.mjs",
     "check:p1-patch": "node scripts/check-p1-patch.mjs",
     "check:p1-boundary": "node scripts/check-p1-boundary.mjs",
+    "check:p1-families": "node scripts/check-p1-families.mjs",
+    "check:p1-store": "node scripts/check-p1-store.mjs",
     "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck src/domain/ledger.ts",
     "prepare:android": "node scripts/prepare-android-probe.mjs"
   },

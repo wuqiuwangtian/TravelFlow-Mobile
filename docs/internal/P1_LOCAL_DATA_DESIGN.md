@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-17电脑5b221ae接受70项补丁预期，第18节关闭该轮具体设计分歧；第19节已实现有界原始消费创建／更正、独立回执查询与单JS运行时共享调度，104项宿主检查通过。当前仍只产出未提交计划，授权／读取适配为虚构对端；完整命令族、真实认证、持久回执／事务、字节／摘要及正式协议未定版。原88／75／70项资料保持，不再以重复转交已收口样例作为每步门槛；新语义分歧／共享契约变更才协调。未注册正式桥接API、建表或更新vendor，全部P1原型不打包进APK或处理持久存储。
+状态：2026-11-17第20节完成四族11种有界命令、46项宿主向量和23项真实临时SQLite事务检查。原Boundary仍返回未提交计划，独立SyntheticStore只在标记的临时虚构库提交；真实身份、Android／正式库、完整恢复／历史映射及字节／摘要未完成。原104／88／75／70项保持，正式共享协议仍未定版。旧结论直接承接，新语义分歧／共享版本变更才协调；不修改vendor、迁移真实数据或发布。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -536,3 +536,52 @@ CandidateBoundary默认实例共用同一JS运行时调度器。格式／资源�
 55项逐一检查字节／深度／token／标量／词形恰好与多1、合法转义／非BMP、语法／重复键／编码、完整创建与更正格式、精确数字及独立查询键。42项组合覆盖32KiB完整控制／8KiB查询、各预算失败零派发、共享票据与预算规则、旧未知币种、无变化计划、当前权限、旧回执先查／异意图、未收敛查询、坏投影及适配异常；7项调度单独计数。原88／75／70项按各自入口继续回归，原样例／固定证据不改。
 
 下一步直接沿本入口补齐回款、预约／进度及其只读能力响应，收齐一组完整候选后统一跨仓核对；出现真实语义分歧时提前定点协调。之后在全虚构隔离SQLite中验证业务／回执／outbox原子性、无变化回执、提交后响应丢失与恢复，不能把本轮spy当成这些证据。共享规范化、ID／历史、全量时区／解析版本及正式模块采用仍各有门槛；当前不等待重复审查这104项才继续本地工作。
+
+## 20. 四族命令与隔离SQLite：已实现与有限证据
+
+新增[四族计划](../../prototypes/p1-boundary/families.mjs)、[46项资料](fixtures/p1-family-cases.json)及[检查入口](../../scripts/check-p1-families.mjs)，接入原有资源／身份模型／回执先查流程；新增[SQLite实验适配](../../prototypes/p1-store/sqlite.mjs)与[23项真实临时库检查](../../scripts/check-p1-store.mjs)。本轮完成第19节安排的下一段实现，不以再送同批样例为前置。没有产品API／桥接注册、真实认证、原生存储采用或共享版本分配，全部LOCAL／MIXED目标保留。
+
+### 四族11种控制命令
+
+能力响应现列出expense.create／patch／delete、adjustment.create／patch／delete、booking.set／clear／notes.patch／legacy.patch、progress.set；查询仍为receipt.lookup／capabilities.query。信封与32KiB／8KiB、精确整数、总队列规则沿第19节，所有新增类型也先查原回执，再核对新操作的目标／基线和业务。创建若命中删除记录明确拒绝，不允许用新operation_id和同实体ID绕过显式恢复。
+
+| 范围 | 已实现行为 | 仍未扩大到 |
+| --- | --- | --- |
+| 回款 | 创建显式expense_id／kind／amount_cents／currency／status／notes；新记录必须CNY并关联明确CNY消费。更正保留省略，逐种含pending校验上限且排除本条旧金额；pending→received是同实体变化。删除保留历史／墓碑 | 真实换汇、异币种新建、回款独立付款日期及任意旧损坏数据 |
+| 旧未知回款 | 未触及币种保持原缺失／null；在原关联上纠正未知金额不补CNY，资格判据仍非CNY。新关联或明确确认CNY须与关联消费的CNY事实一致；已知外币仅保留非财务更正，不以改标签换汇 | 不执行新汇总或自动补全旧币种，旧跨实体异常／超界隔离表示仍待定 |
+| 消费删除 | 有任何关联回款即拒绝；允许删除时输出delete计划，SQLite保存删除记录与历史。旧创建／更正重试只确认原提交，不复活 | 显式恢复命令、跨分支导入／合并及清理旧墓碑 |
+| 明确时区预约设置 | 完整保留start_time／start_day_offset／duration_minutes／notes，另有local_start／time_zone／utc_offset／start_instant／elapsed与resolution_basis。核对旅行日历日期＋跨日偏移，再复用已接受的elapsedBooking计算；保存确定UTC、派生结束与解析依据 | 新的未知时区预约、全量IANA／别名目录和跨实现资料版本协商 |
+| 旧预约与清除 | legacy.patch仅更正已有旧钟面字段，不升级时区；notes.patch不重新解析旧时刻。clear仅移除booking并恢复建议标志，保留活动时钟／offset／duration。均守真实停留点、not_started执行保护 | 外部订单取消、把已执行预约隐式重排或批量改写未知时区 |
+| 进度 | 四枚举及规划起点保护；同值为no_change。纯计划不填审计时间，SQLite只在真正进度变化的提交中赋一次progress_updated_at | Android时钟／真实设备执行记录与跨设备权限证明 |
+
+预约resolution_basis包含calendar_revision_id、zone_catalogue_id、tzdata_version；新设置要求匹配当前宿主解析依据和日历基线，资料变化不重算已提交重试。新命令的notes.patch也不因宿主资料变动重算旧起点。能力响应注明provider／ICU／tzdb及fixture-only的五项名称目录；这五项仍是隔离样例词表，不是正式全球支持清单。样例中的$HOST_TZ只在构造当前宿主请求时替换为实际版本，不是规范化字节或跨实现版本共识。
+
+46项中19接受／27拒绝，接受例另核对内存原回执视图先于后续实体读取；覆盖回款字段／金额／状态／上限／关联、无变化、删除保护、预约fold两实例／不存在时刻／日历和资料版本、旧钟面与备注保留、进度保护。原104项入口／调度与原88／75／70项继续通过，没有改写固定资料预期。
+
+### 真正落盘的是全虚构宿主库
+
+选择Node内置DatabaseSync进行隔离事务实验，不增加npm依赖，尚不是Android存储组件采用。[Node22.16官方接口](https://github.com/nodejs/node/blob/v22.16.0/doc/api/sqlite.md)提供同步连接、绑定语句与事务状态；该接口在此版本标记为Active development，故本轮严格限制为实验。根工具最低Node22.16；不改变Android／WebView支持政策。[SQLite事务规则](https://www.sqlite.org/lang_transaction.html)说明BEGIN IMMEDIATE在事务起点争取写锁并可能BUSY，本实验实际验证锁竞争与回滚，不从文档直接推导设备断电保证。
+
+库只由SyntheticStore.create在宿主tmp中新建travelflow-p1-store-*目录，写入固定PURPOSE及fixture_*数据集／旅行／分支标记；构造器只打开该目录内synthetic.sqlite，缺文件或错误标记／格式直接拒绝，不重建空库。初始化失败只清理自己刚创建的目录，验收finally关闭并删除本次拥有的全部临时目录；仓库不保存SQLite／WAL／SHM或私有数据。当前每库一个虚构分支，格式1仅为宿主实验内部格式，未定义迁移。
+
+fixture_branches保存当前业务JSON与头，fixture_revisions保存不可变快照／parent，fixture_receipts以数据集＋来源＋操作键唯一，fixture_outbox以同操作键唯一，fixture_tombstones保留实体类型／ID及删除修订；相关行以外键指向有效修订。SQL使用绑定值，逻辑时序为：
+
+1. 原始资源／格式与虚构当前权限检查先于SQL事务；然后BEGIN IMMEDIATE。
+2. 在同一连接／事务中先读持久回执，比对结构化原意图；同意图返回原effect／result_revision，异意图拒绝，不再加载或应用当前实体。
+3. 对新操作重读权威分支头／快照／关联、核对基线并重新planIntent，不信任事务外的旧计划。预约按目标活动的day选择对应日历，不把首日日期套到其他行程日；缺失或不匹配拒绝。变化才生成新修订、业务快照及需要的墓碑，原历史行不更新。
+4. 无变化保留原头和业务审计字段，但仍插入no_change回执与仅操作出站事实；result_revision指向核对过的已有修订，不伪称生成该修订。
+5. 业务／历史／回执／出站事实一起COMMIT，成功后才返回。commit已经尝试或完成但结果无法返回时报告result_unknown，保留原键供独立查询／同意图重试。
+
+此处outbox仅为实验的持久事实，没有发送／同步协议。新业务修订使用宿主fixture-UUID并保存parent，本地outbox seq不当跨设备因果顺序；正式ID／旧历史映射仍待收口。新记录审计时间由提交时给定一次；付款日沿用户显式载荷，不取创建时间推造。未知币种仍保留缺失／null，不执行换汇或新CNY汇总。
+
+独立查询只SELECT回执effect和result_revision，不读取旧业务载荷／intent。查询也先验权限，再尝试BEGIN IMMEDIATE形成收敛查证点：已有写连接持锁则unknown，不把旧快照查无当成确定未提交；取得锁时可报告not_found_at_settled_read，也不代表未来永不提交。该读取无业务行修改，不是只读连接模式。真实权限提供方仍未实现。
+
+### 23项存储证据与边界
+
+已实际执行：四类相关记录落盘、同键重放不增业务／历史／回执／outbox、同键异意图和过期新基线不改行、无变化回执／操作outbox、不可变历史、删除后旧创建重放不复活、墓碑阻止同ID重新创建、pending→received不多一条回款、进度审计仅赋一次、预约clear副作用、已解析预约落盘及执行状态变更后仍能查原回执、第二行程日按其日历解析、旧未知币种重开保持。
+
+after_business／after_receipt／after_outbox／before_commit四处注入异常均回滚所有逻辑行；after_commit模拟响应丢失，关闭重开后查回原提交，同键重试不重复。两个独立SQLite连接实际争锁，第二写返回storage_busy、查询返回unknown；释放锁后同键只提交一次。另在测试子进程中对自身于before_commit／after_commit发送SIGKILL，父进程重开同一虚构库，分别观察整笔未提交／整笔已提交，无个人进程被操作。
+
+新入口失败在SQL BEGIN前即拒绝，total_changes与全部逻辑表不变；错误标记和丢失数据库不能触发自动初始化。以上均为真实临时SQLite证据，不再只是提交spy。本机Node v26.3.0／SQLite3.53.1，POSIX／WSL执行；CI另验Node22。测试不证明掉电／磁盘满／硬件持久性、备份升级、文件附件与库的联合提交、跨JS隔离域调度或Android插件事务。
+
+原CandidateBoundary保持未提交计划，capabilities的durable_storage=false仍准确；SyntheticStore是独立同步实验执行器，复用同一解码与计划，不能据此宣称真实鉴权、异步调度和原生存储已合并。正式协议、显式恢复／历史导入、字节／摘要、全量时区及剩余LOCAL／MIXED目标保持未完。下一项完善显式恢复与历史／身份映射、形成完整候选的统一跨端验收，再进入正式原生适配门槛；不为本轮每组样例机械新增一次审查往返。

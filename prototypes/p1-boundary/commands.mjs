@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { PROFILE, BoundaryError, require, parseInput, fields, string, identifier, exactInteger } from "./input.mjs";
 import { evaluate as patchPlan, checkPatchFields } from "../p1-patch/expense.mjs";
 import { BoundedScheduler } from "./scheduler.mjs";
+import { FAMILY_FIELDS, familyPayload, familyPlan, HOST_RESOLUTION, CANDIDATE_ZONE_IDS } from "./families.mjs";
 
 const PAYLOAD = ["title", "amount_cents", "currency", "paid_on", "category", "day", "activity_id", "notes", "receipt_ids", "allow_shared_receipts", "budget_item_id", "settles_budget"];
 const receiptKey = operation => [operation.dataset_id, operation.source_device_id, operation.operation_id];
@@ -40,11 +41,12 @@ export function controlIntent(bytes) {
   const object = fields(parseInput(bytes, "control"), ["profile", "kind", "operation", "target", "expected_revision_id", "payload"]);
   require(string(object.get("profile")) === PROFILE.control_profile, "unsupported_profile");
   const kind = string(object.get("kind"));
-  require(["expense.create", "expense.patch"].includes(kind), "unsupported_command");
+  require(["expense.create", "expense.patch"].includes(kind) || Object.hasOwn(FAMILY_FIELDS, kind), "unsupported_command");
   const target = fields(object.get("target"), ["travel_id", "branch_id", "entity_id"]);
   return immutable({ profile: PROFILE.control_profile, kind, operation: operation(object.get("operation")),
     target: Object.fromEntries([...target].map(([key, value]) => [key, identifier(value)])),
-    expected_revision_id: identifier(object.get("expected_revision_id")), payload: payload(object.get("payload"), kind === "expense.create") });
+    expected_revision_id: identifier(object.get("expected_revision_id")), payload: kind === "expense.create" || kind === "expense.patch"
+      ? payload(object.get("payload"), kind === "expense.create") : familyPayload(object.get("payload"), kind) });
 }
 
 export function queryIntent(bytes) {
@@ -59,9 +61,27 @@ export function capabilities(bytes) {
   require(string(object.get("profile")) === PROFILE.query_profile, "unsupported_profile");
   require(string(object.get("kind")) === "capabilities.query", "unsupported_command");
   return { status: PROFILE.status, shared_contract_version: null,
-    control_commands: ["expense.create", "expense.patch"], query_commands: ["receipt.lookup", "capabilities.query"],
-    field_semantics: ["new-CNY", "legacy-unknown-currency-patch", "paid-on-omission-vs-null", "no-change-receipt-plan"],
+    control_commands: ["expense.create", "expense.patch", ...Object.keys(FAMILY_FIELDS)], query_commands: ["receipt.lookup", "capabilities.query"],
+    field_semantics: ["new-CNY", "legacy-unknown-currency-patch", "paid-on-omission-vs-null", "no-change-receipt-plan",
+      "separate-refund-reimbursement", "elapsed-booking-resolution-basis", "legacy-booking-preserved", "no-op-progress-audit", "explicit-delete-tombstone-plan"],
+    resolution_provider: { ...HOST_RESOLUTION },
+    zone_catalogue: { scope: "fixture-only", time_zone_ids: [...CANDIDATE_ZONE_IDS] },
     limits: { ...PROFILE }, durable_storage: false, authentication_provider: false, canonical_bytes: false };
+}
+
+export function planIntent(intent, snapshot) {
+  require(snapshot.revision_id === intent.expected_revision_id, "baseline_conflict");
+  if (intent.kind !== "expense.create" && intent.kind !== "expense.patch") return familyPlan(intent, snapshot);
+  const create = intent.kind === "expense.create";
+  require(create ? snapshot.expense === null : snapshot.expense !== null, create ? "entity_exists" : "entity_missing");
+  if (!create) require(snapshot.expense.id === intent.target.entity_id, "target_mismatch");
+  if (create) { require(!snapshot.deleted, "entity_deleted"); require(snapshot.expense_count < 2000, "expense_count"); }
+  const base = create ? { id: intent.target.entity_id, title: "candidate seed", amount_cents: 1, currency: "CNY", paid_on: null,
+    category: "other", day: null, activity_id: null, notes: "", receipt_ids: [], budget_item_id: null, settles_budget: false } : snapshot.expense;
+  const planned = patchPlan({ input: { base, patch: intent.payload, context: snapshot.links } });
+  require(planned.accepted, planned.error);
+  if (create) planned.value.planned_business_revision = "new";
+  return { ...planned.value, action: "upsert", entity_type: "expense" };
 }
 
 function receiptProjection(record) {
@@ -114,17 +134,7 @@ export class CandidateBoundary {
         require(previous.state === "missing" && previous.settled === true, "result_unknown");
         const snapshot = await context.inspect(intent.target, workerSignal);
         checkAbort(workerSignal);
-        require(snapshot.revision_id === intent.expected_revision_id, "baseline_conflict");
-        const create = intent.kind === "expense.create";
-        require(create ? snapshot.expense === null : snapshot.expense !== null, create ? "entity_exists" : "entity_missing");
-        if (!create) require(snapshot.expense.id === intent.target.entity_id, "target_mismatch");
-        if (create) require(snapshot.expense_count < 2000, "expense_count");
-        const base = create ? { id: intent.target.entity_id, title: "candidate seed", amount_cents: 1, currency: "CNY", paid_on: null,
-          category: "other", day: null, activity_id: null, notes: "", receipt_ids: [], budget_item_id: null, settles_budget: false } : snapshot.expense;
-        const planned = patchPlan({ input: { base, patch: intent.payload, context: snapshot.links } });
-        require(planned.accepted, planned.error);
-        if (create) planned.value.planned_business_revision = "new";
-        return { accepted: true, kind: "uncommitted-plan", intent, value: planned.value };
+        return { accepted: true, kind: "uncommitted-plan", intent, value: planIntent(intent, snapshot) };
       }, signal);
     });
   }

@@ -4,7 +4,7 @@
 
 ## 独立准备与校验
 
-需要Node 22+、pnpm 12.6.0；完整P1值候选检查另需Python3.9+标准库和IANA时区资料。仓库根目录执行：
+根开发入口需要Node22.16+、pnpm12.6.0；完整P1值候选检查另需Python3.9+标准库和IANA时区资料。存储检查含子进程SIGKILL，当前使用Linux／WSL等POSIX宿主，原生Windows不静默跳过。此为宿主工具前提，不改变Android最低版本／WebView政策。仓库根目录执行：
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
@@ -15,6 +15,8 @@ pnpm check:p1-values
 pnpm check:p1-json
 pnpm check:p1-patch
 pnpm check:p1-boundary
+pnpm check:p1-families
+pnpm check:p1-store
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -446,9 +448,9 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 `PYTHONOPTIMIZE=1 python3 scripts/check-connect-fixture.py`现有12项，新增Private DNS原值／缺失键恢复、原值被修改后抛错的两种恢复、已有严格配置无写入拒绝，并通过真实回环UDP验证固定DoT引导名白名单；两个新case的物理serial在任何ADB调用前拒绝。内核状态读失败继续使验收失败，不将缺失数据当零、不自动重试；ADB错误会附退出码、固定命令前缀、stdout字节数及有界stderr。finally精确恢复设置、移除自己的规则／转发并强停本包；最后停自己的AVD和对端，保留数据，不重启全局ADB。
 
-## 正式主线与P1设计的只读复核
+## 正式主线与P1宿主候选验证
 
-先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第10–17节记录88／75／70项及已确认语义，第18节接收电脑5b221ae、关闭纯补丁分歧，第19节为已运行的有界消费入口、独立查询与共享调度。历史资料保持，完整共享协议仍待定。此入口无需SDK、ADB、数据库、设备或真实凭据；未注册正式桥接API。
+先读[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)的主线决定与门槛，再读[P1_LOCAL_DATA_DESIGN](P1_LOCAL_DATA_DESIGN.md)：第10–18节为已确认语义与旧固定证据，第19节为104项有界入口／调度，第20节为四族46项及临时SQLite23项。基础值检查不写存储，check:p1-store只创建并删除自己的标记虚构库。无需SDK、ADB、真实数据库、设备或凭据；未注册正式桥接API。
 
 在仓库根目录用既有Node22+／pnpm依赖执行`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-review`、`pnpm typecheck`。前三者分别预期固定快照通过、14组既有汇总样例通过，以及原评审JSON输出6组只读金额、2组时区换算、2组跨日算术和12项源码场景编目；后者预期类型通过。原JSON已经被电脑逐字节核对，保持其desktop_joint_review=pending等历史字段；命令的python_backend_executed=false／mobile_write_scenarios_executed=0只描述本地检查执行范围。当前收到电脑报告、移动方向复核及候选状态以设计第8／9节为准，不为消除pending改写固定输入；无需本机重建APK或重跑历史模拟器。
 
@@ -472,9 +474,15 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 复现时取完整prototypes/p1-boundary目录、既有p1-json／p1-patch候选与所需资料、检查入口、根package.json／锁文件；jsonc-parser仍固定3.3.1，仅宿主开发依赖。补丁模块新增checkPatchFields供有界入口复用，原70项预期不改。只有同一JS运行时默认实例共用调度池，不是跨进程或Android并发证明；测试使用可控Promise和适配spy／提交陷阱，不运行真实认证／SQLite。104项是本地组合门禁，不新增一次强制跨仓往返。
 
+`pnpm check:p1-families`读取[46项资料](fixtures/p1-family-cases.json)，预期19接受／27拒绝，接受例另验证内存回执视图先查；四族共11种命令出现在能力响应。仅为有界计划，不持久化；预约使用当前宿主tzdb和五项fixture-only词表，非全球支持范围。需要根冻结依赖，脚本无参数。
+
+`pnpm check:p1-store`需要Node22.16+的node:sqlite及POSIX宿主（本轮Linux／WSL）；不下载依赖，不开设备或服务。预期23项通过并输出实际SQLite版本，真实认证／Android／断电磁盘满／正式存储采用均false。它仅在系统tmp内创建有PURPOSE和fixture_*标记的目录，结束后清理；请勿把真实旅行数据传入实验适配。检测错误标记／数据库缺失时拒绝，不替操作者新建空库。进程中断只在本脚本创建的子进程内对自身SIGKILL；原生Windows不静默跳过，可在WSL执行。
+
+SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个提交前故障点、提交后响应丢失和重开、提交前后子进程退出；失败时查看断言，不删减场景或把unknown改成未提交。node:sqlite目前只用于宿主隔离证据；同步执行器没有替代Android原生适配或完成其取消／线程验证。参见设计第20节的准确边界与[Node固定版本接口依据](https://github.com/nodejs/node/blob/v22.16.0/doc/api/sqlite.md)。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：电脑5b221ae已接受70项，本轮104项有界宿主入口可运行；接着直接补回款／预约／进度，再用全虚构隔离SQLite验证持久回执／原子事务与恢复。旧结论引用即可，不重复转交已收口样例作为默认门槛；完整候选冻结、共享语义变化或跨端失败时再定点协调。真实身份、正式原生／事务、字节／摘要、全量时区、ID／历史仍有独立门槛，不分配正式共享版本。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族计划和隔离SQLite已形成有限证据，接着补显式恢复与旧ID／历史映射、整理完整候选的统一跨端验收，再进入正式原生适配门槛。旧结论引用即可，不逐组重复转交；完整候选冻结、共享语义变化或跨端失败再定点协调。真实身份、正式原生／事务采用、字节／摘要、全量时区、旧迁移及其余能力仍有独立门槛，不分配正式共享版本。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

@@ -1,0 +1,1006 @@
+{
+  "fixture_format_version": 1,
+  "status": "host-family-candidate",
+  "shared_contract_version": null,
+  "scope": "有界四族宿主计划；$HOST_TZ仅用于生成当前宿主解析依据，不是共享字节向量。",
+  "adjustment": {
+    "id": "adjustment-1",
+    "expense_id": "fictional-expense",
+    "kind": "refund",
+    "amount_cents": 2000,
+    "currency": "CNY",
+    "status": "pending",
+    "notes": "待到账",
+    "created_at": "2026-11-16T00:00:00.000Z",
+    "updated_at": "2026-11-16T00:00:00.000Z"
+  },
+  "activity": {
+    "id": "activity-1",
+    "day": 1,
+    "title": "景点",
+    "progress": "not_started",
+    "progress_updated_at": null,
+    "is_context_anchor": false,
+    "is_planning_origin": false,
+    "booking": {
+      "start_time": "23:40",
+      "start_day_offset": 1,
+      "duration_minutes": 120,
+      "notes": "旧预约"
+    },
+    "start_time": "23:40",
+    "start_day_offset": 1,
+    "duration_minutes": 120,
+    "time_is_suggested": false
+  },
+  "cases": [
+    {
+      "id": "FC01",
+      "kind": "adjustment.create",
+      "description": "新回款显式CNY且关联消费",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "entity_id": "new-adjustment",
+      "snapshot": {
+        "adjustment": null
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.amount_cents": 3000
+        }
+      }
+    },
+    {
+      "id": "FC02",
+      "kind": "adjustment.create",
+      "description": "新回款不能孤立",
+      "payload": {
+        "expense_id": "missing",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "snapshot": {
+        "adjustment": null
+      },
+      "expected": {
+        "accepted": false,
+        "error": "expense_link"
+      }
+    },
+    {
+      "id": "FC03",
+      "kind": "adjustment.create",
+      "description": "4000笔上限",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "snapshot": {
+        "adjustment": null,
+        "adjustment_count": 4000
+      },
+      "expected": {
+        "accepted": false,
+        "error": "adjustment_count"
+      }
+    },
+    {
+      "id": "FC04",
+      "kind": "adjustment.create",
+      "description": "同种含待到账不能超实付",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 9000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "entity_id": "new-adjustment",
+      "snapshot": {
+        "adjustment": null
+      },
+      "expected": {
+        "accepted": false,
+        "error": "recovery_limit"
+      }
+    },
+    {
+      "id": "FC05",
+      "kind": "adjustment.create",
+      "description": "退款与报销分别限额",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "reimbursement",
+        "amount_cents": 10000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "entity_id": "new-adjustment",
+      "snapshot": {
+        "adjustment": null
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.kind": "reimbursement"
+        }
+      }
+    },
+    {
+      "id": "FC06",
+      "kind": "adjustment.create",
+      "description": "不自动补币种",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "status": "pending",
+        "notes": "退款"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "FC07",
+      "kind": "adjustment.create",
+      "description": "回款未定义付款日字段",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款",
+        "paid_on": null
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "FC08",
+      "kind": "adjustment.patch",
+      "description": "到账是同实体更正",
+      "payload": {
+        "status": "received"
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.id": "adjustment-1",
+          "candidate.status": "received",
+          "candidate.amount_cents": 2000
+        }
+      }
+    },
+    {
+      "id": "FC09",
+      "kind": "adjustment.patch",
+      "description": "编辑排除本条旧金额",
+      "payload": {
+        "amount_cents": 9000
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.amount_cents": 9000
+        }
+      }
+    },
+    {
+      "id": "FC10",
+      "kind": "adjustment.patch",
+      "description": "回款无变化保留审计字段",
+      "payload": {},
+      "expected": {
+        "accepted": true,
+        "values": {},
+        "revision": "unchanged",
+        "unchanged": true
+      }
+    },
+    {
+      "id": "FC11",
+      "kind": "adjustment.patch",
+      "description": "备注不补币种",
+      "payload": {
+        "notes": "补记"
+      },
+      "snapshot": {
+        "adjustment": {
+          "id": "adjustment-1",
+          "expense_id": "fictional-expense",
+          "kind": "refund",
+          "amount_cents": 2000,
+          "currency": null,
+          "status": "pending",
+          "notes": "待到账",
+          "created_at": "2026-11-16T00:00:00.000Z",
+          "updated_at": "2026-11-16T00:00:00.000Z"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.notes": "补记"
+        }
+      }
+    },
+    {
+      "id": "FC12",
+      "kind": "adjustment.patch",
+      "description": "旧未知回款保持未知更正金额",
+      "payload": {
+        "amount_cents": 2500
+      },
+      "snapshot": {
+        "adjustment": {
+          "id": "adjustment-1",
+          "expense_id": "fictional-expense",
+          "kind": "refund",
+          "amount_cents": 2000,
+          "currency": null,
+          "status": "pending",
+          "notes": "待到账",
+          "created_at": "2026-11-16T00:00:00.000Z",
+          "updated_at": "2026-11-16T00:00:00.000Z"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.currency": null,
+          "cny_totals_eligible": false
+        }
+      }
+    },
+    {
+      "id": "FC13",
+      "kind": "adjustment.patch",
+      "description": "新关联须核对币种",
+      "payload": {
+        "expense_id": "unknown-expense"
+      },
+      "links": {
+        "expenses": [
+          {
+            "id": "unknown-expense",
+            "amount_cents": 10000
+          }
+        ]
+      },
+      "expected": {
+        "accepted": false,
+        "error": "currency_link"
+      }
+    },
+    {
+      "id": "FC14",
+      "kind": "adjustment.patch",
+      "description": "金额不接受小数分",
+      "payload": {
+        "amount_cents": 0.5
+      },
+      "expected": {
+        "accepted": false,
+        "error": "integer_range"
+      }
+    },
+    {
+      "id": "FC15",
+      "kind": "adjustment.patch",
+      "description": "到账状态不能null",
+      "payload": {
+        "status": null
+      },
+      "expected": {
+        "accepted": false,
+        "error": "type"
+      }
+    },
+    {
+      "id": "FC16",
+      "kind": "adjustment.patch",
+      "description": "不接受未知类型",
+      "payload": {
+        "kind": "donation"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "adjustment_kind"
+      }
+    },
+    {
+      "id": "FC17",
+      "kind": "adjustment.delete",
+      "description": "删除回款保留历史计划",
+      "payload": {},
+      "expected": {
+        "accepted": true,
+        "values": {
+          "action": "delete",
+          "candidate": null
+        }
+      }
+    },
+    {
+      "id": "FC18",
+      "kind": "expense.delete",
+      "description": "有回款不允许删消费",
+      "payload": {},
+      "expected": {
+        "accepted": false,
+        "error": "recovery_exists"
+      }
+    },
+    {
+      "id": "FC19",
+      "kind": "expense.delete",
+      "description": "无回款时可删消费",
+      "payload": {},
+      "links": {
+        "adjustments": []
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "action": "delete",
+          "candidate": null
+        }
+      }
+    },
+    {
+      "id": "FC20",
+      "kind": "expense.delete",
+      "description": "删除不能夹带金额快照",
+      "payload": {
+        "amount_cents": 1
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "FC21",
+      "kind": "adjustment.create",
+      "description": "删除过的ID不能通过新建复活",
+      "payload": {
+        "expense_id": "fictional-expense",
+        "kind": "refund",
+        "amount_cents": 3000,
+        "currency": "CNY",
+        "status": "pending",
+        "notes": "退款"
+      },
+      "snapshot": {
+        "adjustment": null,
+        "deleted": true
+      },
+      "expected": {
+        "accepted": false,
+        "error": "entity_deleted"
+      }
+    },
+    {
+      "id": "FC22",
+      "kind": "progress.set",
+      "description": "明确标记完成",
+      "payload": {
+        "progress": "completed"
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.progress": "completed",
+          "candidate.progress_updated_at": null,
+          "candidate.booking.notes": "旧预约"
+        }
+      }
+    },
+    {
+      "id": "FC23",
+      "kind": "progress.set",
+      "description": "重复同进度不刷新时间",
+      "payload": {
+        "progress": "not_started"
+      },
+      "expected": {
+        "accepted": true,
+        "values": {},
+        "revision": "unchanged",
+        "unchanged": true
+      }
+    },
+    {
+      "id": "FC24",
+      "kind": "progress.set",
+      "description": "规划起点不是游览记录",
+      "payload": {
+        "progress": "completed"
+      },
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": true,
+          "booking": {
+            "start_time": "23:40",
+            "start_day_offset": 1,
+            "duration_minutes": 120,
+            "notes": "旧预约"
+          },
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "planning_origin"
+      }
+    },
+    {
+      "id": "FC25",
+      "kind": "progress.set",
+      "description": "进度枚举非法",
+      "payload": {
+        "progress": "done"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "progress"
+      }
+    },
+    {
+      "id": "FC26",
+      "kind": "progress.set",
+      "description": "不能提交审计时刻",
+      "payload": {
+        "progress": "completed",
+        "progress_updated_at": "now"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "shape"
+      }
+    },
+    {
+      "id": "FC27",
+      "kind": "booking.clear",
+      "description": "只清约束，活动时钟保留",
+      "payload": {},
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking": null,
+          "candidate.time_is_suggested": true,
+          "candidate.start_time": "23:40",
+          "candidate.start_day_offset": 1,
+          "candidate.duration_minutes": 120
+        }
+      }
+    },
+    {
+      "id": "FC28",
+      "kind": "booking.clear",
+      "description": "空约束再次清除无变化",
+      "payload": {},
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": false,
+          "booking": null,
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": true
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {},
+        "revision": "unchanged",
+        "unchanged": true
+      }
+    },
+    {
+      "id": "FC29",
+      "kind": "booking.clear",
+      "description": "已执行不可绕保护清除",
+      "payload": {},
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "completed",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": false,
+          "booking": {
+            "start_time": "23:40",
+            "start_day_offset": 1,
+            "duration_minutes": 120,
+            "notes": "旧预约"
+          },
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "booking_protected"
+      }
+    },
+    {
+      "id": "FC30",
+      "kind": "booking.clear",
+      "description": "背景锚点不接受预约",
+      "payload": {},
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": true,
+          "is_planning_origin": false,
+          "booking": {
+            "start_time": "23:40",
+            "start_day_offset": 1,
+            "duration_minutes": 120,
+            "notes": "旧预约"
+          },
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "booking_protected"
+      }
+    },
+    {
+      "id": "FC31",
+      "kind": "booking.legacy.patch",
+      "description": "旧钟面更正保留未知时区",
+      "payload": {
+        "start_time": "22:10",
+        "notes": "更正"
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking.start_time": "22:10",
+          "candidate.start_time": "22:10",
+          "candidate.start_day_offset": 1
+        }
+      }
+    },
+    {
+      "id": "FC32",
+      "kind": "booking.legacy.patch",
+      "description": "旧钟面空补丁不升级",
+      "payload": {},
+      "expected": {
+        "accepted": true,
+        "values": {},
+        "revision": "unchanged",
+        "unchanged": true
+      }
+    },
+    {
+      "id": "FC33",
+      "kind": "booking.legacy.patch",
+      "description": "不以旧钟面入口改写已解析记录",
+      "payload": {
+        "start_time": "12:00"
+      },
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": false,
+          "booking": {
+            "start_time": "23:40",
+            "start_day_offset": 1,
+            "duration_minutes": 120,
+            "notes": "旧预约",
+            "mode": "resolved_elapsed"
+          },
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "booking_mode"
+      }
+    },
+    {
+      "id": "FC34",
+      "kind": "booking.notes.patch",
+      "description": "旧备注更正不解析时区",
+      "payload": {
+        "notes": "新备注"
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking.notes": "新备注",
+          "candidate.start_time": "23:40"
+        }
+      }
+    },
+    {
+      "id": "FC35",
+      "kind": "booking.notes.patch",
+      "description": "无预约时不制造残缺记录",
+      "payload": {
+        "notes": "x"
+      },
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": false,
+          "booking": null,
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "booking_missing"
+      }
+    },
+    {
+      "id": "FC36",
+      "kind": "booking.notes.patch",
+      "description": "预约备注500标量上限",
+      "payload": {
+        "notes": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expected": {
+        "accepted": false,
+        "error": "text_length"
+      }
+    },
+    {
+      "id": "FC37",
+      "kind": "booking.set",
+      "description": "秋季重复的前一次实例，经过120分钟",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking.mode": "resolved_elapsed",
+          "candidate.booking.end_local": "2026-11-01T02:30",
+          "candidate.booking.end_instant": "2026-11-01T07:30:00.000Z",
+          "candidate.start_time": "01:30",
+          "candidate.start_day_offset": 0
+        }
+      }
+    },
+    {
+      "id": "FC38",
+      "kind": "booking.set",
+      "description": "秋季重复的后一次实例",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-05:00",
+        "start_instant": "2026-11-01T06:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking.end_local": "2026-11-01T03:30"
+        }
+      }
+    },
+    {
+      "id": "FC39",
+      "kind": "booking.set",
+      "description": "日历基线变化不偷偷重定位",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "other",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "calendar_conflict"
+      }
+    },
+    {
+      "id": "FC40",
+      "kind": "booking.set",
+      "description": "资料版本变化须重新解析新操作",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "other"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resolution_basis"
+      }
+    },
+    {
+      "id": "FC41",
+      "kind": "booking.set",
+      "description": "日历与当地日期不一致",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 1,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "calendar_date"
+      }
+    },
+    {
+      "id": "FC42",
+      "kind": "booking.set",
+      "description": "不存在时刻不能静默挪动",
+      "payload": {
+        "start_time": "02:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-03-08T02:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-05:00",
+        "start_instant": "2026-03-08T07:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "snapshot": {
+        "calendar": {
+          "revision_id": "calendar-1",
+          "day_date": "2026-03-08"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "resolution"
+      }
+    },
+    {
+      "id": "FC43",
+      "kind": "booking.set",
+      "description": "布尔不是经过分钟",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": true,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "type"
+      }
+    },
+    {
+      "id": "FC44",
+      "kind": "booking.set",
+      "description": "未登记拼写继续拒绝",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "america/new_york",
+        "utc_offset": "-04:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "zone"
+      }
+    },
+    {
+      "id": "FC45",
+      "kind": "booking.set",
+      "description": "未知UTC偏移不算明确实例",
+      "payload": {
+        "start_time": "01:30",
+        "start_day_offset": 0,
+        "duration_minutes": 120,
+        "notes": "已确认",
+        "local_start": "2026-11-01T01:30",
+        "time_zone": "America/New_York",
+        "utc_offset": "-00:00",
+        "start_instant": "2026-11-01T05:30:00.000Z",
+        "duration_semantics": "elapsed",
+        "resolution_basis": {
+          "calendar_revision_id": "calendar-1",
+          "zone_catalogue_id": "p1-test-zones-1",
+          "tzdata_version": "$HOST_TZ"
+        }
+      },
+      "expected": {
+        "accepted": false,
+        "error": "offset"
+      }
+    },
+    {
+      "id": "FC46",
+      "kind": "booking.notes.patch",
+      "description": "已解析旧时刻只改备注，资料变动不重算",
+      "payload": {
+        "notes": "补充"
+      },
+      "snapshot": {
+        "activity": {
+          "id": "activity-1",
+          "day": 1,
+          "title": "景点",
+          "progress": "not_started",
+          "progress_updated_at": null,
+          "is_context_anchor": false,
+          "is_planning_origin": false,
+          "booking": {
+            "start_time": "01:30",
+            "start_day_offset": 0,
+            "duration_minutes": 120,
+            "notes": "已确认",
+            "local_start": "2026-11-01T01:30",
+            "time_zone": "America/New_York",
+            "utc_offset": "-04:00",
+            "start_instant": "2026-11-01T05:30:00.000Z",
+            "duration_semantics": "elapsed",
+            "resolution_basis": {
+              "calendar_revision_id": "calendar-1",
+              "zone_catalogue_id": "p1-test-zones-1",
+              "tzdata_version": "old-version"
+            },
+            "mode": "resolved_elapsed"
+          },
+          "start_time": "23:40",
+          "start_day_offset": 1,
+          "duration_minutes": 120,
+          "time_is_suggested": false
+        },
+        "calendar": {
+          "revision_id": "changed-calendar",
+          "day_date": "2027-01-01"
+        }
+      },
+      "expected": {
+        "accepted": true,
+        "values": {
+          "candidate.booking.start_instant": "2026-11-01T05:30:00.000Z"
+        }
+      }
+    }
+  ]
+}
