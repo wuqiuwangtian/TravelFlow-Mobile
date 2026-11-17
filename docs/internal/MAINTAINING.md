@@ -18,6 +18,7 @@ pnpm check:p1-boundary
 pnpm check:p1-families
 pnpm check:p1-store
 pnpm check:p1-history
+pnpm check:p1-canonical
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -485,9 +486,13 @@ SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个�
 
 当前临时库PURPOSE／内部格式为v2／2；历史v1拒绝，不自动升级或删库。恢复需新operation_id、当前基线、明确来源修订和活动墓碑；重复原操作仍只查回执。映射只允许emptyFixtureState的全空初始目标；重复相同批次不回退本地更正，改历史或追加版本会冲突。故障注入／争锁／重开与拒绝不写行证据见设计第21节，不把内部格式或fixture_format_version当成共享协议版本。
 
+`pnpm check:p1-canonical`需要根冻结依赖、Node22.16+和Python3.9+标准库，不需要IANA、SQLite、设备或个人文件。预期103个固定向量（85接受／18拒绝）、18组语义关系、6项Node格式集成通过；打印共享版本null，full_jcs_or_ijson／python_full_command_validation／storage_fingerprint_adopted／real_authentication／android_native_executed／synchronization_executed均false。逐条核对固定JSON文本、UTF-8 hex和SHA-256，不重新生成预期。Python仅独立编码显式validated_intent及原语；Node另验证该投影与原始命令一致，不当电脑后端的完整校验已执行。
+
+可用`node scripts/check-p1-canonical.mjs PATH`检查仓库外资料副本；`python3 scripts/check-p1-canonical.py PATH`只输出独立编码结果。Python路径沿用P1_REVIEW_PYTHON，缺失直接失败不跳过；引用原check-p1-json.py为严格原语解码参考，须一起保留。复现需取p1-canonical／p1-boundary／p1-json／p1-patch／p1-values目录、依赖基线、固定103项、两检查器与根入口；编码不读真实库，不升级格式2或改变旧回执比较。改坏固定字节／hex／SHA、相等关系、显式投影或伪造联合通过元数据应非零退出。规则、独立性边界和一次统一跨端验收清单见设计第22节。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族13种命令和隔离SQLite、显式恢复与虚构历史初次映射已有有限证据，接着收口字节／摘要并整理完整候选的统一跨端验收，再进入正式原生适配门槛。旧结论引用即可，不逐组重复转交；完整候选冻结、共享语义变化或跨端失败再定点协调。真实身份、正式原生／事务采用、全量时区、真实旧文件适配／迁移及其余能力仍有独立门槛，不分配正式共享版本。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族13种命令、隔离SQLite、恢复／虚构历史初次映射及命令字节／摘要候选已有有限证据，统一跨端验收入口已在设计第22节收齐。接着固定双方版本完成一次对照，记录接受／差异，再分别推进全量时区、真实旧文件适配及正式原生／事务门槛。旧结论引用即可，不逐组重复转交；有真实共享语义变化或跨端失败才定点协调。真实身份、迁移及其余能力仍有独立门槛，不分配正式共享版本。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 
