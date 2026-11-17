@@ -17,6 +17,7 @@ pnpm check:p1-patch
 pnpm check:p1-boundary
 pnpm check:p1-families
 pnpm check:p1-store
+pnpm check:p1-history
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
 ```
@@ -480,9 +481,13 @@ python3 scripts/run-android-connect.py --adb "$ANDROID_HOME/platform-tools/adb" 
 
 SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个提交前故障点、提交后响应丢失和重开、提交前后子进程退出；失败时查看断言，不删减场景或把unknown改成未提交。node:sqlite目前只用于宿主隔离证据；同步执行器没有替代Android原生适配或完成其取消／线程验证。参见设计第20节的准确边界与[Node固定版本接口依据](https://github.com/nodejs/node/blob/v22.16.0/doc/api/sqlite.md)。
 
+`pnpm check:p1-history`同样需要Node22.16+及根冻结依赖，脚本无参数，无需设备、Python或个人文件。预期60项通过，输出real_legacy_file_adapter／migration_or_incremental_sync／inferred_legacy_deletions／real_authentication／android_native_executed均false。检查只在自建临时库验证消费／回款显式恢复及一次有界的已解码虚构历史初次映射，最后清理自己创建的目录；实际电脑文件适配和迁移未实现。样例由脚本中的固定虚构数据及既有冻结基线构造，不接受真实旅行路径。复现须取新增restoration.mjs／p1-store/legacy.mjs、修改后的commands／sqlite与检查入口，不能只复制单个检查脚本。
+
+当前临时库PURPOSE／内部格式为v2／2；历史v1拒绝，不自动升级或删库。恢复需新operation_id、当前基线、明确来源修订和活动墓碑；重复原操作仍只查回执。映射只允许emptyFixtureState的全空初始目标；重复相同批次不回退本地更正，改历史或追加版本会冲突。故障注入／争锁／重开与拒绝不写行证据见设计第21节，不把内部格式或fixture_format_version当成共享协议版本。
+
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族计划和隔离SQLite已形成有限证据，接着补显式恢复与旧ID／历史映射、整理完整候选的统一跨端验收，再进入正式原生适配门槛。旧结论引用即可，不逐组重复转交；完整候选冻结、共享语义变化或跨端失败再定点协调。真实身份、正式原生／事务采用、字节／摘要、全量时区、旧迁移及其余能力仍有独立门槛，不分配正式共享版本。
+本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族13种命令和隔离SQLite、显式恢复与虚构历史初次映射已有有限证据，接着收口字节／摘要并整理完整候选的统一跨端验收，再进入正式原生适配门槛。旧结论引用即可，不逐组重复转交；完整候选冻结、共享语义变化或跨端失败再定点协调。真实身份、正式原生／事务采用、全量时区、真实旧文件适配／迁移及其余能力仍有独立门槛，不分配正式共享版本。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

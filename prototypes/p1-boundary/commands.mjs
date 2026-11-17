@@ -3,6 +3,7 @@ import { PROFILE, BoundaryError, require, parseInput, fields, string, identifier
 import { evaluate as patchPlan, checkPatchFields } from "../p1-patch/expense.mjs";
 import { BoundedScheduler } from "./scheduler.mjs";
 import { FAMILY_FIELDS, familyPayload, familyPlan, HOST_RESOLUTION, CANDIDATE_ZONE_IDS } from "./families.mjs";
+import { RESTORE_COMMANDS, restorePayload, restorePlan, checkRestoreScope } from "./restoration.mjs";
 
 const PAYLOAD = ["title", "amount_cents", "currency", "paid_on", "category", "day", "activity_id", "notes", "receipt_ids", "allow_shared_receipts", "budget_item_id", "settles_budget"];
 const receiptKey = operation => [operation.dataset_id, operation.source_device_id, operation.operation_id];
@@ -41,12 +42,13 @@ export function controlIntent(bytes) {
   const object = fields(parseInput(bytes, "control"), ["profile", "kind", "operation", "target", "expected_revision_id", "payload"]);
   require(string(object.get("profile")) === PROFILE.control_profile, "unsupported_profile");
   const kind = string(object.get("kind"));
-  require(["expense.create", "expense.patch"].includes(kind) || Object.hasOwn(FAMILY_FIELDS, kind), "unsupported_command");
+  require(["expense.create", "expense.patch", ...RESTORE_COMMANDS].includes(kind) || Object.hasOwn(FAMILY_FIELDS, kind), "unsupported_command");
   const target = fields(object.get("target"), ["travel_id", "branch_id", "entity_id"]);
   return immutable({ profile: PROFILE.control_profile, kind, operation: operation(object.get("operation")),
     target: Object.fromEntries([...target].map(([key, value]) => [key, identifier(value)])),
     expected_revision_id: identifier(object.get("expected_revision_id")), payload: kind === "expense.create" || kind === "expense.patch"
-      ? payload(object.get("payload"), kind === "expense.create") : familyPayload(object.get("payload"), kind) });
+      ? payload(object.get("payload"), kind === "expense.create") : RESTORE_COMMANDS.includes(kind)
+        ? restorePayload(object.get("payload"), kind) : familyPayload(object.get("payload"), kind) });
 }
 
 export function queryIntent(bytes) {
@@ -61,9 +63,10 @@ export function capabilities(bytes) {
   require(string(object.get("profile")) === PROFILE.query_profile, "unsupported_profile");
   require(string(object.get("kind")) === "capabilities.query", "unsupported_command");
   return { status: PROFILE.status, shared_contract_version: null,
-    control_commands: ["expense.create", "expense.patch", ...Object.keys(FAMILY_FIELDS)], query_commands: ["receipt.lookup", "capabilities.query"],
+    control_commands: ["expense.create", "expense.patch", ...Object.keys(FAMILY_FIELDS), ...RESTORE_COMMANDS], query_commands: ["receipt.lookup", "capabilities.query"],
     field_semantics: ["new-CNY", "legacy-unknown-currency-patch", "paid-on-omission-vs-null", "no-change-receipt-plan",
-      "separate-refund-reimbursement", "elapsed-booking-resolution-basis", "legacy-booking-preserved", "no-op-progress-audit", "explicit-delete-tombstone-plan"],
+      "separate-refund-reimbursement", "elapsed-booking-resolution-basis", "legacy-booking-preserved", "no-op-progress-audit", "explicit-delete-tombstone-plan",
+      "explicit-restore-current-constraints", "historical-facts-link-overrides-only"],
     resolution_provider: { ...HOST_RESOLUTION },
     zone_catalogue: { scope: "fixture-only", time_zone_ids: [...CANDIDATE_ZONE_IDS] },
     limits: { ...PROFILE }, durable_storage: false, authentication_provider: false, canonical_bytes: false };
@@ -71,6 +74,7 @@ export function capabilities(bytes) {
 
 export function planIntent(intent, snapshot) {
   require(snapshot.revision_id === intent.expected_revision_id, "baseline_conflict");
+  if (RESTORE_COMMANDS.includes(intent.kind)) return restorePlan(intent, snapshot);
   if (intent.kind !== "expense.create" && intent.kind !== "expense.patch") return familyPlan(intent, snapshot);
   const create = intent.kind === "expense.create";
   require(create ? snapshot.expense === null : snapshot.expense !== null, create ? "entity_exists" : "entity_missing");
@@ -132,7 +136,8 @@ export class CandidateBoundary {
           return { accepted: true, kind: "replay-view", receipt: receiptProjection(previous) };
         }
         require(previous.state === "missing" && previous.settled === true, "result_unknown");
-        const snapshot = await context.inspect(intent.target, workerSignal);
+        checkRestoreScope(intent);
+        const snapshot = await context.inspect(intent.target, workerSignal, intent);
         checkAbort(workerSignal);
         return { accepted: true, kind: "uncommitted-plan", intent, value: planIntent(intent, snapshot) };
       }, signal);
