@@ -18,6 +18,7 @@ pnpm check:p1-boundary
 pnpm check:p1-families
 pnpm check:p1-store
 pnpm check:p1-history
+pnpm check:p1-desktop-source
 pnpm check:p1-canonical
 pnpm typecheck
 node scripts/prepare-android-probe.mjs --output /tmp/travelflow-mobile-probe
@@ -492,7 +493,7 @@ SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个�
 
 ## 下一项调查入口与跨仓协作
 
-本仓库下一项由[移动路线P1](PRODUCT_ROADMAP.md)安排：四族13种命令、隔离SQLite、恢复／虚构历史初次映射及命令字节／摘要候选已有有限证据，统一跨端验收入口已在设计第22节收齐。接着固定双方版本完成一次对照，记录接受／差异，再分别推进全量时区、真实旧文件适配及正式原生／事务门槛。旧结论引用即可，不逐组重复转交；有真实共享语义变化或跨端失败才定点协调。真实身份、迁移及其余能力仍有独立门槛，不分配正式共享版本。
+统一验收结论在设计第23节。用Node22.16+、pnpm12.6.0在根目录冻结安装后运行 `pnpm check:p1-desktop-source`，脚本自行创建带标记的桌面格式文件与移动临时库，无需文件参数。通过时输出 `Desktop SQLite fixture: ... passed.`。旧格式2的导入事务可用 `pnpm check:p1-history` 复验。接手从全量IANA目录与解析版本差异开始。[移动路线P1](PRODUCT_ROADMAP.md)
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

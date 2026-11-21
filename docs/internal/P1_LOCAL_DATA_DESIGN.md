@@ -1,6 +1,6 @@
 # P1业务写入与本地事务设计草案
 
-状态：2026-11-17第22节完成有界命令意图的规范化字节／SHA-256候选：103个固定向量、18组语义关系和6项Node格式集成检查通过，并整理一次统一跨端验收入口。四族13种命令、恢复／历史60项和原23／46／104／88／75／70项保持。编码尚未被共享协议、回执存储或Android采用；真实文件适配、增量／迁移、真实身份及全量IANA仍未完成。旧结论直接承接，不逐组重复审查；不修改vendor、迁移真实数据或发布。
+状态更新于2026-11-21。第23节记录双方对固定宿主批次的结论，以及首次由虚构桌面格式SQLite文件读入移动临时库的结果。双方接受整数命令和回执查询的编码候选。正式共享版本仍待分配。
 
 本页负责业务不变量、事务边界、保护样例和跨仓差异；实现状态见[PROJECT_STATUS](PROJECT_STATUS.md)，阶段顺序见[PRODUCT_ROADMAP](PRODUCT_ROADMAP.md)，框架／平台采用门槛见[ANDROID_FRAMEWORK_REVIEW](ANDROID_FRAMEWORK_REVIEW.md)。它不是新一份交接快照，也不复制完整84项能力矩阵。
 
@@ -677,3 +677,19 @@ Python参考独立实现字符串转义、UTF-16BE键排序、整数与hashlib�
 接收方需要自己的命令输入校验／编码实现或明确适配差异；运行本仓Python参考不能替代这一项。统一回复应绑定双方提交，指出具体向量ID、通过／拒绝差异与真实执行边界，集中收口：内部编码profile是否可作为共同候选、旧ID／血缘与未知字段如何适配、能力／预算不兼容怎样保留本地操作并暂停交换。确定共同版本时才在权威仓库分配与显式导入；有真实分歧才追加最小向量，不重新打开已确认产品规则。
 
 该入口已可审阅，尚未对外发送或收到电脑侧本批验收。下一项按路线P1完成这次统一对照，形成带版本的接受／差异记录；全量IANA／真实历史适配及T1／F1原生门槛随后分别推进，不直接采用正式指纹、真实迁移或发布。
+
+## 23. 固定批次联合结论与桌面源记录读取
+
+2026-11-21收到电脑提交 `a8baa69545de5410a4993eee3d4b245e067f5c88` 的第13节，评审从电脑 `5b221ae` 起步，对应移动 `dcba911b66566da242f26dd27c8d0b17c006b48d`。移动侧复核了当时的设计和语料blob，分别为 `baf0a70783b26164d706a9c0a38ae3f579c4b705` 和 `28d46d749cbf9d944c7cda35180d5f1df5bb5cd7`。电脑报告在固定移动检出运行第22节的12个入口全部通过。[电脑验收记录](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/a8baa69545de5410a4993eee3d4b245e067f5c88/docs/internal/P1_CROSS_REPO_REVIEW.md#L472)
+
+电脑独立测试从raw输入生成结果，覆盖103例（85接受、18按预期拒绝）、18组关系和6项格式拒绝。移动侧审读了三个测试函数及其断言，电脑运行结果按报告接收。双方接受 `p1-host-intent-c14n-1` 作为有界整数命令和独立回执查询的共同编码候选，本批次收口。回执存储采用摘要时还需携带profile、完整意图与可查证回执。固定向量中的pending保留其制作时状态。现有权威共享版本仍是只读投影0.1.0。[电脑独立测试](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/a8baa69545de5410a4993eee3d4b245e067f5c88/backend/tests/p1_canonical_review.py)
+
+能力不兼容时保留原操作键、意图、基线、待确认出站记录和附件引用，只暂停受影响的发送。身份获准且对端支持查询时按原键查回执，未收敛时保持待核实。恢复发送使用原键，确认原回执后才能标为已同步。该行为已作为共同设计方向，实际跨设备流程待验。[电脑适配结论](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/a8baa69545de5410a4993eee3d4b245e067f5c88/docs/internal/P1_CROSS_REPO_REVIEW.md#L493)
+
+**从源文件验证旧账。** 电脑测试观察到旧Itinerary模型重新导出时保留消费ID，但丢失显式null的currency、paid_on和扩展字段。因此本次用落盘的虚构SQLite文件，按固定桌面schema中的sessions、branches、versions和plans四表字段，直接读取所选分支的源版本与plan文本。plans.itinerary和requirements来自桌面升级后增加的TEXT列。实验显式选择来源数据集、旅行、分支和头，源分支的parent_branch_id／fork_version_id随分支记录保存。每条versions记录只有seq、checkpoint_id等来源信息，逐版父链为unknown。[桌面表与升级列](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/a8baa69545de5410a4993eee3d4b245e067f5c88/backend/app/storage/database.py) · [桌面读写路径](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/a8baa69545de5410a4993eee3d4b245e067f5c88/backend/app/storage/session_store.py)
+
+[读取器](../../prototypes/p1-store/desktop-source.mjs)在同一读取事务中生成第21节已支持的初次导入清单。清单同时保存所选源列的值、完整itinerary原文，以及消费／回款、行程日／活动、旧预约和预算的可解释视图。原文保留空白、转义、未知扩展、超出双精度的小数词形和原审计字符串。视图仅解释支持的字段，整分须为安全整数字面量。源文件读取范围为单分支最多64版、所选文本累计1MiB，JSON另外检查深度32和token数100000，目标清单另守原导入限额。票据ID仅作为引用，附件可用性须由独立资产证据建立。
+
+[验收脚本](../../scripts/check-p1-desktop-source.mjs)自建带标记的源文件，关闭后以只读连接读取，并向另一个临时库导入。实测文本ID `1` 和 `01` 映射不同，显式头可选较小seq，分支引用不产生版本父链或墓碑。旧版本保留字段缺失，新版保留显式null，含NUL的文本、SQL空文本与NULL、高精度扩展原文和旧预约钟面可取回。源文件读取前后逐字节相同。目标库本地更正后重开、重读相同源文件，返回原映射与原回执状态。仅改变扩展字段也会报告来源冲突。过期或越范围的头、缺计划／空行程、重复键、非整数金额、超界、未知预约格式等会拒绝整批。
+
+本次证据限于自建UTF-8桌面格式文件的选定列和单分支，缺少plan或itinerary的版本目前会中止导入。多分支合并、无行程版本的档案视图、真实旧库模式覆盖、资产文件及正式迁移仍待验。后续P1优先核对完整IANA目录、别名与两端解析资料版本，再验证T1／F1原生故障恢复。固定编码批次仅在出现具体新差异时重开。
