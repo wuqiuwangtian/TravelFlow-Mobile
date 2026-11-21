@@ -1,5 +1,6 @@
 """Build a test-only native fixture and exercise it on an explicitly selected project AVD."""
 import argparse
+import errno
 import json
 import os
 from pathlib import Path
@@ -126,6 +127,36 @@ def exercise(adb):
                 and again["confirmed_op"] == edit["operation_id"] and again["confirmed_rev"] == 1, str(again))
         check_caller_rows(again, edit, raw, 1)
         print(f"{case}: busy lookup kept original intent across caller death; one confirmed revision.", flush=True)
+
+    ticket_text = "second fictional ticket 842"
+    for case, code, source, staged, ready in (
+        ("file-open", errno.EACCES, "open", None, False),
+        ("file-partial", errno.ENOSPC, "injected write", ticket_text[:8], False),
+        ("file-rename", errno.EACCES, "rename", ticket_text, False),
+        ("file-dir-sync", errno.EIO, "injected directory fsync", None, True),
+    ):
+        action("init", case)
+        require(action("retry", case)["outcome"] == "committed-1", case)
+        require(action("detach", case)["outcome"] == "committed-2", case)
+        baseline = inspect(case, 2, False, True)
+        require(baseline["new_stage"] is None and not baseline["new_ready"] and not baseline["new_intact"]
+                and baseline["replacement_chain"] == 0, str(baseline))
+        failure = action("file-fault", case)
+        require(failure["outcome"] == "file_error" and failure["errno"] == code
+                and failure["detail"].startswith(source + " failed:"), str(failure))
+        after = action("inspect", case)
+        require(after == dict(baseline, new_stage=staged, new_ready=ready, new_intact=ready), str(after))
+        for _ in range(2):
+            action("recover", case)
+            require(action("inspect", case) == baseline, case + " recovery changed baseline")
+        require(action("attach", case)["outcome"] == "committed-3", case)
+        require(action("attach", case)["outcome"] == "replayed-3", case)
+        action("recover", case)
+        final = action("inspect", case)
+        expected = dict(baseline, head=3, cents=842, history=4, receipt=3, outbox=3,
+                        new_ready=True, new_intact=True, replacement_chain=1)
+        require(final == expected, f"{case}: expected {expected}, got {final}")
+        print(f"{case}: {failure['detail']}; historical ticket preserved, revision 3 committed once.", flush=True)
 
 
 def main():

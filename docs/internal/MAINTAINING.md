@@ -517,3 +517,5 @@ python3 scripts/check-p1-android-recovery.py --serial emulator-5580
 ```
 
 脚本核对模拟器序列号、AVD名与API，拒绝覆盖同包名已有安装。每次仪器化调用重开同一场景的私有库，7次进程终止均须出现对应故障标记，另有一次SQLite页上限错误。预期原8个场景通过，接着显示 `Historical attachment, original receipt and intent conflict verified.`。随后运行 `lock-commit` 和 `lock-rollback` 两个双进程场景，每行应以 `one confirmed revision.` 结尾。脚本会核对独立PID、写锁未释放时的旧快照和待核实状态，以及调用方终止重启后恢复的原始命令、业务和回执。脚本在结束时卸载自己刚安装的测试包，临时数据库、签名和APK随之清理。只构建的CI与模拟器实测分别记录。[事务与票据](P1_LOCAL_DATA_DESIGN.md#25-android原生事务与历史票据恢复) · [写锁与调用方恢复](P1_LOCAL_DATA_DESIGN.md#26-写锁期间的回执查询与调用方恢复)
+
+同一命令最后运行 `file-open`、`file-partial`、`file-rename`、`file-dir-sync` 四项。预期各行输出对应的系统或注入错误，并以 `historical ticket preserved, revision 3 committed once.` 结尾。测试包只调整自建票据子目录的权限并在返回前还原，不需要root。回收前后与同键重试的逐项预期见[设计第27节](P1_LOCAL_DATA_DESIGN.md#27-新票据写入失败后的账目与文件恢复)。
