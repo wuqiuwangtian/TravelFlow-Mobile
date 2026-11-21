@@ -78,7 +78,7 @@ if (process.argv[2] === "--replay-worker") {
   }
   assert.equal(offsets.get("Asia/Shanghai"), 28800);
   assert.equal(python.offsets["Asia/Shanghai"], 28800);
-  assert.equal(python.offsets["US/Eastern"], -18000);
+  assert.equal(python.offsets["America/New_York"], -18000);
   for (const id of ["us/Eastern", "US/Eastern ", "Etc/Unknown", "+05:30", "toString"]) fails(() => bookingZone(id, cap), "zone");
   fails(() => bookingZone("Factory", cap), "zone_unavailable");
   for (const change of [{ tzdata_version: null }, { tzdata_version: "1900a" }, { zone_catalogue_id: "other" }])
@@ -86,7 +86,7 @@ if (process.argv[2] === "--replay-worker") {
   fails(() => bookingZone("Cuba", cap, { ...cap, unavailable_targets: ["America/Havana"] }), "zone_unavailable");
   const havana = offsets.get("America/Havana");
   if (cap.tzdata_version === "2026b") assert.equal(havana, -18000);
-  if (python.tzdata_version === "2026f") assert.equal(python.offsets.Cuba, -14400);
+  if (python.tzdata_version === "2026f") assert.equal(python.offsets["America/Havana"], -14400);
   if (cap.tzdata_version !== python.tzdata_version)
     fails(() => bookingZone("Cuba", cap, { ...cap, tzdata_version: python.tzdata_version }), "resolution_basis");
 
@@ -136,5 +136,5 @@ if (process.argv[2] === "--replay-worker") {
   console.log(JSON.stringify({ catalogue: ZONE_CATALOGUE_ID, zones: zones.length, links: Object.keys(links).length,
     node_tz: cap.tzdata_version, unavailable_targets: cap.unavailable_targets, python_system_tz: python.tzdata_version,
     python_missing_names: all.filter(name => python.offsets[name] === null), at_utc: instant.toISOString(), offset_differences: diffs,
-    havana_offset_seconds: { node: havana, python: python.offsets.Cuba }, sqlite_booking_and_replay_checked: true }, null, 2));
+    havana_offset_seconds: { node: havana, python: python.offsets["America/Havana"] }, sqlite_booking_and_replay_checked: true }, null, 2));
 }

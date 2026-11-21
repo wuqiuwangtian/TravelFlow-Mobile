@@ -492,7 +492,7 @@ SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个�
 
 可用`node scripts/check-p1-canonical.mjs PATH`检查仓库外资料副本；`python3 scripts/check-p1-canonical.py PATH`只输出独立编码结果。Python路径沿用P1_REVIEW_PYTHON，缺失直接失败不跳过；引用原check-p1-json.py为严格原语解码参考，须一起保留。复现需取p1-canonical／p1-boundary／p1-zones／p1-json／p1-patch／p1-values目录、依赖基线、固定103项、两检查器与根入口；编码不读真实库，不升级格式2或改变旧回执比较。改坏固定字节／hex／SHA、相等关系、显式投影或伪造联合通过元数据应非零退出。规则、独立性边界和一次统一跨端验收清单见设计第22节。
 
-时区检查运行 `pnpm check:p1-zones`。需Node22.16+、根冻结依赖、Python3.9+及包含tzdata.zi和TZif的系统目录（Linux／WSL）。支持P1_REVIEW_PYTHON。脚本报告345个Zone、253个Link、实际规则版本、所选时刻的偏移差异及临时SQLite预约重放结果。差异名单随运行环境变化。复制当前命令／事务候选时还需prototypes/p1-zones目录。
+时区检查运行 `pnpm check:p1-zones`。需Node22.16+、根冻结依赖、Python3.9+及包含tzdata.zi和TZif的系统目录（Linux／WSL）。支持P1_REVIEW_PYTHON。脚本报告345个Zone、253个Link、实际规则版本、所选时刻的偏移差异及临时SQLite预约重放结果。精简系统可能只安装地区规则文件。固定偏移样例检查地区名，缺少的别名文件会在 python_missing_names 中列出。差异名单随运行环境变化。复制当前命令／事务候选时还需prototypes/p1-zones目录。
 
 复核快照时从[固定IANA归档](https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz)取得文件后执行 `python3 scripts/build-p1-zone-catalogue.py /path/to/tzdata2026f.tar.gz | cmp - prototypes/p1-zones/catalogue.json`。固定归档摘要记录在生成器和产物中。日常CI直接使用仓库内快照，离线可运行。新版本需显式更新来源、内容校验及能力标识。[设计第24节](P1_LOCAL_DATA_DESIGN.md#24-iana名称目录与预约解析版本)
 
