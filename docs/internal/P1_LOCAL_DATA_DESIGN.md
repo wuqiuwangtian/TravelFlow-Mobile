@@ -749,3 +749,29 @@ T1／F1使用独立的自测包 `org.travelflow.p1recovery`，无网络权限。
 验收比对每个场景故障前后及清理后的状态。错误返回后账目仍为756分、头为2，修订0至2、已有回执和待发送记录均可核对，历史票据和非受管文件逐字节一致。恢复在写锁内检查每份已登记资产的全部历史引用，只回收其暂存文件或无引用的就绪文件。连续两次恢复均回到原状态。解除故障后用同键同意图重试，首次产生修订3，再次返回原修订；第二张票据及历史第一张票据均可读。每次验收操作通过独立的应用仪器化调用重开测试库。[独立断言](../../scripts/check-p1-android-recovery.py)
 
 本轮使用应用私有目录与虚构数据。两个权限错误来自真实系统调用，空间不足和目录同步错误是定点注入。整卷耗尽、物理介质故障、掉电后目录持久性和备份恢复仍待独立验证。
+
+## 28. 桌面D1固定虚构样例的只读核对
+
+桌面提交 `801156fcbe8dcc96d99b0fb122e0fa97097f8af8`，移动读取器基线 `664a1dfdf0446555177cb92f7e719dcc1e35ec88`。解压后先核对清单，数据库SHA-256为 `85efb0ae4663d7416d9495d9beb6b0d145a7559085799c5a37791a39c8911cc3`。独立SQL检查与调用现有读取器使用同一份只读、不可变的临时副本。[桌面清单](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/801156fcbe8dcc96d99b0fb122e0fa97097f8af8/desktop/tests/fixtures/d1/expected.json) · [复验脚本](../../scripts/check-p1-desktop-d1.mjs)
+
+行程 `92ba6a148a17`（北京三日游）的主分支 `f4f921d01f4e` 按seq有 `409854fb9585`、`42ac255b7c33`、`9639db1eb3b8` 三版。派生分支 `80a581ac74f9` 从主分支第一版分出，仅有 `ce99e5ec7352`。主分支第一版和派生版本均无消费或关联照片。主分支第二、三版是同一笔虚构午餐8635分，均关联票据 `66a8ba9d2eab4300b2f86943ea2c01fe`。第三版回顾包含并选用照片 `7827bcc19b524e83b8bfd560be0ea667` 为封面。票据预览、票据原件及照片的BLOB实算SHA-256分别与清单匹配。
+
+分别传入两支的有效分支及头版本，`desktopFixtureManifest` 在非空参数检查后读取 `PRAGMA application_id`，实际为0，要求为 `0x54534631`，两次都返回错误 `source_fixture_only`。此处早于读事务BEGIN、分支选择、行程解析及清单生成。此次拒绝原因是文件标记；没有执行到多分支处理。目标导入调用0次，临时目标库行变更0，重开后基线修订、头和所有受检表与初始快照一致。源库核对前后摘要相同，最终不可变读取没有创建源库伴随文件。此次未改动读取器或标记，也未迁移数据。
+
+在包含本节的移动仓库根目录，使用Node 22.16+和pnpm 12.6.0复跑：
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+(
+  set -eu
+  fixture_dir=$(mktemp -d)
+  trap 'rm -rf -- "$fixture_dir"' EXIT
+  base=https://raw.githubusercontent.com/wuqiuwangtian/TravelFlow-AI/801156fcbe8dcc96d99b0fb122e0fa97097f8af8/desktop/tests/fixtures/d1
+  for name in expected.json fictional-trip.sqlite.gz; do
+    curl -fsSL "$base/$name" -o "$fixture_dir/$name"
+  done
+  node scripts/check-p1-desktop-d1.mjs "$fixture_dir"
+)
+```
+
+输出应包含四版快照、三个附件摘要、`reader_result_each_branch: source_fixture_only`、零次导入调用及重开校验结果。日常构建无桌面仓库或样例下载依赖。
