@@ -498,10 +498,22 @@ SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个�
 
 ## 下一项调查入口与跨仓协作
 
-统一验收结论在设计第23节。用Node22.16+、pnpm12.6.0在根目录冻结安装后运行 `pnpm check:p1-desktop-source`，脚本自行创建带标记的桌面格式文件与移动临时库，无需文件参数。通过时输出 `Desktop SQLite fixture: ... passed.`。旧格式2的导入事务可用 `pnpm check:p1-history` 复验。接手从T1／F1原生事务恢复开始。[移动路线P1](PRODUCT_ROADMAP.md)
+统一验收结论在设计第23节。用Node22.16+、pnpm12.6.0在根目录冻结安装后运行 `pnpm check:p1-desktop-source`，脚本自行创建带标记的桌面格式文件与移动临时库，无需文件参数。通过时输出 `Desktop SQLite fixture: ... passed.`。旧格式2的导入事务可用 `pnpm check:p1-history` 复验。接手入口见[原生事务与票据恢复复验](#p1原生事务与票据恢复复验)与[移动路线P1](PRODUCT_ROADMAP.md)。
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 
 电脑端由另一会话负责。完整业务清单与保护约束见[接口能力矩阵](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CAPABILITIES.md)、[跨端总计划](https://github.com/wuqiuwangtian/TravelFlow-AI/blob/main/docs/internal/MOBILE_CONTINUITY_PLAN.md)。本地读写离线完整、联网后手机独立调用在线服务、双方在线直接同步已确定；无常驻应用服务器，本里程碑不加入云存储，第三方账号／中继与具体连接工具尚未批准。不能按个人机型缩窄开源兼容范围，也不因旅中优先删减规划／高级工程／回顾。
 
 移动侧可自主验证平台适配；需要改变数据含义、共享契约或电脑配合时，先形成带版本的规格差异、需要电脑侧提供的接口和联合验收条件，交用户协调两会话，不能直接改电脑仓库或默认其会立即升级。契约仅导入已审阅的固定提交，升级后分别记录两端支持版本；不要把凭据加入业务同步或公开调试日志。设计快照、API矩阵是参考资料，不是移动功能已获用户验收的证明。
+
+## P1原生事务与票据恢复复验
+
+在Linux／WSL设置已有的 `ANDROID_HOME`、`JAVA_HOME`，将JDK 21的bin加入PATH。需要Python 3.9+、SDK Platform 36和Build Tools 35.0.0。执行 `python3 scripts/check-p1-android-recovery.py --build-only` 会在临时目录编译、临时签名并验证独立测试APK，CI也执行此入口。
+
+按本文“本机隔离环境与模拟器接续”启动 `travelflow_p0_api35`，可加 `-read-only` 使用临时磁盘覆盖层，等系统启动完成后运行：
+
+```sh
+python3 scripts/check-p1-android-recovery.py --serial emulator-5580
+```
+
+脚本核对模拟器序列号、AVD名与API，拒绝覆盖同包名已有安装。每次仪器化调用重开同一场景的私有库，7次进程终止均须出现对应故障标记，另有一次SQLite页上限错误。预期8行场景分别通过，最后显示 `Historical attachment, original receipt and intent conflict verified.`。脚本在结束时卸载自己刚安装的测试包，临时数据库、签名和APK随之清理。只构建的CI与模拟器实测分别记录。[范围与结果](P1_LOCAL_DATA_DESIGN.md#25-android原生事务与历史票据恢复)

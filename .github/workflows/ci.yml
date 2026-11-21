@@ -77,6 +77,9 @@ jobs:
         run: pnpm --dir "$RUNNER_TEMP/android-probe" audit --audit-level=moderate
       - name: Ensure Android build packages
         run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0"'
+      - name: Build isolated P1 native recovery fixture (device run is separate)
+        if: matrix.target == 'emulator' && matrix.transport == 'platform'
+        run: python3 scripts/check-p1-android-recovery.py --build-only
       - name: Build debug and unsigned release APKs (no emulator or publication)
         working-directory: ${{ runner.temp }}/android-probe/android
         run: ./gradlew :app:assembleDebug :app:assembleRelease --no-daemon --console=plain
