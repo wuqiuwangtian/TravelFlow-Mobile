@@ -34,7 +34,7 @@ public final class RecoveryFixture extends Instrumentation {
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
-            if (scenario == null || !scenario.matches("staged|ready|revision|expense|receipt|outbox|committed|full"))
+            if (scenario == null || !scenario.matches("staged|ready|revision|expense|receipt|outbox|committed|full|lock-commit|lock-rollback"))
                 throw new IllegalArgumentException("unknown fixture scenario");
             File dir = new File(getTargetContext().getFilesDir(), scenario);
             if ("init".equals(action) && !dir.mkdir()) throw new IllegalStateException("fixture exists");
@@ -42,27 +42,13 @@ public final class RecoveryFixture extends Instrumentation {
             staging = new File(dir, "ticket.tmp");
             ticket = new File(dir, "ticket-1");
             unrelated = new File(dir, "unmanaged");
-            int flags = SQLiteDatabase.OPEN_READWRITE;
-            if ("init".equals(action)) flags |= SQLiteDatabase.CREATE_IF_NECESSARY;
-            SQLiteDatabase.OpenParams params = new SQLiteDatabase.OpenParams.Builder().setOpenFlags(flags)
-                    .setJournalMode("DELETE").setSynchronousMode("FULL").build();
-            try (SQLiteDatabase db = SQLiteDatabase.openDatabase(new File(dir, "store.db"), params)) {
+            try (SQLiteDatabase db = openStore(dir, "init".equals(action))) {
                 db.setForeignKeyConstraintsEnabled(true);
-                JSONObject data = new JSONObject();
-                switch (action) {
-                    case "init": seed(db); break;
-                    case "inspect": data = inspect(db); break;
-                    case "lookup":
-                        try (Cursor row = db.rawQuery("SELECT rev FROM receipt WHERE op='edit'", null)) {
-                            data.put("revision", row.moveToFirst() ? row.getInt(0) : JSONObject.NULL);
-                        }
-                        break;
-                    case "fault":
-                    case "retry":
-                    case "detach":
-                    case "conflict": data.put("outcome", save(db)); break;
-                    case "recover": recover(db); break;
-                    default: throw new IllegalArgumentException("unknown fixture action");
+                JSONObject data;
+                if (scenario.startsWith("lock-") && !"init".equals(action)) {
+                    data = new PendingEditExperiment(this, scenario).run(action, db);
+                } else {
+                    data = runRecoveryAction(db);
                 }
                 result.putString("fixture", data.toString());
             }
@@ -71,6 +57,34 @@ public final class RecoveryFixture extends Instrumentation {
             result.putString("failure", android.util.Log.getStackTraceString(error));
             finish(Activity.RESULT_CANCELED, result);
         }
+    }
+
+    private JSONObject runRecoveryAction(SQLiteDatabase db) throws Exception {
+        JSONObject data = new JSONObject();
+        switch (action) {
+            case "init": seed(db); break;
+            case "inspect": data = inspect(db); break;
+            case "lookup":
+                try (Cursor row = db.rawQuery("SELECT rev FROM receipt WHERE op='edit'", null)) {
+                    data.put("revision", row.moveToFirst() ? row.getInt(0) : JSONObject.NULL);
+                }
+                break;
+            case "fault":
+            case "retry":
+            case "detach":
+            case "conflict": data.put("outcome", save(db)); break;
+            case "recover": recover(db); break;
+            default: throw new IllegalArgumentException("unknown fixture action");
+        }
+        return data;
+    }
+
+    static SQLiteDatabase openStore(File dir, boolean create) {
+        int flags = SQLiteDatabase.OPEN_READWRITE;
+        if (create) flags |= SQLiteDatabase.CREATE_IF_NECESSARY;
+        SQLiteDatabase.OpenParams params = new SQLiteDatabase.OpenParams.Builder().setOpenFlags(flags)
+                .setJournalMode("DELETE").setSynchronousMode("FULL").build();
+        return SQLiteDatabase.openDatabase(new File(dir, "store.db"), params);
     }
 
     private void seed(SQLiteDatabase db) throws Exception {
@@ -133,14 +147,7 @@ public final class RecoveryFixture extends Instrumentation {
             if ("conflict".equals(action)) throw new IllegalStateException("expected original receipt");
             if (number(db, "SELECT head FROM expense WHERE id=1") != rev - 1) throw new IllegalStateException("stale head");
             if (!detach) importTicket();
-            db.execSQL("INSERT INTO history VALUES(?,756,?)", new Object[]{rev, detach ? null : "ticket-1"});
-            checkpoint("revision");
-            db.execSQL("UPDATE expense SET cents=756,head=? WHERE id=1", new Object[]{rev});
-            checkpoint("expense");
-            db.execSQL("INSERT INTO receipt VALUES(?,?,?)", new Object[]{op, intent, rev});
-            checkpoint("receipt");
-            db.execSQL("INSERT INTO outbox VALUES(?,?)", new Object[]{op, rev});
-            checkpoint("outbox");
+            writeRows(db, rev, 756, detach ? null : "ticket-1", op, intent, this::checkpoint);
             if (full) {
                 try { db.execSQL("INSERT INTO space_probe VALUES(zeroblob(1048576))"); }
                 catch (SQLiteFullException expected) { sawFull = true; }
@@ -158,6 +165,19 @@ public final class RecoveryFixture extends Instrumentation {
         if (sawFull) return "sqlite_full";
         checkpoint("committed");
         return "committed-" + rev;
+    }
+
+    interface Checkpoint { void reached(String point); }
+
+    static void writeRows(SQLiteDatabase db, int rev, int cents, String asset, String op, String intent, Checkpoint check) {
+        db.execSQL("INSERT INTO history VALUES(?,?,?)", new Object[]{rev, cents, asset});
+        check.reached("revision");
+        db.execSQL("UPDATE expense SET cents=?,head=? WHERE id=1", new Object[]{cents, rev});
+        check.reached("expense");
+        db.execSQL("INSERT INTO receipt VALUES(?,?,?)", new Object[]{op, intent, rev});
+        check.reached("receipt");
+        db.execSQL("INSERT INTO outbox VALUES(?,?)", new Object[]{op, rev});
+        check.reached("outbox");
     }
 
     private void recover(SQLiteDatabase db) throws Exception {

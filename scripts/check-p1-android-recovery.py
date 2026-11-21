@@ -30,7 +30,7 @@ def build(tmp, sdk, java):
     jar = sdk / "platforms/android-36/android.jar"
     classes = tmp / "classes"
     classes.mkdir()
-    run(java / "javac", "--release", "8", "-classpath", jar, "-d", classes, SOURCE / "RecoveryFixture.java")
+    run(java / "javac", "--release", "8", "-classpath", jar, "-d", classes, *sorted(SOURCE.glob("*.java")))
     run(tools / "d8", "--min-api", "28", "--lib", jar, "--output", tmp, *classes.rglob("*.class"))
     unsigned = tmp / "unsigned.apk"
     run(tools / "aapt2", "link", "-o", unsigned, "-I", jar, "--manifest", SOURCE / "AndroidManifest.xml")
@@ -51,6 +51,10 @@ def exercise(adb):
     def action(name, case):
         log = adb("shell", "am", "instrument", "-w", "-r", "-e", "action", name, "-e", "scenario", case,
                   PACKAGE + "/.RecoveryFixture")
+        if name == "race":
+            evidence = re.search(r"^INSTRUMENTATION_STATUS: observation=(\{.*\})$", log, re.M)
+            require(evidence and "Process crashed" in log and "INSTRUMENTATION_RESULT: fixture=" not in log, log)
+            return json.loads(evidence[1])
         if name == "fault" and case != "full":
             require("INSTRUMENTATION_STATUS: checkpoint=" + case in log and
                     "Process crashed" in log and "INSTRUMENTATION_RESULT: fixture=" not in log, log)
@@ -91,6 +95,37 @@ def exercise(adb):
     require(action("retry", case)["outcome"] == "replayed-1", "historical receipt")
     inspect(case, 2, False, True)
     print("Historical attachment, original receipt and intent conflict verified.")
+    def check_caller_rows(data, edit, raw, revision):
+        expected = dict(head=revision, cents=edit["amount_cents"] if revision else 700, history=revision + 1,
+                        receipt=revision, outbox=revision, committed_intent=raw if revision else None)
+        require(all(data[k] == v for k, v in expected.items()), f"expected {expected}, got {data}")
+
+    for case in ("lock-commit", "lock-rollback"):
+        action("init", case)
+        raw = action("prepare", case)["pending"]
+        edit = json.loads(raw)
+        race = action("race", case)
+        require(race["state"] == "pending_busy" and race["plain_receipts"] == 0 and race["pending"] == raw
+                and race["caller_pid"] != race["writer_pid"], str(race))
+        reopened = action("snapshot", case)
+        require(reopened["caller_pid"] != race["caller_pid"] and reopened["pending"] == raw
+                and reopened["confirmed_op"] is None, str(reopened))
+        committed = int(case == "lock-commit")
+        check_caller_rows(reopened, edit, raw, committed)
+        lookup = action("reconcile", case)
+        if not committed:
+            require(lookup["state"] == "no_receipt" and lookup["pending"] == raw and lookup["confirmed_op"] is None,
+                    str(lookup))
+            check_caller_rows(lookup, edit, raw, 0)
+            lookup = action("resubmit", case)
+            require(lookup["submission"] == "committed-1", str(lookup))
+        require(lookup["state"] == "confirmed" and lookup["pending"] is None
+                and lookup["confirmed_op"] == edit["operation_id"] and lookup["confirmed_rev"] == 1, str(lookup))
+        again = action("resubmit", case)
+        require(again["state"] == "confirmed" and "submission" not in again and again["pending"] is None
+                and again["confirmed_op"] == edit["operation_id"] and again["confirmed_rev"] == 1, str(again))
+        check_caller_rows(again, edit, raw, 1)
+        print(f"{case}: busy lookup kept original intent across caller death; one confirmed revision.", flush=True)
 
 
 def main():

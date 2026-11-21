@@ -2,7 +2,10 @@
     package="org.travelflow.p1recovery">
     <uses-sdk android:minSdkVersion="28" android:targetSdkVersion="35" />
     <application android:testOnly="true" android:allowBackup="false"
-        android:label="TravelFlow recovery fixture" />
+        android:label="TravelFlow recovery fixture">
+        <provider android:name=".FixtureWriter" android:authorities="org.travelflow.p1recovery.writer"
+            android:process=":writer" android:exported="false" />
+    </application>
     <instrumentation android:name=".RecoveryFixture"
         android:targetPackage="org.travelflow.p1recovery" />
 </manifest>
