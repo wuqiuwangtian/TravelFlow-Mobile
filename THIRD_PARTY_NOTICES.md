@@ -9,3 +9,4 @@
 - vendor/design是原项目共享样式的MIT快照；精确提交与文件摘要见该目录ORIGIN.json，不能宣称与上游实时同步。
 - vendor/contracts是实验账目投影契约快照；来源、固定提交与manifest摘要见vendor/contracts/ORIGIN.json。
 - Android SDK、系统镜像、Gradle、JDK不在本仓库分发，各自许可由安装者遵守；生成的Android依赖以其包内许可为准。尚未发布安装包。
+- P1宿主时区名称快照源自[IANA tzdata2026f](https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz)。所用地区数据、etcetera、factory及backward文件依归档LICENSE为公有领域。仓库保存Zone名称及Link映射，规则换算由运行时提供。

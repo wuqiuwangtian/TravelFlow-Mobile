@@ -1,7 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { require, BoundaryError, fields, string, identifier, exactInteger } from "./input.mjs";
 import { checkPatchFields } from "../p1-patch/expense.mjs";
-import { elapsedBooking, paymentDate, CandidateError } from "../p1-values/values.mjs";
+import { bookingZone, ZONE_CATALOGUE_ID } from "../p1-zones/catalogue.mjs";
+import { elapsedBooking, resolveElapsedBooking, paymentDate, CandidateError } from "../p1-values/values.mjs";
 import zoneRegistry from "../p1-values/time-zone-ids.json" with { type: "json" };
 
 export const HOST_RESOLUTION = Object.freeze({ zone_catalogue_id: "p1-test-zones-1", tzdata_version: process.versions.tz ?? "unreported", provider: "node-intl", icu: process.versions.icu });
@@ -108,7 +109,13 @@ export function familyPlan(intent, snapshot) {
     Object.assign(after, { start_time: after.booking.start_time, start_day_offset: after.booking.start_day_offset, duration_minutes: after.booking.duration_minutes });
   } else if (kind === "booking.set") {
     const basis = payload.resolution_basis;
-    require(basis.zone_catalogue_id === HOST_RESOLUTION.zone_catalogue_id && basis.tzdata_version === HOST_RESOLUTION.tzdata_version, "resolution_basis");
+    let resolveBooking = elapsedBooking;
+    if (basis.zone_catalogue_id === ZONE_CATALOGUE_ID) {
+      const zone = bookingZone(payload.time_zone, basis);
+      resolveBooking = value => resolveElapsedBooking(value, () => zone);
+    } else {
+      require(basis.zone_catalogue_id === HOST_RESOLUTION.zone_catalogue_id && basis.tzdata_version === HOST_RESOLUTION.tzdata_version, "resolution_basis");
+    }
     require(snapshot.calendar !== null && snapshot.calendar !== undefined, "calendar_missing");
     require(basis.calendar_revision_id === snapshot.calendar.revision_id, "calendar_conflict");
     if (Object.hasOwn(snapshot.calendar, "day")) require(snapshot.calendar.day === before.day, "calendar_date");
@@ -116,7 +123,7 @@ export function familyPlan(intent, snapshot) {
     date.setUTCDate(date.getUTCDate() + payload.start_day_offset);
     require(Number.isFinite(date.valueOf()) && date.toISOString().length === 24, "booking_range");
     require(payload.local_start === `${date.toISOString().slice(0, 10)}T${payload.start_time}`, "calendar_date");
-    const resolved = candidate(() => elapsedBooking(Object.fromEntries(["local_start", "time_zone", "utc_offset", "start_instant", "duration_minutes", "duration_semantics"].map(key => [key, payload[key]]))));
+    const resolved = candidate(() => resolveBooking(Object.fromEntries(["local_start", "time_zone", "utc_offset", "start_instant", "duration_minutes", "duration_semantics"].map(key => [key, payload[key]]))));
     after.booking = { ...structuredClone(payload), mode: "resolved_elapsed", ...resolved };
     Object.assign(after, { start_time: payload.start_time, start_day_offset: payload.start_day_offset, duration_minutes: payload.duration_minutes, time_is_suggested: false });
   } else throw new Error(`Unexpected family: ${kind}`);

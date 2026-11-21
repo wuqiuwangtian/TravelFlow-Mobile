@@ -16,6 +16,7 @@ pnpm check:p1-json
 pnpm check:p1-patch
 pnpm check:p1-boundary
 pnpm check:p1-families
+pnpm check:p1-zones
 pnpm check:p1-store
 pnpm check:p1-history
 pnpm check:p1-desktop-source
@@ -489,11 +490,15 @@ SQLite检查包括真实表行／total_changes、独立连接锁竞争、四个�
 
 `pnpm check:p1-canonical`需要根冻结依赖、Node22.16+和Python3.9+标准库，不需要IANA、SQLite、设备或个人文件。预期103个固定向量（85接受／18拒绝）、18组语义关系、6项Node格式集成通过；打印共享版本null，full_jcs_or_ijson／python_full_command_validation／storage_fingerprint_adopted／real_authentication／android_native_executed／synchronization_executed均false。逐条核对固定JSON文本、UTF-8 hex和SHA-256，不重新生成预期。Python仅独立编码显式validated_intent及原语；Node另验证该投影与原始命令一致，不当电脑后端的完整校验已执行。
 
-可用`node scripts/check-p1-canonical.mjs PATH`检查仓库外资料副本；`python3 scripts/check-p1-canonical.py PATH`只输出独立编码结果。Python路径沿用P1_REVIEW_PYTHON，缺失直接失败不跳过；引用原check-p1-json.py为严格原语解码参考，须一起保留。复现需取p1-canonical／p1-boundary／p1-json／p1-patch／p1-values目录、依赖基线、固定103项、两检查器与根入口；编码不读真实库，不升级格式2或改变旧回执比较。改坏固定字节／hex／SHA、相等关系、显式投影或伪造联合通过元数据应非零退出。规则、独立性边界和一次统一跨端验收清单见设计第22节。
+可用`node scripts/check-p1-canonical.mjs PATH`检查仓库外资料副本；`python3 scripts/check-p1-canonical.py PATH`只输出独立编码结果。Python路径沿用P1_REVIEW_PYTHON，缺失直接失败不跳过；引用原check-p1-json.py为严格原语解码参考，须一起保留。复现需取p1-canonical／p1-boundary／p1-zones／p1-json／p1-patch／p1-values目录、依赖基线、固定103项、两检查器与根入口；编码不读真实库，不升级格式2或改变旧回执比较。改坏固定字节／hex／SHA、相等关系、显式投影或伪造联合通过元数据应非零退出。规则、独立性边界和一次统一跨端验收清单见设计第22节。
+
+时区检查运行 `pnpm check:p1-zones`。需Node22.16+、根冻结依赖、Python3.9+及包含tzdata.zi和TZif的系统目录（Linux／WSL）。支持P1_REVIEW_PYTHON。脚本报告345个Zone、253个Link、实际规则版本、所选时刻的偏移差异及临时SQLite预约重放结果。差异名单随运行环境变化。复制当前命令／事务候选时还需prototypes/p1-zones目录。
+
+复核快照时从[固定IANA归档](https://data.iana.org/time-zones/releases/tzdata2026f.tar.gz)取得文件后执行 `python3 scripts/build-p1-zone-catalogue.py /path/to/tzdata2026f.tar.gz | cmp - prototypes/p1-zones/catalogue.json`。固定归档摘要记录在生成器和产物中。日常CI直接使用仓库内快照，离线可运行。新版本需显式更新来源、内容校验及能力标识。[设计第24节](P1_LOCAL_DATA_DESIGN.md#24-iana名称目录与预约解析版本)
 
 ## 下一项调查入口与跨仓协作
 
-统一验收结论在设计第23节。用Node22.16+、pnpm12.6.0在根目录冻结安装后运行 `pnpm check:p1-desktop-source`，脚本自行创建带标记的桌面格式文件与移动临时库，无需文件参数。通过时输出 `Desktop SQLite fixture: ... passed.`。旧格式2的导入事务可用 `pnpm check:p1-history` 复验。接手从全量IANA目录与解析版本差异开始。[移动路线P1](PRODUCT_ROADMAP.md)
+统一验收结论在设计第23节。用Node22.16+、pnpm12.6.0在根目录冻结安装后运行 `pnpm check:p1-desktop-source`，脚本自行创建带标记的桌面格式文件与移动临时库，无需文件参数。通过时输出 `Desktop SQLite fixture: ... passed.`。旧格式2的导入事务可用 `pnpm check:p1-history` 复验。接手从T1／F1原生事务恢复开始。[移动路线P1](PRODUCT_ROADMAP.md)
 
 固定8.6.0源码的CapacitorHttp仍是整包读取后resolve，公开接口没有单请求取消；需要自建原生适配的依据未变。流式／TLS／DNS／网络丢失／辅助进程与严格Private DNS拒绝的实际覆盖统一见PROJECT_STATUS；API35首请求及ADB采样异常仍未定因，真实凭据／供应商与动态网络配置仍未覆盖，不默认追加同类实验。服务地址、分级支持及锁屏使用规则已确认，正式凭据生命周期、数值最低支持版本与发布组合仍需设计和验收。参考[官方HTTP接口](https://capacitorjs.com/docs/apis/http)，仍以固定依赖源码和实际运行结果为准。
 

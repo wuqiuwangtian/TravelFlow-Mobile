@@ -60,6 +60,11 @@ function localParts(formatter, instant) {
 }
 
 export function elapsedBooking(value) {
+  return resolveElapsedBooking(value, name => registeredZones.has(name) ? name : null);
+}
+
+// The catalogue chooses the exact resolver key after validating the input name.
+export function resolveElapsedBooking(value, lookupZone) {
   shape(value, ["local_start", "time_zone", "utc_offset", "start_instant", "duration_minutes", "duration_semantics"]);
   requireValue(value.duration_semantics === "elapsed", "duration_semantics");
   requireValue(integer(value.duration_minutes, 1, 1440), "duration");
@@ -67,11 +72,12 @@ export function elapsedBooking(value) {
     && validDate(value.local_start.slice(0, 10)), "date");
   requireValue(typeof value.utc_offset === "string" && value.utc_offset.length === 6 && /^[+-](?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(value.utc_offset)
     && value.utc_offset !== "-00:00", "offset");
-  requireValue(text(value.time_zone) && registeredZones.has(value.time_zone), "zone");
+  const zone = text(value.time_zone) && lookupZone(value.time_zone);
+  requireValue(text(zone), "zone");
   let formatter;
   try {
     formatter = new Intl.DateTimeFormat("en-US", {
-      timeZone: value.time_zone, calendar: "gregory", numberingSystem: "latn", hourCycle: "h23",
+      timeZone: zone, calendar: "gregory", numberingSystem: "latn", hourCycle: "h23",
       era: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
     });
   } catch { throw new CandidateError("zone"); }

@@ -1,3 +1,4 @@
+import { zoneCapability } from "../p1-zones/catalogue.mjs";
 import { isDeepStrictEqual } from "node:util";
 import { PROFILE, BoundaryError, require, parseInput, fields, string, identifier, exactInteger } from "./input.mjs";
 import { evaluate as patchPlan, checkPatchFields } from "../p1-patch/expense.mjs";
@@ -67,6 +68,7 @@ export function capabilities(bytes) {
     field_semantics: ["new-CNY", "legacy-unknown-currency-patch", "paid-on-omission-vs-null", "no-change-receipt-plan",
       "separate-refund-reimbursement", "elapsed-booking-resolution-basis", "legacy-booking-preserved", "no-op-progress-audit", "explicit-delete-tombstone-plan",
       "explicit-restore-current-constraints", "historical-facts-link-overrides-only"],
+    iana_booking: zoneCapability(),
     resolution_provider: { ...HOST_RESOLUTION },
     zone_catalogue: { scope: "fixture-only", time_zone_ids: [...CANDIDATE_ZONE_IDS] },
     limits: { ...PROFILE }, durable_storage: false, authentication_provider: false, canonical_bytes: false };
