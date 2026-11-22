@@ -1,5 +1,8 @@
 """Build a test-only native fixture and exercise it on an explicitly selected project AVD."""
 import argparse
+import base64
+import hashlib
+import io
 import errno
 import json
 import os
@@ -49,9 +52,9 @@ def build(tmp, sdk, java):
 
 
 def exercise(adb):
-    def action(name, case):
+    def action(name, case, bundle=None):
         log = adb("shell", "am", "instrument", "-w", "-r", "-e", "action", name, "-e", "scenario", case,
-                  PACKAGE + "/.RecoveryFixture")
+                  *(("-e", "bundle", bundle) if bundle is not None else ()), PACKAGE + "/.RecoveryFixture")
         if name == "race":
             evidence = re.search(r"^INSTRUMENTATION_STATUS: observation=(\{.*\})$", log, re.M)
             require(evidence and "Process crashed" in log and "INSTRUMENTATION_RESULT: fixture=" not in log, log)
@@ -157,6 +160,73 @@ def exercise(adb):
                         new_ready=True, new_intact=True, replacement_chain=1)
         require(final == expected, f"{case}: expected {expected}, got {final}")
         print(f"{case}: {failure['detail']}; historical ticket preserved, revision 3 committed once.", flush=True)
+
+    check_backup(action)
+
+
+def check_backup(action):
+    case = "backup"
+    action("init", case)
+    for name, rev in [("retry", 1), ("detach", 2), ("attach", 3)]:
+        require(action(name, case)["outcome"] == f"committed-{rev}", name)
+    before = action("backup-live", case)
+    assets = {"ticket-1": b"fictional ticket 56", "attachments/ticket-2": b"second fictional ticket 842"}
+    receipts = [["edit", "edit to 756 at 0", 1], ["drop-link", "detach at 1", 2],
+                ["attach-second", "set 842 and ticket-2 at 2", 3]]
+    expected = dict(expense=[[1, 842, 3]], history=[[0, 700, None], [1, 756, "ticket-1"], [2, 756, None],
+                                                   [3, 842, "ticket-2"]], receipts=receipts,
+                    outbox=[[op, rev] for op, _, rev in receipts],
+                    tickets={name: base64.b64encode(data).decode() for name, data in assets.items()})
+    require(before == expected, str(before))
+    archive = base64.b64decode(action("backup-create", case)["archive"], validate=True)
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        require(sorted(z.namelist()) == sorted(["manifest.json", "store.db", *assets]), "archive members")
+        members = {name: z.read(name) for name in z.namelist()}
+    hashes = {name: hashlib.sha256(members[name]).hexdigest() for name in ["store.db", *assets]}
+    require(json.loads(members["manifest.json"]) == {"format": "fixture-backup-1", "sha256": hashes}, "manifest")
+    require(all(members[k] == v for k, v in assets.items()), "archive ticket bytes")
+
+    current = action("backup-advance", case)
+    require(current == dict(before, expense=[[1, 915, 4]], history=before["history"] + [[4, 915, None]],
+                            receipts=receipts + [["later", "edit after backup", 4]],
+                            outbox=before["outbox"] + [["later", 4]]), "new live revision")
+
+    def reject(parts, reason):
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, data in parts.items():
+                z.writestr(name, data)
+        bundle = base64.b64encode(output.getvalue()).decode()
+        result = action("backup-restore", case, bundle)
+        require(result == {"outcome": "rejected", "reason": reason}, str(result))
+        require(action("backup-status", case) == {"published": False, "scratch": 0}, "partial restore")
+        require(action("backup-live", case) == current, "damaged backup changed the live ledger")
+        print(f"backup: {reason}; no partial restore, live revision 4 intact.", flush=True)
+
+    for name in ["manifest.json", "store.db", "ticket-1"]:
+        reject({k: v for k, v in members.items() if k != name}, "missing:" + name)
+    for name in ["attachments/ticket-2", "store.db"]:
+        data = members[name]
+        reject({**members, name: data[:-1] + bytes([data[-1] ^ 1])}, "digest:" + name)
+    # The file list and its hashes agree, but a historical reference still requires this file.
+    incomplete = {k: v for k, v in members.items() if k != "ticket-1"}
+    manifest = json.loads(incomplete["manifest.json"])
+    del manifest["sha256"]["ticket-1"]
+    incomplete["manifest.json"] = json.dumps(manifest).encode()
+    reject(incomplete, "history_inventory")
+
+    broken_db = b"broken header!!!" + members["store.db"][16:]
+    manifest = json.loads(members["manifest.json"])
+    manifest["sha256"]["store.db"] = hashlib.sha256(broken_db).hexdigest()
+    reject({**members, "store.db": broken_db, "manifest.json": json.dumps(manifest).encode()}, "database_integrity")
+
+    require(action("backup-restore", case) == {"outcome": "restored"}, "valid restore")
+    require(action("backup-restored", case) == before, "restored ledger differs from capture")
+    require(action("restored-attach", case) == {"outcome": "replayed-3"}, "could not replay restored receipt")
+    require(action("backup-restore", case) == {"outcome": "destination_exists"}, "destination overwritten")
+    require(action("backup-status", case) == {"published": True, "scratch": 0}, "unfinished restore")
+    require(action("backup-restored", case) == before and action("backup-live", case) == current, "reopen mismatch")
+    print("backup: restored revision 3, both tickets and all receipts/outbox rows; live revision 4 intact.", flush=True)
 
 
 def main():

@@ -24,25 +24,35 @@ public final class RecoveryFixture extends Instrumentation {
     private File unrelated;
     private static final String REPLACE_OP = "attach-second";
     private static final String REPLACE_INTENT = "set 842 and ticket-2 at 2";
-    private String action, scenario;
+    private String action, scenario, damagedBackup;
 
     @Override public void onCreate(Bundle args) {
         super.onCreate(args);
         action = args.getString("action");
         scenario = args.getString("scenario");
+        damagedBackup = args.getString("bundle");
         start();
     }
 
     @Override public void onStart() {
         Bundle result = new Bundle();
         try {
-            if (scenario == null || !scenario.matches("staged|ready|revision|expense|receipt|outbox|committed|full|lock-commit|lock-rollback|file-open|file-partial|file-rename|file-dir-sync"))
+            if (scenario == null || !scenario.matches("staged|ready|revision|expense|receipt|outbox|committed|full|lock-commit|lock-rollback|file-open|file-partial|file-rename|file-dir-sync|backup"))
                 throw new IllegalArgumentException("unknown fixture scenario");
             File dir = new File(getTargetContext().getFilesDir(), scenario);
             if ("init".equals(action) && !dir.mkdir()) throw new IllegalStateException("fixture exists");
             if (!dir.isDirectory()) throw new IllegalStateException("missing fixture");
+            if ("backup".equals(scenario) && action.startsWith("backup-")) {
+                result.putString("fixture", new FixtureBackup(dir).run(action, damagedBackup).toString());
+                finish(Activity.RESULT_OK, result);
+                return;
+            }
+            if ("backup".equals(scenario) && "restored-attach".equals(action)) {
+                dir = new File(dir, "restored");
+                action = "attach";
+            }
             ticket = new FixtureTicket(dir, "ticket.tmp", "ticket-1", TICKET);
-            if (scenario.startsWith("file-")) {
+            if (scenario.startsWith("file-") || "backup".equals(scenario)) {
                 File assets = new File(dir, "attachments");
                 if ("init".equals(action)) {
                     if (!assets.mkdir()) throw new IllegalStateException("asset directory exists");
