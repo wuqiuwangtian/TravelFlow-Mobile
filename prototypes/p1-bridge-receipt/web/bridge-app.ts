@@ -1,17 +1,22 @@
 import { Capacitor, registerPlugin } from "./capacitor-core.js";
 import { summarizeLedger } from "./ledger-core.js";
 import {
+  MAX_AMOUNT_CENTS,
   buildExpensePatchIntent,
   buildReceiptLookupIntent,
   canonicalizeControlDocument,
   canonicalizeQueryDocument,
+  parseStrictAmountCents,
 } from "./bridge-command.js";
 
 type ScenarioName =
   | "before-commit"
   | "after-commit-drop-reply"
   | "lock-busy-commit"
-  | "lock-busy-rollback";
+  | "lock-busy-rollback"
+  | "bound-int32-max"
+  | "bound-int32-over"
+  | "bound-max-cents";
 
 type FaultMode = "none" | "before_commit" | "after_commit_drop_reply";
 
@@ -153,7 +158,7 @@ function currentFaultMode(): FaultMode {
 }
 
 function currentAmountCents(): number {
-  return Number.parseInt(amountEl.value, 10);
+  return parseStrictAmountCents(amountEl.value);
 }
 
 function setControlsEnabled(enabled: boolean): void {
@@ -376,17 +381,21 @@ byId<HTMLButtonElement>("conflict-check").onclick = () =>
     if (!callerState.confirmedOp) {
       throw new Error("No confirmed operation for conflict check");
     }
+    const conflictingAmountCents =
+      callerState.confirmedAmountCents >= MAX_AMOUNT_CENTS
+        ? callerState.confirmedAmountCents - 1
+        : callerState.confirmedAmountCents + 55;
     const conflictingIntent = buildExpensePatchIntent({
       operationId: callerState.confirmedOp,
       expectedRevision: callerState.confirmedExpectedRevision,
-      amountCents: callerState.confirmedAmountCents + 55,
+      amountCents: conflictingAmountCents,
       notes: `conflicting-intent:${scenario}`,
     });
     const conflict = await bridge.submitExpensePatch({
       scenario,
       operationId: callerState.confirmedOp,
       intentJson: canonicalizeControlDocument(conflictingIntent),
-      amountCents: callerState.confirmedAmountCents + 55,
+      amountCents: conflictingAmountCents,
       expectedRevision: callerState.confirmedExpectedRevision,
       faultMode: "none",
     });

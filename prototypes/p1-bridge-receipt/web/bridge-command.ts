@@ -9,6 +9,9 @@ export const FIXTURE_TRAVEL_ID = "fixture-travel-1";
 export const FIXTURE_BRANCH_ID = "fixture-branch-main";
 export const FIXTURE_EXPENSE_ID = "fixture-expense-1";
 
+export const MIN_AMOUNT_CENTS = 1;
+export const MAX_AMOUNT_CENTS = 9999999999;
+
 export interface OperationIdentity {
   dataset_id: string;
   source_device_id: string;
@@ -45,8 +48,19 @@ function assertSafeIdentifier(value: string, label: string): string {
 }
 
 function assertAmountCents(value: number): number {
-  if (!Number.isSafeInteger(value) || value < 1 || value > 9999999999) {
+  if (!Number.isSafeInteger(value) || value < MIN_AMOUNT_CENTS || value > MAX_AMOUNT_CENTS) {
     throw new Error("amount_cents must be a safe positive integer within P1 bounds");
+  }
+  return value;
+}
+
+export function parseStrictAmountCents(raw: string): number {
+  if (typeof raw !== "string" || !/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`Invalid amount_cents input: ${String(raw)}`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || String(value) !== raw || value < MIN_AMOUNT_CENTS || value > MAX_AMOUNT_CENTS) {
+    throw new Error(`amount_cents out of P1 bounds: ${raw}`);
   }
   return value;
 }

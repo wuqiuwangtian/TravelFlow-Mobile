@@ -14,6 +14,8 @@ import java.util.Arrays;
  * Uses DELETE journal mode and FULL synchronous mode, matching prototypes/p1-android-recovery.
  */
 final class BridgeLedgerStore {
+    static final long MIN_AMOUNT_CENTS = 1L;
+    static final long MAX_AMOUNT_CENTS = 9_999_999_999L;
     static final byte[] HISTORICAL_TICKET_BYTES = "fictional ticket 56".getBytes(StandardCharsets.UTF_8);
     static final byte[] UNMANAGED_BYTES = new byte[]{42};
     static final String HISTORICAL_TICKET_NAME = "ticket-1";
@@ -23,7 +25,11 @@ final class BridgeLedgerStore {
 
     static boolean isValidScenario(String scenario) {
         return scenario != null && scenario.matches(
-                "before-commit|after-commit-drop-reply|lock-busy-commit|lock-busy-rollback");
+                "before-commit|after-commit-drop-reply|lock-busy-commit|lock-busy-rollback|bound-int32-max|bound-int32-over|bound-max-cents");
+    }
+
+    static boolean isValidAmountCents(long cents) {
+        return cents >= MIN_AMOUNT_CENTS && cents <= MAX_AMOUNT_CENTS;
     }
 
     static File scenarioDir(File filesDir, String scenario) {
@@ -76,7 +82,10 @@ final class BridgeLedgerStore {
         }
     }
 
-    static void writeRows(SQLiteDatabase db, int rev, int cents, String asset, String op, String intent) {
+    static void writeRows(SQLiteDatabase db, int rev, long cents, String asset, String op, String intent) {
+        if (!isValidAmountCents(cents)) {
+            throw new IllegalArgumentException("amount_cents out of bounds: " + cents);
+        }
         db.execSQL("INSERT INTO history VALUES(?,?,?)", new Object[]{rev, cents, asset});
         db.execSQL("UPDATE expense SET cents=?,head=? WHERE id=1", new Object[]{cents, rev});
         db.execSQL("INSERT INTO receipt VALUES(?,?,?)", new Object[]{op, intent, rev});

@@ -49,10 +49,42 @@ try {
     p1Query.sha256,
   );
 
+  for (const invalidRaw of ["", "0", "-1", "842.9", "1e3", "1E3", "0842", " 842", "842 ", "842px", "10000000000"]) {
+    assert.throws(() => mod.parseStrictAmountCents(invalidRaw), `Expected rejection for ${JSON.stringify(invalidRaw)}`);
+  }
+
+  const boundaryDigests = {};
+  for (const [label, raw, expected] of [
+    ["int32_max", "2147483647", 2147483647],
+    ["int32_over", "2147483648", 2147483648],
+    ["max_cents", "9999999999", 9999999999],
+  ]) {
+    const parsed = mod.parseStrictAmountCents(raw);
+    assert.equal(parsed, expected);
+    const intent = mod.buildExpensePatchIntent({
+      operationId: `op-bridge-${label}`,
+      expectedRevision: 2,
+      amountCents: parsed,
+      notes: `p1-bridge-boundary:${label}`,
+    });
+    const tsCanon = mod.canonicalizeControlDocument(intent);
+    const p1Canon = fingerprintIntent(Buffer.from(JSON.stringify(intent), "utf8"), "control");
+    assert.equal(p1Canon.accepted, true);
+    assert.equal(tsCanon, p1Canon.canonical_json);
+    assert.equal(JSON.parse(tsCanon).intent.payload.amount_cents, expected);
+    boundaryDigests[label] = p1Canon.sha256;
+  }
+
   assert.throws(() => mod.buildExpensePatchIntent({
     operationId: opId,
     expectedRevision: 2,
     amountCents: 0,
+    notes: "invalid",
+  }));
+  assert.throws(() => mod.buildExpensePatchIntent({
+    operationId: opId,
+    expectedRevision: 2,
+    amountCents: 10000000000,
     notes: "invalid",
   }));
   assert.throws(() => mod.buildExpensePatchIntent({
@@ -66,6 +98,7 @@ try {
     passed: true,
     controlCanonicalSha256: p1Control.sha256,
     queryCanonicalSha256: p1Query.sha256,
+    boundaryDigests,
     shared_contract_version: null,
     android_native_executed: false,
   }, null, 2));

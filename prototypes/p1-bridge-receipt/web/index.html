@@ -29,6 +29,9 @@
       <option value="after-commit-drop-reply">after-commit-drop-reply（提交后丢失应答）</option>
       <option value="lock-busy-commit">lock-busy-commit（查询写锁忙后写方提交）</option>
       <option value="lock-busy-rollback">lock-busy-rollback（查询写锁忙后写方回滚）</option>
+      <option value="bound-int32-max">bound-int32-max（非法输入拒绝与 32 位上限）</option>
+      <option value="bound-int32-over">bound-int32-over（越过 32 位边界与锁竞争）</option>
+      <option value="bound-max-cents">bound-max-cents（9999999999 上限与丢应答恢复）</option>
     </select>
 
     <label for="fault-mode">故障注入模式</label>
@@ -39,7 +42,7 @@
     </select>
 
     <label for="amount-cents">虚构更正金额（整数分）</label>
-    <input id="amount-cents" type="number" min="1" max="9999999999" step="1" value="842" disabled>
+    <input id="amount-cents" type="text" inputmode="numeric" value="842" disabled>
 
     <div>
       <button class="tf-button" id="seed-scenario" disabled>初始化隔离场景</button>

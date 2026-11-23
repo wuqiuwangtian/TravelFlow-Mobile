@@ -544,4 +544,4 @@ node scripts/check-p1-bridge-android.mjs --build-only
 node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
 ```
 
-脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与历史票据完整性；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
+脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图），以及三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与历史票据完整性；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。

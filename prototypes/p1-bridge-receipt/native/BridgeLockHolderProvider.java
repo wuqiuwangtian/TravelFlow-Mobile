@@ -30,7 +30,9 @@ public final class BridgeLockHolderProvider extends ContentProvider {
 
     @Override
     public synchronized Bundle call(String method, String scenario, Bundle input) {
-        if (!"lock-busy-commit".equals(scenario) && !"lock-busy-rollback".equals(scenario)) {
+        if (!"lock-busy-commit".equals(scenario)
+                && !"lock-busy-rollback".equals(scenario)
+                && !"bound-int32-over".equals(scenario)) {
             throw new IllegalArgumentException("Unsupported lock-holder scenario: " + scenario);
         }
         Bundle result = new Bundle();
@@ -53,10 +55,11 @@ public final class BridgeLockHolderProvider extends ContentProvider {
                 }
                 final String operationId = input.getString("operation_id");
                 final String intentJson = input.getString("intent_json");
-                final int amountCents = input.getInt("amount_cents", -1);
+                final long amountCents = input.getLong("amount_cents", -1L);
                 final int expectedRevision = input.getInt("expected_revision", -1);
                 final boolean commitOnRelease = input.getBoolean("commit_on_release", false);
-                if (operationId == null || intentJson == null || amountCents < 1 || expectedRevision < 0) {
+                if (operationId == null || intentJson == null
+                        || !BridgeLedgerStore.isValidAmountCents(amountCents) || expectedRevision < 0) {
                     throw new IllegalArgumentException("Invalid hold parameters");
                 }
                 final File dir = BridgeLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
@@ -82,7 +85,7 @@ public final class BridgeLockHolderProvider extends ContentProvider {
             File dir,
             String operationId,
             String intentJson,
-            int amountCents,
+            long amountCents,
             int expectedRevision,
             boolean commitOnRelease,
             CountDownLatch heldLatch,

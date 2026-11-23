@@ -30,6 +30,46 @@ public class P1BridgeReceiptPlugin extends Plugin {
         return getContext().getSharedPreferences("p1-bridge-caller-" + scenario, Context.MODE_PRIVATE);
     }
 
+    private static Long extractExactAmountCents(PluginCall call, String key) {
+        Object raw = call.getData().opt(key);
+        long value;
+        if (raw instanceof Integer) {
+            value = ((Integer) raw).longValue();
+        } else if (raw instanceof Long) {
+            value = ((Long) raw).longValue();
+        } else if (raw instanceof Double) {
+            double d = ((Double) raw).doubleValue();
+            if (!Double.isFinite(d) || Math.rint(d) != d) {
+                return null;
+            }
+            value = (long) d;
+            if ((double) value != d) {
+                return null;
+            }
+        } else {
+            return null;
+        }
+        return BridgeLedgerStore.isValidAmountCents(value) ? Long.valueOf(value) : null;
+    }
+
+    private static boolean intentMatchesAmountCents(String intentJson, long amountCents) {
+        try {
+            JSONObject doc = new JSONObject(intentJson);
+            JSONObject intent = doc.getJSONObject("intent");
+            JSONObject payload = intent.getJSONObject("payload");
+            Object raw = payload.opt("amount_cents");
+            if (raw instanceof Integer) {
+                return ((Integer) raw).longValue() == amountCents;
+            }
+            if (raw instanceof Long) {
+                return ((Long) raw).longValue() == amountCents;
+            }
+            return false;
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private JSObject buildPendingState(String scenario) throws Exception {
         SharedPreferences prefs = callerPrefs(scenario);
         JSObject result = new JSObject();
@@ -44,7 +84,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
         result.put("confirmedRev", prefs.getInt("confirmed_rev", -1));
         String confirmedIntent = prefs.getString("confirmed_intent_json", null);
         result.put("confirmedIntentJson", confirmedIntent != null ? confirmedIntent : JSONObject.NULL);
-        result.put("confirmedAmountCents", prefs.getInt("confirmed_amount_cents", -1));
+        result.put("confirmedAmountCents", prefs.getLong("confirmed_amount_cents", -1L));
         result.put("confirmedExpectedRevision", prefs.getInt("confirmed_expected_revision", -1));
         return result;
     }
@@ -143,13 +183,14 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String scenario = call.getString("scenario", "");
         String operationId = call.getString("operationId", "");
         String intentJson = call.getString("intentJson", "");
-        Integer amountCents = call.getInt("amountCents");
+        Long amountCents = extractExactAmountCents(call, "amountCents");
         Integer expectedRevision = call.getInt("expectedRevision");
         executor.execute(() -> {
             try {
                 if (!BridgeLedgerStore.isValidScenario(scenario)
                         || operationId.isEmpty() || intentJson.isEmpty()
-                        || amountCents == null || amountCents < 1
+                        || amountCents == null
+                        || !intentMatchesAmountCents(intentJson, amountCents.longValue())
                         || expectedRevision == null || expectedRevision < 0) {
                     call.reject("Invalid pending intent arguments", "INVALID_ARGUMENTS");
                     return;
@@ -162,7 +203,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 JSONObject pending = new JSONObject()
                         .put("operationId", operationId)
                         .put("intentJson", intentJson)
-                        .put("amountCents", amountCents.intValue())
+                        .put("amountCents", amountCents.longValue())
                         .put("expectedRevision", expectedRevision.intValue());
                 if (!prefs.edit().putString("pending", pending.toString()).commit()) {
                     call.reject("Failed to durably persist caller pending intent", "PENDING_SAVE_FAILED");
@@ -222,7 +263,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
                         .putString("confirmed_op", operationId)
                         .putInt("confirmed_rev", revision)
                         .putString("confirmed_intent_json", pending.getString("intentJson"))
-                        .putInt("confirmed_amount_cents", pending.getInt("amountCents"))
+                        .putLong("confirmed_amount_cents", pending.getLong("amountCents"))
                         .putInt("confirmed_expected_revision", pending.getInt("expectedRevision"))
                         .commit();
                 if (!committed) {
@@ -241,14 +282,15 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String scenario = call.getString("scenario", "");
         String operationId = call.getString("operationId", "");
         String intentJson = call.getString("intentJson", "");
-        Integer amountCents = call.getInt("amountCents");
+        Long amountCents = extractExactAmountCents(call, "amountCents");
         Integer expectedRevision = call.getInt("expectedRevision");
         String faultMode = call.getString("faultMode", "none");
         executor.execute(() -> {
             try {
                 if (!BridgeLedgerStore.isValidScenario(scenario)
                         || operationId.isEmpty() || intentJson.isEmpty()
-                        || amountCents == null || amountCents < 1
+                        || amountCents == null
+                        || !intentMatchesAmountCents(intentJson, amountCents.longValue())
                         || expectedRevision == null || expectedRevision < 0
                         || (!"none".equals(faultMode) && !"before_commit".equals(faultMode)
                                 && !"after_commit_drop_reply".equals(faultMode))) {
@@ -273,7 +315,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
                                 resultRevision = (int) head;
                             } else {
                                 int nextRev = expectedRevision + 1;
-                                BridgeLedgerStore.writeRows(db, nextRev, amountCents, null, operationId, intentJson);
+                                BridgeLedgerStore.writeRows(db, nextRev, amountCents.longValue(), null, operationId, intentJson);
                                 if ("before_commit".equals(faultMode)) {
                                     // Kill process before SQLite commit so the entire write rolls back on reopen.
                                     Process.killProcess(Process.myPid());
@@ -374,16 +416,24 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String scenario = call.getString("scenario", "");
         String operationId = call.getString("operationId", "");
         String intentJson = call.getString("intentJson", "");
-        Integer amountCents = call.getInt("amountCents");
+        Long amountCents = extractExactAmountCents(call, "amountCents");
         Integer expectedRevision = call.getInt("expectedRevision");
         Boolean commitOnRelease = call.getBoolean("commitOnRelease", false);
         executor.execute(() -> {
             try {
+                if (!BridgeLedgerStore.isValidScenario(scenario)
+                        || operationId.isEmpty() || intentJson.isEmpty()
+                        || amountCents == null
+                        || !intentMatchesAmountCents(intentJson, amountCents.longValue())
+                        || expectedRevision == null || expectedRevision < 0) {
+                    call.reject("Invalid hold lock arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
                 Bundle args = new Bundle();
                 args.putString("operation_id", operationId);
                 args.putString("intent_json", intentJson);
-                args.putInt("amount_cents", amountCents != null ? amountCents : -1);
-                args.putInt("expected_revision", expectedRevision != null ? expectedRevision : -1);
+                args.putLong("amount_cents", amountCents.longValue());
+                args.putInt("expected_revision", expectedRevision.intValue());
                 args.putBoolean("commit_on_release", Boolean.TRUE.equals(commitOnRelease));
                 Bundle reply = getContext().getContentResolver().call(
                         BridgeLockHolderProvider.AUTHORITY_URI, "hold", scenario, args);

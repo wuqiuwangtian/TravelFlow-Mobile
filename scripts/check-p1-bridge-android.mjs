@@ -252,6 +252,14 @@ async function connectWebView(port) {
     return outcome;
   }
 
+  async function tapExpectingError(id) {
+    await tap(id);
+    await until(`!document.getElementById(${JSON.stringify(id)}).disabled && document.getElementById('action-status').textContent.endsWith('失败')`);
+    const outcome = await evaluate(`window.__tfP1Bridge.getLastOutcome()`);
+    assert.ok(outcome && outcome.status === "error", `Expected rejection on ${id}, got: ${JSON.stringify(outcome)}`);
+    return outcome;
+  }
+
   return {
     evaluate,
     until,
@@ -259,6 +267,7 @@ async function connectWebView(port) {
     setSelect,
     setInput,
     tapAndWaitAction,
+    tapExpectingError,
     close: () => {
       try { ws.close(); } catch {}
     },
@@ -291,12 +300,28 @@ function assertFinalInvariants(state, expectedOp, expectedIntent, expectedCents)
   assert.equal(state.opOutboxCount, 1);
   assert.equal(state.opHistoryCount, 1);
   assert.equal(state.committedIntent, expectedIntent);
+  assert.equal(JSON.parse(state.committedIntent).intent.payload.amount_cents, expectedCents);
   assert.equal(state.pending, null);
   assert.equal(state.confirmedOp, expectedOp);
   assert.equal(state.confirmedRev, 3);
   assert.equal(state.ticketExists, true);
   assert.equal(state.ticketIntact, true);
   assert.equal(state.ticketText, "fictional ticket 56");
+  assert.equal(state.unmanagedIntact, true);
+}
+
+function assertBaselineUnchanged(state) {
+  assert.equal(state.seeded, true);
+  assert.equal(state.head, 2);
+  assert.equal(state.cents, 756);
+  assert.equal(state.historyCount, 3);
+  assert.equal(state.receiptCount, 2);
+  assert.equal(state.outboxCount, 2);
+  assert.equal(state.opReceiptCount, 0);
+  assert.equal(state.opOutboxCount, 0);
+  assert.equal(state.pending, null);
+  assert.equal(state.confirmedOp, null);
+  assert.equal(state.ticketIntact, true);
   assert.equal(state.unmanagedIntact, true);
 }
 
@@ -528,6 +553,184 @@ async function runScenarios(adb, cdpPort) {
           opReceiptCount: recovered.state.opReceiptCount,
           opOutboxCount: recovered.state.opOutboxCount,
           ticketIntact: recovered.state.ticketIntact,
+        },
+      };
+    }
+
+    // 5. bound-int32-max: 拒绝 842.9 / 1e3 / 10000000000（不持久化待核实、不改账本），随后提交 2147483647
+    {
+      const scenario = "bound-int32-max";
+      await session.client.setSelect("scenario", scenario);
+      const seeded = await session.client.tapAndWaitAction("seed-scenario");
+      assertBaselineUnchanged(seeded.state);
+      await session.client.setSelect("fault-mode", "none");
+
+      const rejectedInputs = [];
+      for (const badRaw of ["842.9", "1e3", "10000000000"]) {
+        await session.client.setInput("amount-cents", badRaw);
+        const submitErr = await session.client.tapExpectingError("submit-patch");
+        const stateAfterSubmit = await session.client.evaluate(`window.__tfP1Bridge.inspectState(${JSON.stringify(scenario)})`);
+        assertBaselineUnchanged(stateAfterSubmit);
+        const prepareErr = await session.client.tapExpectingError("prepare-pending");
+        const stateAfterPrepare = await session.client.evaluate(`window.__tfP1Bridge.inspectState(${JSON.stringify(scenario)})`);
+        assertBaselineUnchanged(stateAfterPrepare);
+        rejectedInputs.push({ input: badRaw, submitError: submitErr.error, prepareError: prepareErr.error, unchanged: true });
+      }
+
+      const validCents = 2147483647;
+      await session.client.setInput("amount-cents", String(validCents));
+      const submitted = await session.client.tapAndWaitAction("submit-patch");
+      assert.equal(submitted.status, "committed");
+      const { operationId, intentJson } = submitted.pending;
+      assertFinalInvariants(submitted.state, operationId, intentJson, validCents);
+
+      const replayed = await session.client.tapAndWaitAction("replay-confirmed");
+      assert.equal(replayed.status, "replayed");
+      assertFinalInvariants(replayed.state, operationId, intentJson, validCents);
+
+      const conflict = await session.client.tapAndWaitAction("conflict-check");
+      assert.equal(conflict.status, "intent_conflict");
+      assertFinalInvariants(conflict.state, operationId, intentJson, validCents);
+
+      report.scenarios[scenario] = {
+        rejectedInputs,
+        operationId,
+        validCents,
+        replayStatus: replayed.status,
+        conflictStatus: conflict.status,
+        final: {
+          head: conflict.state.head,
+          cents: conflict.state.cents,
+          intentAmountCents: JSON.parse(conflict.state.committedIntent).intent.payload.amount_cents,
+          opReceiptCount: conflict.state.opReceiptCount,
+          opOutboxCount: conflict.state.opOutboxCount,
+          ticketIntact: conflict.state.ticketIntact,
+        },
+      };
+    }
+
+    // 6. bound-int32-over: 2147483648 跨过 32 位上限，贯通保存待核实、独立写进程、SQLite、确认和重放
+    {
+      const scenario = "bound-int32-over";
+      const validCents = 2147483648;
+      await session.client.setSelect("scenario", scenario);
+      const seeded = await session.client.tapAndWaitAction("seed-scenario");
+      assertBaselineUnchanged(seeded.state);
+      await session.client.setInput("amount-cents", String(validCents));
+
+      const prepared = await session.client.tapAndWaitAction("prepare-pending");
+      const { operationId, intentJson } = prepared.pending;
+      assert.equal(prepared.pending.amountCents, validCents);
+
+      const lockInfo = await session.client.evaluate(`window.__tfP1Bridge.holdWriterLock(${JSON.stringify({
+        scenario,
+        operationId,
+        intentJson,
+        amountCents: validCents,
+        expectedRevision: 2,
+        commitOnRelease: true,
+      })})`);
+      assert.notEqual(lockInfo.writerPid, lockInfo.callerPid);
+
+      let busyOutcome;
+      try {
+        busyOutcome = await session.client.tapAndWaitAction("recover-pending");
+      } finally {
+        await session.client.evaluate(`window.__tfP1Bridge.releaseWriterLock(${JSON.stringify(scenario)})`);
+      }
+      assert.equal(busyOutcome.status, "pending_busy");
+      assert.equal(busyOutcome.state.pending?.amountCents, validCents);
+
+      const pidBeforeKill = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario}`);
+
+      session = await launchAndAttach(adb, cdpPort, pidBeforeKill);
+      await session.client.setSelect("scenario", scenario);
+      const recovered = await session.client.tapAndWaitAction("recover-pending");
+      assert.equal(recovered.status, "confirmed_existing");
+      assertFinalInvariants(recovered.state, operationId, intentJson, validCents);
+
+      const replayed = await session.client.tapAndWaitAction("replay-confirmed");
+      assert.equal(replayed.status, "replayed");
+      assertFinalInvariants(replayed.state, operationId, intentJson, validCents);
+
+      const conflict = await session.client.tapAndWaitAction("conflict-check");
+      assert.equal(conflict.status, "intent_conflict");
+      assertFinalInvariants(conflict.state, operationId, intentJson, validCents);
+
+      report.scenarios[scenario] = {
+        callerPidBefore: pidBeforeKill,
+        writerPid: lockInfo.writerPid,
+        callerPidAfter: session.pid,
+        operationId,
+        validCents,
+        busyStatus: busyOutcome.status,
+        recoveredStatus: recovered.status,
+        replayStatus: replayed.status,
+        conflictStatus: conflict.status,
+        final: {
+          head: conflict.state.head,
+          cents: conflict.state.cents,
+          intentAmountCents: JSON.parse(conflict.state.committedIntent).intent.payload.amount_cents,
+          opReceiptCount: conflict.state.opReceiptCount,
+          opOutboxCount: conflict.state.opOutboxCount,
+          ticketIntact: conflict.state.ticketIntact,
+        },
+      };
+    }
+
+    // 7. bound-max-cents: 9999999999 上限贯通提交丢应答、重开恢复、确认、重放和冲突拒绝
+    {
+      const scenario = "bound-max-cents";
+      const validCents = 9999999999;
+      await session.client.setSelect("scenario", scenario);
+      const seeded = await session.client.tapAndWaitAction("seed-scenario");
+      assertBaselineUnchanged(seeded.state);
+      await session.client.setSelect("fault-mode", "after_commit_drop_reply");
+      await session.client.setInput("amount-cents", String(validCents));
+
+      const pidBefore = session.pid;
+      await session.client.tap("submit-patch", { expectDeath: true });
+      await waitForPid(adb, (p) => p === null || p !== pidBefore, "bound-max-cents crash");
+      session.client.close();
+
+      session = await launchAndAttach(adb, cdpPort, pidBefore);
+      await session.client.setSelect("scenario", scenario);
+      const afterCrash = await session.client.evaluate(`window.__tfP1Bridge.inspectState(${JSON.stringify(scenario)})`);
+      assert.ok(afterCrash.pending);
+      assert.equal(afterCrash.pending.amountCents, validCents);
+      assert.equal(afterCrash.cents, validCents);
+      const { operationId, intentJson } = afterCrash.pending;
+
+      const recovered = await session.client.tapAndWaitAction("recover-pending");
+      assert.equal(recovered.status, "confirmed_existing");
+      assertFinalInvariants(recovered.state, operationId, intentJson, validCents);
+
+      const replayed = await session.client.tapAndWaitAction("replay-confirmed");
+      assert.equal(replayed.status, "replayed");
+      assertFinalInvariants(replayed.state, operationId, intentJson, validCents);
+
+      const conflict = await session.client.tapAndWaitAction("conflict-check");
+      assert.equal(conflict.status, "intent_conflict");
+      assertFinalInvariants(conflict.state, operationId, intentJson, validCents);
+
+      report.scenarios[scenario] = {
+        pidBefore,
+        pidAfter: session.pid,
+        operationId,
+        validCents,
+        recoveredStatus: recovered.status,
+        replayStatus: replayed.status,
+        conflictStatus: conflict.status,
+        final: {
+          head: conflict.state.head,
+          cents: conflict.state.cents,
+          intentAmountCents: JSON.parse(conflict.state.committedIntent).intent.payload.amount_cents,
+          opReceiptCount: conflict.state.opReceiptCount,
+          opOutboxCount: conflict.state.opOutboxCount,
+          ticketIntact: conflict.state.ticketIntact,
         },
       };
     }
