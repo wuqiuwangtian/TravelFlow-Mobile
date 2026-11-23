@@ -604,3 +604,15 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 ## 2026-11-23 数据共享第一阶段开工
 
 移动工作包 A 已就绪，桌面工作包 B 并行，见[移动侧首单与协作交接](PRODUCT_ROADMAP.md#移动侧首单与协作交接)。在业务代码基线 `49a47e5` 上复跑 `pnpm check:p1-boundary`（55 项输入、42 项集成、7 项调度）、`pnpm check:p1-store`（23 项宿主临时 SQLite 场景）与原生恢复 APK 的 `--build-only`（构建及签名校验通过）。已有 Java 调用方可在写锁忙时保留原意图；本单需从实际 TS 页面经 Capacitor 进入原生事务。在提交前和提交后但桥应答前分别中断，重开核对原 ID、意图、回执、账本和历史票据。本轮为执行准备，新增桥接行为与模拟器结果待交付。桌面新交换样例尚待对方交接。
+
+## 2026-11-23 工作包 A：TS／Capacitor／Android 消费更正与回执恢复实测
+
+在执行分支 `antigravity/mobile-p1-bridge-receipt` 新增隔离原型 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，复用固定 Capacitor 8.6.0、无新 npm 依赖，保留既有 P0／P1 原型与固定资料）。实际 TS 页面（`bridge-command.ts`、`bridge-app.ts`）按 `p1-host-control-1`／`p1-host-query-1`／`p1-host-intent-c14n-1` 构造并规范化虚构 `expense.patch` 与 `receipt.lookup` 命令，宿主对照 `prototypes/p1-canonical/intent.mjs` 逐字节与 SHA-256 一致；调用原生写入前经同步 `SharedPreferences.commit()` 持久保存原操作 ID 与规范化意图。
+
+在隔离 API 35 模拟器 `travelflow_p0_api35`（`emulator-5580`，x86_64，SQLite 3.44.3，`DELETE`／`FULL`，`-read-only` 覆盖层）通过 CDP 真实触摸完成四项端到端验证，全部 `passed: true`：
+
+- `before-commit`：修订 2（756 分，历史票据 `ticket-1` 可读）提交 842 分更正，事务提交前终止主进程（PID 1843→1988）；重开保留原操作 ID 与意图、账本仍为修订 2 且对应回执／待发送为 0；恢复查得 `no_receipt` 后以原操作 ID 和原意图重试提交一次，最终修订 3（842 分）、历史 4、回执 3、待发送 3、本操作回执／待发送各 1、历史票据可读；同操作重放返回 `replayed`，同 ID 异意图返回 `intent_conflict` 且计数不变。
+- `after-commit-drop-reply`：提交 851 分更正，SQLite 提交完成后、Capacitor 桥应答前终止主进程（PID 1988→2082）；重开保留原待核实操作，恢复查得 `confirmed` 而不重复写入，强停冷启动（PID 2180）后状态与计数保持，历史票据可读。
+- `lock-busy-commit` 与 `lock-busy-rollback`：独立 `:writer` 进程（PID 2264／2382，与主进程 PID 2180／2296 分离）持有 SQLite 写锁期间，TS 页面触发恢复查询时普通读为 0、串行查询捕获锁异常返回 `pending_busy`，原操作 ID 与意图保留；写方提交或回滚释放锁并强停主进程重开后，前者确认原提交（863 分），后者查无回执并以原请求重试提交一次（874 分），最终均仅有一次有效更正、一份对应回执、一条对应待发送记录且历史票据可读。
+
+未验证项：本次仅覆盖单分支虚构消费更正的 API 35 x86_64 隔离模拟器，未覆盖真机、旧 Android／WebView 版本、多操作并发队列、正式业务界面、真实旧库迁移、附件替换联动、断电／磁盘满或跨设备同步；CI 尚未自动运行模拟器。复验命令见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。

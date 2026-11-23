@@ -521,3 +521,27 @@ python3 scripts/check-p1-android-recovery.py --serial emulator-5580
 同一命令还运行 `file-open`、`file-partial`、`file-rename`、`file-dir-sync` 四项。预期各行输出对应的系统或注入错误，并以 `historical ticket preserved, revision 3 committed once.` 结尾。测试包只调整自建票据子目录的权限并在返回前还原，不需要root。回收前后与同键重试的逐项预期见[设计第27节](P1_LOCAL_DATA_DESIGN.md#27-新票据写入失败后的账目与文件恢复)。
 
 随后进行备份恢复。脚本先在测试包内生成同一份含历史票据的备份，用Python验证其成员和摘要，再分别移除成员或修改字节，将故障样例送回测试包。无需提供文件或签名材料。预期七条拒绝结果后出现 `backup: restored revision 3, both tickets and all receipts/outbox rows; live revision 4 intact.`。验收包含从新进程读取恢复库和当前库，以及通过原生写入口重放原回执。[设计第29节](P1_LOCAL_DATA_DESIGN.md#29-同一份备份恢复账本与历史票据)
+
+## P1 桥接消费更正与回执恢复复验
+
+隔离原型位于 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，与 `org.travelflow.p0` 及 `org.travelflow.p1recovery` 隔离，复用固定 Capacitor 8.6.0 锁文件）。宿主校验无需 SDK 或模拟器：
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm typecheck
+pnpm check:p1-bridge-command
+```
+
+构建隔离调试 APK（需设置 `ANDROID_HOME`、`JAVA_HOME`、`GRADLE_USER_HOME`，使用 JDK 21、SDK Platform 36 与 Build Tools 35.0.0）：
+
+```sh
+node scripts/check-p1-bridge-android.mjs --build-only
+```
+
+在按上文启动并确认就绪的隔离 API 35 模拟器 `travelflow_p0_api35`（可加 `-read-only`）上执行完整端到端验收：
+
+```sh
+node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
+```
+
+脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与历史票据完整性；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。

@@ -22,7 +22,8 @@
     "check:p1-history": "node scripts/check-p1-history.mjs",
     "check:p1-desktop-source": "node scripts/check-p1-desktop-source.mjs",
     "check:p1-canonical": "node scripts/check-p1-canonical.mjs",
-    "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck src/domain/ledger.ts",
+    "check:p1-bridge-command": "node scripts/check-p1-bridge-command.mjs",
+    "typecheck": "tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --skipLibCheck src/domain/ledger.ts prototypes/p1-bridge-receipt/web/bridge-command.ts prototypes/p1-bridge-receipt/web/bridge-app.ts",
     "prepare:android": "node scripts/prepare-android-probe.mjs"
   },
   "devDependencies": {
