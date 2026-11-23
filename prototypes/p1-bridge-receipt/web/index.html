@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="paper">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>TravelFlow P1 Bridge Receipt</title>
+  <link rel="stylesheet" href="tokens.css">
+  <link rel="stylesheet" href="components.css">
+  <style>
+    body { margin: 0; background: var(--tf-background); color: var(--tf-ink); font-family: system-ui, sans-serif; }
+    main { max-width: 38rem; margin: auto; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; }
+    h1 { font-size: 1.4rem; margin-bottom: .5rem; }
+    p { line-height: 1.6; overflow-wrap: anywhere; }
+    label { display: block; font-weight: 600; margin-top: .75rem; }
+    button, select, input { box-sizing: border-box; max-width: 100%; min-height: 44px; margin: .25rem 0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+    #error { color: var(--tf-danger); }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>P1 桥接消费更正与回执恢复原型</h1>
+    <p>隔离测试环境，仅写入虚构消费更正与历史票据，不是正式账本或同步协议。</p>
+    <p id="runtime" role="status">正在初始化原生桥…</p>
+
+    <label for="scenario">隔离场景</label>
+    <select id="scenario" disabled>
+      <option value="before-commit">before-commit（提交前中断）</option>
+      <option value="after-commit-drop-reply">after-commit-drop-reply（提交后丢失应答）</option>
+      <option value="lock-busy-commit">lock-busy-commit（查询写锁忙后写方提交）</option>
+      <option value="lock-busy-rollback">lock-busy-rollback（查询写锁忙后写方回滚）</option>
+      <option value="bound-int32-max">bound-int32-max（非法输入拒绝与 32 位上限）</option>
+      <option value="bound-int32-over">bound-int32-over（越过 32 位边界与锁竞争）</option>
+      <option value="bound-max-cents">bound-max-cents（9999999999 上限与丢应答恢复）</option>
+    </select>
+
+    <label for="fault-mode">故障注入模式</label>
+    <select id="fault-mode" disabled>
+      <option value="none">none（正常提交）</option>
+      <option value="before_commit">before_commit（提交前终止进程）</option>
+      <option value="after_commit_drop_reply">after_commit_drop_reply（提交后应答前终止进程）</option>
+    </select>
+
+    <label for="amount-cents">虚构更正金额（整数分）</label>
+    <input id="amount-cents" type="text" inputmode="numeric" value="842" disabled>
+
+    <div>
+      <button class="tf-button" id="seed-scenario" disabled>初始化隔离场景</button>
+      <button class="tf-button" id="refresh-state" disabled>刷新状态</button>
+      <button class="tf-button" id="prepare-pending" disabled>仅保存待核实意图</button>
+      <button class="tf-button" id="submit-patch" disabled>提交虚构消费更正</button>
+      <button class="tf-button" id="recover-pending" disabled>核实并恢复原操作</button>
+      <button class="tf-button" id="replay-confirmed" disabled>重放已确认操作</button>
+      <button class="tf-button" id="conflict-check" disabled>验证同ID异意图拒绝</button>
+    </div>
+
+    <p id="ledger" role="status">账本状态尚未读取</p>
+    <p id="pending-state" role="status">待核实状态尚未读取</p>
+    <p id="action-status" role="status">等待操作</p>
+    <p id="error" role="alert"></p>
+    <pre id="snapshot-json"></pre>
+  </main>
+  <script type="module" src="./bridge-app.js"></script>
+</body>
+</html>

@@ -533,3 +533,27 @@ git -C ../TravelFlow-AI archive 09b30b4649060944c5e17321a73ad15f75124f8f desktop
 (cd "$d" && python -m desktop.exchange export --source desktop/tests/fixtures/d1/fictional-trip.sqlite.gz --output bundle)
 node scripts/check-p1-d1-exchange.mjs "$d/bundle"
 ```
+
+## P1 桥接消费更正与回执恢复复验
+
+隔离原型位于 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，与 `org.travelflow.p0` 及 `org.travelflow.p1recovery` 隔离，复用固定 Capacitor 8.6.0 锁文件）。宿主校验无需 SDK 或模拟器：
+
+```sh
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm typecheck
+pnpm check:p1-bridge-command
+```
+
+构建隔离调试 APK（需设置 `ANDROID_HOME`、`JAVA_HOME`、`GRADLE_USER_HOME`，使用 JDK 21、SDK Platform 36 与 Build Tools 35.0.0）：
+
+```sh
+node scripts/check-p1-bridge-android.mjs --build-only
+```
+
+在按上文启动并确认就绪的隔离 API 35 模拟器 `travelflow_p0_api35`（可加 `-read-only`）上执行完整端到端验收：
+
+```sh
+node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
+```
+
+脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图），以及三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与历史票据完整性；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
