@@ -521,3 +521,15 @@ python3 scripts/check-p1-android-recovery.py --serial emulator-5580
 同一命令还运行 `file-open`、`file-partial`、`file-rename`、`file-dir-sync` 四项。预期各行输出对应的系统或注入错误，并以 `historical ticket preserved, revision 3 committed once.` 结尾。测试包只调整自建票据子目录的权限并在返回前还原，不需要root。回收前后与同键重试的逐项预期见[设计第27节](P1_LOCAL_DATA_DESIGN.md#27-新票据写入失败后的账目与文件恢复)。
 
 随后进行备份恢复。脚本先在测试包内生成同一份含历史票据的备份，用Python验证其成员和摘要，再分别移除成员或修改字节，将故障样例送回测试包。无需提供文件或签名材料。预期七条拒绝结果后出现 `backup: restored revision 3, both tickets and all receipts/outbox rows; live revision 4 intact.`。验收包含从新进程读取恢复库和当前库，以及通过原生写入口重放原回执。[设计第29节](P1_LOCAL_DATA_DESIGN.md#29-同一份备份恢复账本与历史票据)
+
+### D1 固定候选交换包的移动只读回执
+
+从移动仓根目录用下面的命令复跑（Bash，桌面仓位置按本机调整）。只取桌面固定提交的代码和虚构样例到新临时目录；移动检查仅读取候选包文件。正常退出会打印实读清单摘要、四版引用及三份附件的长度和摘要。此命令用于维护者跨仓对照，移动构建无需桌面仓。
+
+```bash
+set -eo pipefail
+d=$(mktemp -d)
+git -C ../TravelFlow-AI archive 09b30b4649060944c5e17321a73ad15f75124f8f desktop | tar -x -C "$d"
+(cd "$d" && python -m desktop.exchange export --source desktop/tests/fixtures/d1/fictional-trip.sqlite.gz --output bundle)
+node scripts/check-p1-d1-exchange.mjs "$d/bundle"
+```
