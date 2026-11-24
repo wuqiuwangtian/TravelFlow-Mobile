@@ -556,7 +556,15 @@ node scripts/check-p1-bridge-android.mjs --build-only
 node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
 ```
 
-脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图）、三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝），以及第二阶段空账本新增消费（`create-before-commit`、`create-after-commit`、`create-conflict-amount`、`create-conflict-share`、`create-boundary-fields-scope`、`create-boundary-over-20`、`create-boundary-cap-2000`、`create-pending-ec10`、`create-pending-ec07`，读取固定 `docs/internal/fixtures/p1-desktop-expense-create.json`，验证提交前／后中断恢复、逐版完整业务字段快照在重放与冷重开后保持、恢复时同键异金额／仅共享票据许可不同保留待核实并报 `intent_conflict`、写入时意图与入账内容一致校验、当前可交换字段范围／写入前虚构身份／新旧操作键的目标旅行与分支作用域先于回执查询拒绝且零写入、`20→21` 与 `1999→2000` 冷重开后的页面笔数／总额／分页明细与逐版完整历史快照摘要、满额重放、EC10 付款日 `2026-11-23` 能力不匹配在强停冷重开后保留完整原命令且不入账／不自动删日期、EC07 可交换 8635 分午餐在写锁忙／稳定缺失／提交后丢应答三处强停冷重开并按状态恢复确认、推进分支头后原请求与键重排请求重放回原版本、`intent_conflict`／`baseline_conflict`／`entity_exists`／四个非法金额拒绝、以及虚构身份或权限不符时零回执读取拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与结果版本；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
+脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图）、三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝），以及第二阶段空账本新增消费（`create-before-commit`、`create-after-commit`、`create-conflict-amount`、`create-conflict-share`、`create-boundary-fields-scope`、`create-boundary-over-20`、`create-boundary-cap-2000`、`create-pending-ec10`、`create-pending-ec07`，读取固定 `docs/internal/fixtures/p1-desktop-expense-create.json`，验证提交前／后中断恢复、逐版完整业务字段快照在重放与冷重开后保持、恢复时同键异金额／仅共享票据许可不同保留待核实并报 `intent_conflict`、写入时意图与入账内容一致校验、当前可交换字段范围／写入前虚构身份／新旧操作键的目标旅行与分支作用域先于回执查询拒绝且零写入、`20→21` 与 `1999→2000` 冷重开后的页面笔数／总额／分页明细与逐版完整历史快照摘要、满额重放、EC10 付款日 `2026-11-23` 能力不匹配在手动查询回执与强停冷重开后仍保持 `blocked_unsupported_capability` 且不入账／不自动删日期、EC07 可交换 8635 分午餐在写锁忙／稳定缺失／提交后丢应答三处强停冷重开后页面准确区分 `本机待发送（未发送／未入账）` 与 `提交结果待核实（未确认）` 并按状态恢复确认、推进分支头后原请求与键重排请求重放回原版本、`intent_conflict`／`baseline_conflict`／`entity_exists`／四个非法金额拒绝、以及虚构身份或权限不符时零回执读取拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与结果版本；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
+
+从 `131b848` 保留应用数据原地覆盖安装升级的回归入口为：
+
+```sh
+node scripts/check-p1-bridge-upgrade.mjs --serial emulator-5580 --cdp-port 19240 --base-ref 131b848
+```
+
+脚本先从 `git archive 131b848` 与当前工作区分别构建新旧调试 APK，在隔离 API 35 模拟器上用旧包分别制造提交后应答丢失（`create-after-commit`）与提交前中断（`create-before-commit`）两类旧格式待核实记录，执行 `adb install -r -t` 原地覆盖安装新包，核对页面无 `undefined` 且规范化展示 `提交结果待核实（未确认）`，并通过实际触摸恢复完成唯一确认与最终账本计数，结束后清理测试包与端口转发。
 
 宿主跨端边界对照命令为 `pnpm check:p1-create-boundaries`，在临时 SQLite 上独立验证 1999→2000 与满额重放、写入前身份／新旧键目标作用域拒绝及忙锁查询语义，并输出桌面 `73bb8f4`、移动宿主与 Android 候选的差异清单；不依赖相邻电脑仓、SDK 或模拟器。
 

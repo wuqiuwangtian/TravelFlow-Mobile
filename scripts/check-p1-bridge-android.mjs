@@ -1319,6 +1319,14 @@ async function runScenarios(adb, cdpPort) {
         createHash("sha256").update(submitted.state.pending.canonicalIntentJson, "utf8").digest("hex"),
       );
 
+      // Manual lookup on a blocked_unsupported_capability record must NOT overwrite the block reason.
+      const manualLookup = await session.client.tapAndWaitCreateAction("create-lookup-only");
+      assert.equal(manualLookup.status, "not_found_at_settled_read");
+      assert.equal(manualLookup.lookup.state, "not_found_at_settled_read");
+      assert.equal(manualLookup.state.pending?.recoveryState, "blocked_unsupported_capability");
+      assert.equal(manualLookup.state.pending?.lastError, "unsupported_capability");
+      assert.equal(manualLookup.state.expenseCount, 0);
+
       // Mark JS-only memory before force-stop; cold restart must wipe JS memory while preserving native pending storage.
       await session.client.evaluate(`window.__tfJsMemoryOnlySentinel = "ec10-before-stop";`);
       const pidBeforeStop = session.pid;
@@ -1352,7 +1360,7 @@ async function runScenarios(adb, cdpPort) {
       assert.equal(reopened.revisionCount, 1);
       assert.equal(reopened.receiptCount, 0);
       assert.equal(reopened.outboxCount, 0);
-      assert.ok(pagePendingAfterStop.includes("本机待发送（未入账／未同步）"), pagePendingAfterStop);
+      assert.ok(pagePendingAfterStop.includes("本机待发送（未发送／未入账）"), pagePendingAfterStop);
       assert.ok(pagePendingAfterStop.includes("2026-11-23"), pagePendingAfterStop);
       assert.ok(pagePendingAfterStop.includes("blocked_unsupported_capability"), pagePendingAfterStop);
       assert.ok(!pagePendingAfterStop.includes("已确认入账"), pagePendingAfterStop);
@@ -1369,6 +1377,7 @@ async function runScenarios(adb, cdpPort) {
         pidBeforeStop,
         pidAfterReopen: session.pid,
         jsMemoryWipedOnColdStart: !jsMemorySurvived,
+        manualLookupPreservedBlock: true,
         operationId: reopened.pending.operationId,
         intentSha256: savedSha256,
         restoredPaidOn: JSON.parse(reopened.pending.rawCommandJson).payload.paid_on,
@@ -1436,6 +1445,8 @@ async function runScenarios(adb, cdpPort) {
       assert.equal(stateAfterBusyReopen.totalCents, 0);
       assert.equal(stateAfterBusyReopen.receiptCount, 0);
       assert.equal(stateAfterBusyReopen.outboxCount, 0);
+      assert.ok(pendingBusy.includes("提交结果待核实（未确认）"), pendingBusy);
+      assert.ok(pendingBusy.includes("pending_busy"), pendingBusy);
       steps.push({
         step: "after_write_lock_busy_reopen",
         callerPid: session.pid,
@@ -1472,6 +1483,8 @@ async function runScenarios(adb, cdpPort) {
       assert.equal(stateAfterNotFoundReopen.pending?.recoveryState, "pending_not_found");
       assert.equal(stateAfterNotFoundReopen.expenseCount, 0);
       assert.equal(stateAfterNotFoundReopen.totalCents, 0);
+      assert.ok(pendingNotFound.includes("本机待发送（未发送／未入账）"), pendingNotFound);
+      assert.ok(pendingNotFound.includes("pending_not_found"), pendingNotFound);
       steps.push({
         step: "after_settled_not_found_reopen",
         callerPid: session.pid,
@@ -1500,12 +1513,17 @@ async function runScenarios(adb, cdpPort) {
       const pendingDrop = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
       assert.equal(stateAfterDropReopen.pending?.operationId, "fixture-op-lunch");
       assert.equal(stateAfterDropReopen.pending?.intentSha256, expectedLunchSha256);
+      assert.equal(stateAfterDropReopen.pending?.recoveryState, "pending_verification");
       assert.equal(stateAfterDropReopen.confirmedOp, null);
       assert.equal(stateAfterDropReopen.expenseCount, 1);
       assert.equal(stateAfterDropReopen.totalCents, 8635);
       assert.equal(stateAfterDropReopen.revisionCount, 2);
       assert.equal(stateAfterDropReopen.receiptCount, 1);
       assert.equal(stateAfterDropReopen.outboxCount, 1);
+      assert.ok(pendingDrop.includes("提交结果待核实（未确认）"), pendingDrop);
+      assert.ok(pendingDrop.includes("pending_verification"), pendingDrop);
+      assert.ok(!pendingDrop.includes("pending_not_found"), pendingDrop);
+      assert.ok(!pendingDrop.includes("已确认入账"), pendingDrop);
       steps.push({
         step: "after_commit_drop_reply_reopen",
         callerPid: session.pid,

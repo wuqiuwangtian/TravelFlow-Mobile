@@ -475,11 +475,58 @@ public class P1BridgeReceiptPlugin extends Plugin {
         return getContext().getSharedPreferences("p1-bridge-create-caller-" + scenario, Context.MODE_PRIVATE);
     }
 
+    private static JSObject normalizeCreatePending(String pendingRaw) throws Exception {
+        JSONObject stored = new JSONObject(pendingRaw);
+        String operationId = stored.getString("operationId");
+        String rawCommandJson = stored.getString("rawCommandJson");
+        String canonicalIntentJson = stored.getString("canonicalIntentJson");
+        JSONObject rawCmd = new JSONObject(rawCommandJson);
+        JSONObject op = rawCmd.getJSONObject("operation");
+        String cmdOpId = op.getString("operation_id");
+        if (!operationId.equals(cmdOpId)) {
+            throw new IllegalStateException("Persisted pending operationId does not match rawCommandJson");
+        }
+        String datasetId = stored.optString("datasetId", "");
+        if (datasetId.isEmpty()) {
+            datasetId = op.getString("dataset_id");
+        }
+        String sourceDeviceId = stored.optString("sourceDeviceId", "");
+        if (sourceDeviceId.isEmpty()) {
+            sourceDeviceId = op.getString("source_device_id");
+        }
+        String expectedRevisionId = stored.optString("expectedRevisionId", "");
+        if (expectedRevisionId.isEmpty()) {
+            expectedRevisionId = rawCmd.getString("expected_revision_id");
+        }
+        String intentSha256 = stored.optString("intentSha256", "");
+        if (intentSha256.isEmpty()) {
+            intentSha256 = BridgeCreateLedgerStore.sha256Hex(canonicalIntentJson);
+        }
+        String recoveryState = stored.optString("recoveryState", "");
+        if (recoveryState.isEmpty()) {
+            // Legacy 131b848 records were persisted immediately before submission without recoveryState.
+            recoveryState = "pending_verification";
+        }
+        Object lastError = stored.has("lastError") ? stored.get("lastError") : JSONObject.NULL;
+
+        JSObject normalized = new JSObject();
+        normalized.put("operationId", operationId);
+        normalized.put("datasetId", datasetId);
+        normalized.put("sourceDeviceId", sourceDeviceId);
+        normalized.put("expectedRevisionId", expectedRevisionId);
+        normalized.put("rawCommandJson", rawCommandJson);
+        normalized.put("canonicalIntentJson", canonicalIntentJson);
+        normalized.put("intentSha256", intentSha256);
+        normalized.put("recoveryState", recoveryState);
+        normalized.put("lastError", lastError);
+        return normalized;
+    }
+
     private JSObject buildCreatePendingState(String scenario) throws Exception {
         SharedPreferences prefs = createCallerPrefs(scenario);
         JSObject result = new JSObject();
         String pendingRaw = prefs.getString("pending", null);
-        result.put("pending", pendingRaw != null ? new JSObject(pendingRaw) : JSONObject.NULL);
+        result.put("pending", pendingRaw != null ? normalizeCreatePending(pendingRaw) : JSONObject.NULL);
         String confirmedOp = prefs.getString("confirmed_op", null);
         result.put("confirmedOp", confirmedOp != null ? confirmedOp : JSONObject.NULL);
         String confirmedRev = prefs.getString("confirmed_rev_id", null);
@@ -581,7 +628,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
                     call.reject("No pending create operation to update", "NO_PENDING");
                     return;
                 }
-                JSONObject pending = new JSONObject(pendingRaw);
+                JSONObject pending = normalizeCreatePending(pendingRaw);
                 if (!operationId.equals(pending.getString("operationId"))) {
                     call.reject("Pending create operation ID mismatch", "OPERATION_MISMATCH");
                     return;

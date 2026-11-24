@@ -452,8 +452,15 @@ function renderCreateState(state: CreateInspectStateResult): void {
     `（合计 ¥${(state.totalCents / 100).toFixed(2)}）· 修订 ${state.revisionCount} · 回执 ${state.receiptCount} · 待发送 ${state.outboxCount}`;
   if (state.pending) {
     const parsedCmd = JSON.parse(state.pending.rawCommandJson) as ExpenseCreateIntent;
+    const isVerificationState =
+      state.pending.recoveryState === "pending_verification" ||
+      state.pending.recoveryState === "pending_busy" ||
+      state.pending.recoveryState === "intent_conflict";
+    const statusLabel = isVerificationState
+      ? "提交结果待核实（未确认）"
+      : "本机待发送（未发送／未入账）";
     createPendingStateEl.textContent =
-      `本机待发送（未入账／未同步）：操作 ${state.pending.operationId}` +
+      `${statusLabel}：操作 ${state.pending.operationId}` +
       ` · 状态 ${state.pending.recoveryState}` +
       ` · 金额 ${parsedCmd.payload.amount_cents} 分` +
       ` · 付款日 ${parsedCmd.payload.paid_on ?? "null"}` +
@@ -790,7 +797,7 @@ byId<HTMLButtonElement>("create-prepare-pending").onclick = () =>
       operationId: cmd.operation.operation_id,
       rawCommandJson,
       canonicalIntentJson,
-      recoveryState: "pending_submission",
+      recoveryState: "pending_unsent",
     });
     const state = await bridge.inspectCreateState({ scenario });
     renderCreateState(state);
@@ -809,7 +816,7 @@ byId<HTMLButtonElement>("create-submit").onclick = () =>
       operationId: cmd.operation.operation_id,
       rawCommandJson,
       canonicalIntentJson,
-      recoveryState: "pending_submission",
+      recoveryState: "pending_verification",
     });
     const result = await bridge.submitExpenseCreate({
       scenario,
@@ -864,19 +871,24 @@ byId<HTMLButtonElement>("create-lookup-only").onclick = () =>
         lastError: lookup.error,
       });
     } else if (lookup.state === "pending_busy") {
-      await bridge.updateCreatePendingStatus({
-        scenario,
-        operationId: pending.operationId,
-        recoveryState: "pending_busy",
-        lastError: "pending_busy",
-      });
+      if (pending.recoveryState !== "blocked_unsupported_capability") {
+        await bridge.updateCreatePendingStatus({
+          scenario,
+          operationId: pending.operationId,
+          recoveryState: "pending_busy",
+          lastError: "pending_busy",
+        });
+      }
     } else if (lookup.state === "not_found_at_settled_read") {
-      await bridge.updateCreatePendingStatus({
-        scenario,
-        operationId: pending.operationId,
-        recoveryState: "pending_not_found",
-        lastError: null,
-      });
+      // 能力阻断记录在手动查询缺失时必须保留原阻断原因，不得改写为可重试状态。
+      if (pending.recoveryState !== "blocked_unsupported_capability") {
+        await bridge.updateCreatePendingStatus({
+          scenario,
+          operationId: pending.operationId,
+          recoveryState: "pending_not_found",
+          lastError: null,
+        });
+      }
     }
     const state = await bridge.inspectCreateState({ scenario });
     renderCreateState(state);
@@ -944,6 +956,13 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
       return { status: "confirmed_existing", lookup, state };
     }
     if (lookup.state === "not_found_at_settled_read") {
+      // 重试提交前先持久标记为结果待核实，避免丢应答重开后仍显示旧的未查到状态。
+      await bridge.updateCreatePendingStatus({
+        scenario,
+        operationId: pending.operationId,
+        recoveryState: "pending_verification",
+        lastError: null,
+      });
       const retry = await bridge.submitExpenseCreate({
         scenario,
         principal: SYNTHETIC_PRINCIPAL,
