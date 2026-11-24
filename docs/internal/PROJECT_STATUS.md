@@ -763,3 +763,18 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 第二候选包 `94ec1fb` 增量复核通过。宿主两项非法输入原码已收录；宿主与 Android 从持久回执复算原意图及共享票据许可翻转样例的摘要均匹配。移动侧在本候选范围内无定版阻碍，等桌面仓分配共享版本。[复跑与实读结果](P1_EXPENSE_VECTOR_REVIEW.md#第二候选包增量复核)
 
 已从桌面固定提交 `d916697828ad3d2f0e87a3a231b996c7873d421b` 导入 `vendor/contracts/expense-create-v0.1.0/`。清单 SHA-256 为 `759145bea1b98f086af4c70938ae33932b6cc0ba0527e12dc62faaf90733b8b1`；六个普通文件的集合及五项内容摘要均相符。逐段核对 SPEC，并逐项比较四份 JSON：相对第二候选，仅有冻结标识、版本元数据、证据来源及复跑说明的变化。字段范围、原子提交与确认规则、规范化摘要、10 场景 36 步、原始返回断言及错误映射均无业务差异。宿主和 Android 复用 `8ba3365` 的运行证据。本仓独立归档中运行 `node scripts/check-contracts.mjs` 即可校验正式快照及与已验候选的 JSON 对照。
+
+## 2026-11-24 Android 旅行账本离线记一笔实测（工作包 D 发送侧第一段）
+
+在执行分支 `antigravity/android-offline-expense-entry`（起点 `48cdc53`）复用 `prototypes/p1-bridge-receipt/`（固定 Capacitor 8.6.0，保留原 17 项桥回归入口）与 `src/domain/ledger.ts`、`vendor/design` 样式组件，新增离线旅行账本正常入口（`index.html`／`bridge-app.ts`）、十进制元转整分与 0.1.0 命令构造校验（`bridge-command.ts`）、单事务原子落库的隔离 SQLite 存储（`OfflineTripLedgerStore.java`）及端到端脚本（`scripts/check-p1-offline-entry-android.mjs`）。起始虚构基线显式标注来源为 `vendor/contracts/expense-create-v0.1.0 (fixture-dataset / fixture-travel / fixture-branch / fixture-r0)`。
+
+实测结果：
+- **宿主校验全通过**：`pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command`（含十进制元转整分边界／非法输入与 0.1.0 离线命令规范化摘要 `7f2bcf64acbfbc2803d429e6b2fc31dece4ad590a6a95458aeeeec65fd94b186` 校验）及脚本语法检查通过。
+- **离线记一笔端到端实测**（隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`，`DELETE`／`FULL`，全程开启飞行模式）：运行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`，通过（`passed: true`）：
+  - 8 组非法金额输入（`""`、`0`、`0.00`、`-12.50`、`86.355`、`1e2`、`abc`、`100000000.00`）均在页面报错且 SQLite 零写入。
+  - 首笔非固定午餐样例（`机场快线车票`、`42.80` 元 → `4280` 分、`transport`、`paid_on: null`、备注 `首都机场线`）快速连点「保存消费」仅记录一次（操作 ID `op-7bd43c01-e07b-48df-a06a-0baecc224dc1` 与实体 ID `exp-dfe59a94-5033-4a4a-b248-1815c0487e0c` 分离，基线 `fixture-r0` → `local-rev-7debdad0-eb57-42c1-b61d-3d1e31e8c504`）；`am force-stop` 冷重开（PID `4307 -> 4413`）后明细、总额 `¥42.80` 与 `已在本机保存，待发送` 状态完整保留。
+  - 第二笔输入 `86.35` 元（`午餐` → `8635` 分、`meal`、`paid_on: null`、备注空，操作 ID `op-2e509580-1251-4bb4-bf5c-ece0c111398a`、实体 ID `exp-c5fc1aac-a8a4-4260-857b-7fb136149f56`，基线接续至 `local-rev-0bf09320-64a8-4453-8b2c-5dffd628d29b`）并再次强停冷重开（PID `4413 -> 4508`）；核对页面与 SQLite 均为 2 笔、整分总额 `12915` 分（`¥129.15`）、修订 3、回执 2、待发送 2，状态明确显示 `已在本机保存，待发送 2 笔（本机提交成功，尚未经桌面端确认）`。
+  - 从隔离测试入口 `exportOfflineOutboxCommands` 导出两条 `travelflow.expense-create` `0.1.0` 命令，独立复算规范化 JSON 与 SHA-256 全部吻合，且第二笔 86.35 元载荷与冻结桌面午餐样例逐字段一致。
+- **原桥回归保留**：在同一隔离 API 35 模拟器运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 **17/17 项**通过（`passed: true`）。
+
+未验证项：本次仅覆盖隔离 API 35 模拟器的本地离线连续记账与 0.1.0 命令导出，未覆盖跨设备真实网络连接、多笔跨端投递与基线衔接、真机、个人主库或共享协议变更。复跑入口见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。

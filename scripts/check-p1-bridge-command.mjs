@@ -111,12 +111,68 @@ try {
     assert.deepEqual(mod.validateExpenseCreateAmount(bad), { ok: false, error: expectedErr });
   }
 
+  for (const [rawYuan, expectedCents] of [
+    ["0.01", 1],
+    ["0.1", 10],
+    ["42.8", 4280],
+    ["42.80", 4280],
+    ["86.35", 8635],
+    ["100", 10000],
+    ["99999999.99", 9999999999],
+  ]) {
+    const cents = mod.parseDecimalYuanToCents(rawYuan);
+    assert.equal(cents, expectedCents, `Expected ${rawYuan} -> ${expectedCents}`);
+  }
+  assert.equal(mod.formatCentsToYuan(0), "0.00");
+  assert.equal(mod.formatCentsToYuan(4280), "42.80");
+  assert.equal(mod.formatCentsToYuan(8635), "86.35");
+  assert.equal(mod.formatCentsToYuan(12915), "129.15");
+
+  for (const invalidYuan of ["", " ", "0", "0.0", "0.00", "-1", "-86.35", "86.355", "1e2", ".5", "10.", "abc", " 86.35", "86.35 ", "100000000", "100000000.00"]) {
+    assert.throws(() => mod.parseDecimalYuanToCents(invalidYuan), `Expected invalid yuan rejection for ${JSON.stringify(invalidYuan)}`);
+  }
+
+  const offlineIntent = mod.buildOfflineExpenseCreateIntent({
+    datasetId: mod.OFFLINE_DATASET_ID,
+    sourceDeviceId: mod.OFFLINE_DEVICE_ID,
+    operationId: "op-offline-test-1",
+    travelId: mod.OFFLINE_TRAVEL_ID,
+    branchId: mod.OFFLINE_BRANCH_ID,
+    entityId: "exp-offline-test-1",
+    expectedRevisionId: mod.OFFLINE_INITIAL_REVISION_ID,
+    title: "机场快线车票",
+    amountCents: mod.parseDecimalYuanToCents("42.80"),
+    category: "transport",
+    notes: "首都机场线",
+  });
+  const offlineCanon = mod.canonicalizeControlDocument(offlineIntent);
+  const p1Offline = fingerprintIntent(Buffer.from(JSON.stringify(offlineIntent), "utf8"), "control");
+  assert.equal(p1Offline.accepted, true);
+  assert.equal(offlineCanon, p1Offline.canonical_json);
+  assert.equal(
+    createHash("sha256").update(offlineCanon, "utf8").digest("hex"),
+    p1Offline.sha256,
+  );
+  assert.throws(() => mod.buildOfflineExpenseCreateIntent({
+    datasetId: mod.OFFLINE_DATASET_ID,
+    sourceDeviceId: mod.OFFLINE_DEVICE_ID,
+    operationId: "same-id",
+    travelId: mod.OFFLINE_TRAVEL_ID,
+    branchId: mod.OFFLINE_BRANCH_ID,
+    entityId: "same-id",
+    expectedRevisionId: mod.OFFLINE_INITIAL_REVISION_ID,
+    title: "测试",
+    amountCents: 100,
+    category: "meal",
+  }));
+
   console.log(JSON.stringify({
     passed: true,
     controlCanonicalSha256: p1Control.sha256,
     queryCanonicalSha256: p1Query.sha256,
     desktopCreateCommandSha256: createSha,
     desktopCreateQuerySha256: createQuerySha,
+    offlineCreateCommandSha256: p1Offline.sha256,
     boundaryDigests,
     shared_contract_version: null,
     android_native_executed: false,

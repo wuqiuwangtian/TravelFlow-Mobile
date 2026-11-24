@@ -2,15 +2,26 @@ import { Capacitor, registerPlugin } from "./capacitor-core.js";
 import { summarizeLedger } from "./ledger-core.js";
 import {
   MAX_AMOUNT_CENTS,
+  OFFLINE_BASELINE_SOURCE,
+  OFFLINE_BRANCH_ID,
+  OFFLINE_DATASET_ID,
+  OFFLINE_DEVICE_ID,
+  OFFLINE_INITIAL_REVISION_ID,
+  OFFLINE_TRAVEL_ID,
   type ExpenseCreateIntent,
   type ExpensePatchIntent,
   type ReceiptLookupIntent,
   buildExpensePatchIntent,
+  buildOfflineExpenseCreateIntent,
   buildReceiptLookupIntent,
   canonicalizeControlDocument,
   canonicalizeQueryDocument,
+  formatCentsToYuan,
+  parseDecimalYuanToCents,
   parseStrictAmountCents,
   validateExpenseCreateAmount,
+  validateExpenseNotes,
+  validateExpenseTitle,
 } from "./bridge-command.js";
 
 type ScenarioName =
@@ -313,6 +324,94 @@ interface P1BridgeReceiptPlugin {
     has_more?: boolean;
     expenses?: CreateExpenseRow[];
   }>;
+  initOfflineTripLedger(options: {
+    datasetId: string;
+    travelId: string;
+    branchId: string;
+    initialRevisionId: string;
+    baselineSource: string;
+  }): Promise<OfflineTripLedgerState>;
+  saveOfflineTripExpense(options: {
+    rawCommandJson: string;
+    canonicalIntentJson: string;
+  }): Promise<OfflineTripSaveResult>;
+  inspectOfflineTripLedger(): Promise<OfflineTripLedgerState>;
+  exportOfflineOutboxCommands(): Promise<OfflineOutboxExportResult>;
+}
+
+interface OfflineTripExpenseRow extends CreateExpenseRow {
+  operation_id: string;
+  delivery_state: string;
+  expected_revision_id: string | null;
+  result_revision_id: string | null;
+  intent_sha256: string | null;
+}
+
+interface OfflineTripOutboxItem {
+  seq: number;
+  dataset_id: string;
+  source_device_id: string;
+  operation_id: string;
+  entity_id: string;
+  expected_revision_id: string;
+  result_revision_id: string;
+  raw_command_json: string;
+  command: ExpenseCreateIntent;
+  canonical_intent_json: string;
+  intent_sha256: string;
+  delivery_state: string;
+  receipt_query: ReceiptLookupIntent;
+}
+
+interface OfflineTripLedgerState {
+  initialized: boolean;
+  callerPid: number;
+  datasetId?: string;
+  travelId?: string;
+  branchId?: string;
+  headRevisionId?: string;
+  baselineSource?: string;
+  expenseCount: number;
+  totalCents: number;
+  revisionCount: number;
+  receiptCount: number;
+  outboxCount: number;
+  expenses: OfflineTripExpenseRow[];
+  revisions: Array<{
+    revision_id: string;
+    parent_revision_id: string | null;
+    expense_count: number;
+    total_cents: number;
+    snapshot_sha256: string;
+  }>;
+  outbox: OfflineTripOutboxItem[];
+  journal?: string;
+  sqlite?: string;
+}
+
+interface OfflineTripSaveResult {
+  accepted: boolean;
+  replayed?: boolean;
+  operation_id?: string;
+  entity_id?: string;
+  expected_revision_id?: string;
+  result_revision_id?: string;
+  intent_sha256?: string;
+  delivery_state?: string;
+  error?: string;
+}
+
+interface OfflineOutboxExportResult {
+  contract_id: string;
+  contract_version: string;
+  initialized: boolean;
+  dataset_id?: string;
+  travel_id?: string;
+  branch_id?: string;
+  head_revision_id?: string;
+  baseline_source?: string;
+  count: number;
+  items: OfflineTripOutboxItem[];
 }
 
 const bridge = registerPlugin<P1BridgeReceiptPlugin>("P1BridgeReceipt");
@@ -339,6 +438,37 @@ const createLedgerEl = byId<HTMLParagraphElement>("create-ledger");
 const createPendingStateEl = byId<HTMLParagraphElement>("create-pending-state");
 const createPageInfoEl = byId<HTMLParagraphElement>("create-page-info");
 const createStatusEl = byId<HTMLParagraphElement>("create-status");
+
+const tripLedgerViewEl = byId<HTMLDivElement>("trip-ledger-view");
+const tripEntryViewEl = byId<HTMLDivElement>("trip-entry-view");
+const tripMetaEl = byId<HTMLParagraphElement>("trip-meta");
+const tripSummaryEl = byId<HTMLParagraphElement>("trip-summary");
+const tripSyncStatusEl = byId<HTMLParagraphElement>("trip-sync-status");
+const tripExpenseEmptyEl = byId<HTMLDivElement>("trip-expense-empty");
+const tripExpenseListEl = byId<HTMLUListElement>("trip-expense-list");
+const tripOpenEntryBtn = byId<HTMLButtonElement>("trip-open-entry-btn");
+const tripEntryContextEl = byId<HTMLParagraphElement>("trip-entry-context");
+const tripEntryTitleEl = byId<HTMLInputElement>("trip-entry-title");
+const tripEntryAmountYuanEl = byId<HTMLInputElement>("trip-entry-amount-yuan");
+const tripEntryCategoryEl = byId<HTMLSelectElement>("trip-entry-category");
+const tripEntryNotesEl = byId<HTMLInputElement>("trip-entry-notes");
+const tripEntryErrorEl = byId<HTMLParagraphElement>("trip-entry-error");
+const tripEntrySaveBtn = byId<HTMLButtonElement>("trip-entry-save-btn");
+const tripEntryCancelBtn = byId<HTMLButtonElement>("trip-entry-cancel-btn");
+
+const CATEGORY_LABELS: Record<string, string> = {
+  meal: "餐饮",
+  transport: "交通",
+  lodging: "住宿",
+  ticket: "门票",
+  shopping: "购物",
+  other: "其他",
+};
+
+let currentTripState: OfflineTripLedgerState | null = null;
+let tripSaveInFlight = false;
+let tripDraftOperationId: string | null = null;
+let tripDraftEntityId: string | null = null;
 
 const buttonIds = [
   "seed-scenario",
@@ -419,6 +549,13 @@ function setControlsEnabled(enabled: boolean): void {
   for (const id of createButtonIds) {
     byId<HTMLButtonElement>(id).disabled = !enabled;
   }
+  tripOpenEntryBtn.disabled = !enabled;
+  tripEntryTitleEl.disabled = !enabled;
+  tripEntryAmountYuanEl.disabled = !enabled;
+  tripEntryCategoryEl.disabled = !enabled;
+  tripEntryNotesEl.disabled = !enabled;
+  tripEntrySaveBtn.disabled = !enabled || tripSaveInFlight;
+  tripEntryCancelBtn.disabled = !enabled;
 }
 
 function buildCurrentCreateCommand(): ExpenseCreateIntent {
@@ -1537,6 +1674,209 @@ byId<HTMLButtonElement>("create-check-auth").onclick = () =>
   releaseCreateWriterLock: (scenario: CreateScenarioName) => bridge.releaseCreateWriterLock({ scenario }),
 };
 
+function setTripEntryError(message: string | null): void {
+  if (!message) {
+    tripEntryErrorEl.textContent = "";
+    tripEntryErrorEl.classList.add("hidden");
+  } else {
+    tripEntryErrorEl.textContent = message;
+    tripEntryErrorEl.classList.remove("hidden");
+  }
+}
+
+function showTripLedgerView(): void {
+  tripEntryViewEl.classList.add("hidden");
+  tripLedgerViewEl.classList.remove("hidden");
+  setTripEntryError(null);
+}
+
+function openTripEntryForm(): void {
+  const travelId = currentTripState?.travelId ?? OFFLINE_TRAVEL_ID;
+  const branchId = currentTripState?.branchId ?? OFFLINE_BRANCH_ID;
+  const headRevisionId = currentTripState?.headRevisionId ?? OFFLINE_INITIAL_REVISION_ID;
+  tripDraftOperationId = `op-${crypto.randomUUID()}`;
+  tripDraftEntityId = `exp-${crypto.randomUUID()}`;
+  tripEntryTitleEl.value = "";
+  tripEntryAmountYuanEl.value = "";
+  tripEntryCategoryEl.value = "meal";
+  tripEntryNotesEl.value = "";
+  tripEntryContextEl.textContent = `旅行 ${travelId} · 分支 ${branchId} · 当前基线 ${headRevisionId}`;
+  setTripEntryError(null);
+  tripLedgerViewEl.classList.add("hidden");
+  tripEntryViewEl.classList.remove("hidden");
+}
+
+function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
+  currentTripState = state;
+  const summary =
+    state.expenses.length > 0
+      ? summarizeLedger({
+          expenses: state.expenses.map((item) => ({ id: item.id, amount_cents: item.amount_cents })),
+          adjustments: [],
+        })
+      : { paid_cents: 0 };
+  const totalCents = summary.paid_cents;
+  const travelId = state.travelId ?? OFFLINE_TRAVEL_ID;
+  const branchId = state.branchId ?? OFFLINE_BRANCH_ID;
+  const headRevisionId = state.headRevisionId ?? OFFLINE_INITIAL_REVISION_ID;
+  const baselineSource = state.baselineSource ?? OFFLINE_BASELINE_SOURCE;
+
+  tripMetaEl.textContent =
+    `虚构旅行 ${travelId} · 分支 ${branchId} · 头版本 ${headRevisionId} · 起始基线 ${OFFLINE_INITIAL_REVISION_ID}（来源：${baselineSource}）`;
+  tripSummaryEl.textContent = `共 ${state.expenseCount} 笔 · 合计 ¥${formatCentsToYuan(totalCents)}`;
+
+  if (state.outboxCount === 0) {
+    tripSyncStatusEl.dataset.tone = "pending";
+    tripSyncStatusEl.textContent = "本机离线账本已就绪 · 暂无待发送记录（不会当作桌面已确认）";
+  } else {
+    tripSyncStatusEl.dataset.tone = "warning";
+    tripSyncStatusEl.textContent = `已在本机保存，待发送 ${state.outboxCount} 笔（本机提交成功，尚未经桌面端确认）`;
+  }
+
+  tripExpenseListEl.innerHTML = "";
+  if (state.expenses.length === 0) {
+    tripExpenseEmptyEl.classList.remove("hidden");
+    return;
+  }
+  tripExpenseEmptyEl.classList.add("hidden");
+  for (const item of state.expenses) {
+    const li = document.createElement("li");
+    li.className = "trip-item";
+    li.dataset.entityId = item.id;
+    li.dataset.operationId = item.operation_id;
+    li.dataset.deliveryState = item.delivery_state;
+
+    const topRow = document.createElement("div");
+    topRow.className = "trip-row";
+
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "trip-item-title";
+    titleSpan.textContent = item.title;
+
+    const amountSpan = document.createElement("span");
+    amountSpan.className = "trip-item-title";
+    amountSpan.textContent = `¥${formatCentsToYuan(item.amount_cents)}`;
+
+    topRow.append(titleSpan, amountSpan);
+
+    const subRow = document.createElement("div");
+    subRow.className = "trip-row trip-item-sub";
+
+    const detailSpan = document.createElement("span");
+    const categoryLabel = CATEGORY_LABELS[item.category] ?? item.category;
+    const paidOnText = item.paid_on === null ? "未知" : item.paid_on;
+    const notesSuffix = item.notes ? ` · 备注：${item.notes}` : "";
+    detailSpan.textContent = `类别：${categoryLabel} · 付款日：${paidOnText}${notesSuffix}`;
+
+    const badge = document.createElement("span");
+    badge.className = "tf-badge";
+    badge.dataset.tone = "amber";
+    badge.textContent = "已在本机保存，待发送";
+
+    subRow.append(detailSpan, badge);
+    li.append(topRow, subRow);
+    tripExpenseListEl.appendChild(li);
+  }
+}
+
+tripOpenEntryBtn.addEventListener("click", () => {
+  openTripEntryForm();
+});
+
+tripEntryCancelBtn.addEventListener("click", () => {
+  tripDraftOperationId = null;
+  tripDraftEntityId = null;
+  showTripLedgerView();
+});
+
+tripEntrySaveBtn.addEventListener("click", () => {
+  if (tripSaveInFlight) {
+    return;
+  }
+  tripSaveInFlight = true;
+  tripEntrySaveBtn.disabled = true;
+  tripEntrySaveBtn.setAttribute("aria-busy", "true");
+  setTripEntryError(null);
+
+  void (async () => {
+    try {
+      const title = validateExpenseTitle(tripEntryTitleEl.value);
+      const amountCents = parseDecimalYuanToCents(tripEntryAmountYuanEl.value);
+      const category = tripEntryCategoryEl.value;
+      const notes = validateExpenseNotes(tripEntryNotesEl.value);
+
+      const state = currentTripState ?? (await bridge.inspectOfflineTripLedger());
+      const datasetId = state.datasetId ?? OFFLINE_DATASET_ID;
+      const travelId = state.travelId ?? OFFLINE_TRAVEL_ID;
+      const branchId = state.branchId ?? OFFLINE_BRANCH_ID;
+      const expectedRevisionId = state.headRevisionId ?? OFFLINE_INITIAL_REVISION_ID;
+      const operationId = tripDraftOperationId ?? `op-${crypto.randomUUID()}`;
+      const entityId = tripDraftEntityId ?? `exp-${crypto.randomUUID()}`;
+      tripDraftOperationId = operationId;
+      tripDraftEntityId = entityId;
+
+      const command = buildOfflineExpenseCreateIntent({
+        datasetId,
+        sourceDeviceId: OFFLINE_DEVICE_ID,
+        operationId,
+        travelId,
+        branchId,
+        entityId,
+        expectedRevisionId,
+        title,
+        amountCents,
+        category,
+        notes,
+      });
+      const rawCommandJson = JSON.stringify(command);
+      const canonicalIntentJson = canonicalizeControlDocument(command);
+      const saveResult = await bridge.saveOfflineTripExpense({
+        rawCommandJson,
+        canonicalIntentJson,
+      });
+      if (!saveResult.accepted) {
+        setTripEntryError(`保存失败：${saveResult.error ?? "unknown_error"}`);
+        return;
+      }
+
+      const refreshed = await bridge.inspectOfflineTripLedger();
+      renderOfflineTripLedger(refreshed);
+      tripDraftOperationId = null;
+      tripDraftEntityId = null;
+      showTripLedgerView();
+    } catch (error) {
+      setTripEntryError(error instanceof Error ? error.message : String(error));
+    } finally {
+      tripSaveInFlight = false;
+      tripEntrySaveBtn.removeAttribute("aria-busy");
+      tripEntrySaveBtn.disabled = false;
+    }
+  })();
+});
+
+(window as unknown as Record<string, unknown>).__travelflowOfflineEntry = {
+  inspect: async () => {
+    const state = await bridge.inspectOfflineTripLedger();
+    renderOfflineTripLedger(state);
+    return state;
+  },
+  exportOutboxCommands: () => bridge.exportOfflineOutboxCommands(),
+  getUiState: () => ({
+    ledgerViewVisible: !tripLedgerViewEl.classList.contains("hidden"),
+    entryViewVisible: !tripEntryViewEl.classList.contains("hidden"),
+    metaText: tripMetaEl.textContent ?? "",
+    summaryText: tripSummaryEl.textContent ?? "",
+    syncStatusText: tripSyncStatusEl.textContent ?? "",
+    errorText: tripEntryErrorEl.classList.contains("hidden") ? "" : (tripEntryErrorEl.textContent ?? ""),
+    renderedItems: Array.from(tripExpenseListEl.querySelectorAll("li")).map((li) => ({
+      entityId: li.dataset.entityId ?? "",
+      operationId: li.dataset.operationId ?? "",
+      deliveryState: li.dataset.deliveryState ?? "",
+      text: li.textContent ?? "",
+    })),
+  }),
+};
+
 async function init(): Promise<void> {
   try {
     if (!Capacitor.isNativePlatform()) {
@@ -1547,6 +1887,14 @@ async function init(): Promise<void> {
       throw new Error(`Failed to load desktop create fixture: ${fixtureResponse.status}`);
     }
     desktopCreateFixture = (await fixtureResponse.json()) as DesktopCreateFixture;
+    const tripState = await bridge.initOfflineTripLedger({
+      datasetId: OFFLINE_DATASET_ID,
+      travelId: OFFLINE_TRAVEL_ID,
+      branchId: OFFLINE_BRANCH_ID,
+      initialRevisionId: OFFLINE_INITIAL_REVISION_ID,
+      baselineSource: OFFLINE_BASELINE_SOURCE,
+    });
+    renderOfflineTripLedger(tripState);
     const state = await refreshState();
     const createState = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
     renderCreateState(createState);

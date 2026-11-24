@@ -863,6 +863,72 @@ public class P1BridgeReceiptPlugin extends Plugin {
         });
     }
 
+    @PluginMethod
+    public void initOfflineTripLedger(PluginCall call) {
+        String datasetId = call.getString("datasetId", "");
+        String travelId = call.getString("travelId", "");
+        String branchId = call.getString("branchId", "");
+        String initialRevisionId = call.getString("initialRevisionId", "");
+        String baselineSource = call.getString("baselineSource", "");
+        executor.execute(() -> {
+            try {
+                if (datasetId.isEmpty() || travelId.isEmpty() || branchId.isEmpty()
+                        || initialRevisionId.isEmpty() || baselineSource.isEmpty()) {
+                    call.reject("Invalid initOfflineTripLedger arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+                OfflineTripLedgerStore.ensureInitialized(
+                        dir, datasetId, travelId, branchId, initialRevisionId, baselineSource);
+                call.resolve(OfflineTripLedgerStore.inspectLedger(dir));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_LEDGER_INIT_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void saveOfflineTripExpense(PluginCall call) {
+        String rawCommandJson = call.getString("rawCommandJson", "");
+        String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        executor.execute(() -> {
+            try {
+                if (rawCommandJson.isEmpty() || canonicalIntentJson.isEmpty()) {
+                    call.reject("Invalid saveOfflineTripExpense arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+                call.resolve(OfflineTripLedgerStore.saveOfflineExpense(dir, rawCommandJson, canonicalIntentJson));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_EXPENSE_SAVE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void inspectOfflineTripLedger(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+                call.resolve(OfflineTripLedgerStore.inspectLedger(dir));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_LEDGER_INSPECT_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void exportOfflineOutboxCommands(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+                call.resolve(OfflineTripLedgerStore.exportOutboxCommands(dir));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_OUTBOX_EXPORT_FAILED");
+            }
+        });
+    }
+
     @Override
     protected void handleOnDestroy() {
         executor.shutdownNow();

@@ -1,0 +1,551 @@
+// Android API 35 隔离模拟器端到端验收：从旅行账本离线记两笔独立 CNY 消费（含断网、非法金额零写入、连点防重、强停重开与 0.1.0 命令导出校验）。
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { fingerprintIntent } from "../prototypes/p1-canonical/intent.mjs";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PACKAGE = "org.travelflow.p1bridge";
+const ACTIVITY = `${PACKAGE}/.MainActivity`;
+
+function parseArgs(argv) {
+  const out = { serial: null, cdpPort: 19241, apk: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--serial") out.serial = argv[++i] ?? null;
+    else if (arg === "--cdp-port") out.cdpPort = Number(argv[++i]);
+    else if (arg === "--apk") out.apk = argv[++i] ?? null;
+    else throw new Error(`Unknown argument: ${arg}`);
+  }
+  if (!out.serial || !/^emulator-\d+$/.test(out.serial)) {
+    throw new Error("Provide explicit isolated emulator --serial emulator-NNNN");
+  }
+  if (!Number.isInteger(out.cdpPort) || out.cdpPort <= 0) {
+    throw new Error("Invalid --cdp-port");
+  }
+  return out;
+}
+
+function adbBin() {
+  const home = process.env.ANDROID_HOME;
+  if (!home) throw new Error("ANDROID_HOME is required");
+  return path.join(home, "platform-tools", "adb");
+}
+
+function runCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", ...options });
+  if (result.error) throw result.error;
+  if (result.status !== 0 && !options.allowFailure) {
+    throw new Error(`Command failed (${result.status}): ${command} ${args.join(" ")}\n${result.stderr || result.stdout}`);
+  }
+  return result;
+}
+
+function adb(serial, args, options = {}) {
+  return runCommand(adbBin(), ["-s", serial, ...args], options);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function buildApk() {
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), "travelflow-p1-offline-entry-"));
+  const projectDir = path.join(tempRoot, "project");
+  runCommand(process.execPath, [path.join(root, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  runCommand("./gradlew", [":app:assembleDebug", "--no-daemon", "--console=plain"], {
+    cwd: path.join(projectDir, "android"),
+    stdio: "inherit",
+  });
+  const apk = path.join(projectDir, "android/app/build/outputs/apk/debug/app-debug.apk");
+  if (!existsSync(apk)) throw new Error(`Missing built APK: ${apk}`);
+  return { apk, tempRoot };
+}
+
+function assertIsolatedAvd(serial) {
+  const emu = adb(serial, ["shell", "getprop", "ro.kernel.qemu"]).stdout.trim();
+  const avd = adb(serial, ["shell", "getprop", "ro.boot.qemu.avd_name"]).stdout.trim();
+  const sdk = adb(serial, ["shell", "getprop", "ro.build.version.sdk"]).stdout.trim();
+  assert.equal(emu, "1", `Device ${serial} is not an emulator`);
+  assert.equal(avd, "travelflow_p0_api35", `Unexpected AVD ${avd}; expected travelflow_p0_api35`);
+  assert.equal(sdk, "35", `Unexpected SDK ${sdk}; expected 35`);
+  const boot = adb(serial, ["shell", "getprop", "sys.boot_completed"]).stdout.trim();
+  assert.equal(boot, "1", "Emulator boot not completed");
+  const installed = adb(serial, ["shell", "pm", "list", "packages", PACKAGE]).stdout.trim();
+  assert.equal(installed, "", `Refusing to overwrite existing ${PACKAGE}`);
+  return { avd, sdk };
+}
+
+function getAirplaneMode(serial) {
+  return adb(serial, ["shell", "settings", "get", "global", "airplane_mode_on"]).stdout.trim();
+}
+
+function setAirplaneMode(serial, enabled) {
+  const val = enabled ? "1" : "0";
+  adb(serial, ["shell", "settings", "put", "global", "airplane_mode_on", val]);
+  adb(serial, ["shell", "cmd", "connectivity", "airplane-mode", enabled ? "enable" : "disable"], { allowFailure: true });
+}
+
+async function waitForPid(serial, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const out = adb(serial, ["shell", "pidof", PACKAGE], { allowFailure: true }).stdout.trim();
+    const pid = Number(out.split(/\s+/)[0]);
+    if (Number.isInteger(pid) && pid > 0) return pid;
+    await sleep(250);
+  }
+  throw new Error(`Timed out waiting for PID of ${PACKAGE}`);
+}
+
+async function connectWebView(cdpPort) {
+  const targets = await (await fetch(`http://127.0.0.1:${cdpPort}/json`)).json();
+  const target = targets.find((item) => item.title === "TravelFlow P1 Bridge Receipt") ?? targets[0];
+  assert.ok(target?.webSocketDebuggerUrl, `Expected WebView target on port ${cdpPort}`);
+  const ws = new WebSocket(target.webSocketDebuggerUrl);
+  const pending = new Map();
+  let nextId = 0;
+  await new Promise((resolve, reject) => {
+    ws.onopen = resolve;
+    ws.onerror = reject;
+  });
+  ws.onmessage = ({ data }) => {
+    const msg = JSON.parse(data);
+    const entry = pending.get(msg.id);
+    if (!entry) return;
+    pending.delete(msg.id);
+    clearTimeout(entry.timer);
+    if (msg.error) entry.reject(new Error(JSON.stringify(msg.error)));
+    else entry.resolve(msg.result);
+  };
+  function send(method, params = {}) {
+    return new Promise((resolve, reject) => {
+      const id = ++nextId;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`CDP timeout: ${method}`));
+      }, 20000);
+      pending.set(id, { resolve, reject, timer });
+      ws.send(JSON.stringify({ id, method, params }));
+    });
+  }
+  async function evaluate(expression) {
+    const response = await send("Runtime.evaluate", {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+    });
+    if (response.exceptionDetails) {
+      throw new Error(JSON.stringify(response.exceptionDetails));
+    }
+    return response.result?.value;
+  }
+  async function tap(id) {
+    const cleanId = id.startsWith("#") ? id.slice(1) : id;
+    const pos = await evaluate(`(async () => {
+      const el = document.getElementById(${JSON.stringify(cleanId)});
+      if (!el) throw new Error("Missing element #" + ${JSON.stringify(cleanId)});
+      if (el.disabled) throw new Error("Disabled element #" + ${JSON.stringify(cleanId)});
+      el.scrollIntoView({ block: "center", inline: "center" });
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      const rect = el.getBoundingClientRect();
+      const vv = window.visualViewport;
+      return {
+        x: Math.round(rect.left - (vv ? vv.offsetLeft : 0) + rect.width / 2),
+        y: Math.round(rect.top - (vv ? vv.offsetTop : 0) + rect.height / 2),
+      };
+    })()`);
+    await send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+    });
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  }
+  return { send, evaluate, tap, close: () => ws.close() };
+}
+
+async function attachWebView(serial, cdpPort) {
+  const pid = await waitForPid(serial);
+  adb(serial, ["forward", "--remove", `tcp:${cdpPort}`], { allowFailure: true });
+  adb(serial, ["forward", `tcp:${cdpPort}`, `localabstract:webview_devtools_remote_${pid}`]);
+  const deadline = Date.now() + 20000;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    try {
+      const cdp = await connectWebView(cdpPort);
+      const readyDeadline = Date.now() + 15000;
+      while (Date.now() < readyDeadline) {
+        const ready = await cdp.evaluate(
+          `Boolean(window.__travelflowOfflineEntry && !document.getElementById("trip-open-entry-btn")?.disabled)`,
+        );
+        if (ready) return { cdp, pid };
+        await sleep(200);
+      }
+      cdp.close();
+      throw new Error("Offline entry page did not become ready");
+    } catch (error) {
+      lastError = error;
+      await sleep(300);
+    }
+  }
+  throw lastError ?? new Error("Failed to attach to WebView");
+}
+
+async function launchAndAttach(serial, cdpPort) {
+  adb(serial, ["shell", "am", "start", "-W", "-n", ACTIVITY]);
+  return attachWebView(serial, cdpPort);
+}
+
+async function forceStopAndReopen(serial, cdpPort, previousPid) {
+  adb(serial, ["shell", "am", "force-stop", PACKAGE]);
+  await sleep(600);
+  const { cdp, pid } = await launchAndAttach(serial, cdpPort);
+  assert.notEqual(pid, previousPid, `Expected fresh PID after force-stop (got ${pid})`);
+  return { cdp, pid };
+}
+
+async function setInputValue(cdp, id, value) {
+  const ok = await cdp.evaluate(`(() => {
+    const el = document.getElementById(${JSON.stringify(id)});
+    if (!el) return false;
+    el.focus();
+    el.value = ${JSON.stringify(value)};
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    return el.value === ${JSON.stringify(value)};
+  })()`);
+  assert.equal(ok, true, `Failed to set #${id}`);
+}
+
+async function waitForCondition(cdp, expression, label, timeoutMs = 15000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const matched = await cdp.evaluate(expression);
+    if (matched) return;
+    await sleep(120);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+async function doubleTapElement(cdp, id) {
+  const pos = await cdp.evaluate(`(() => {
+    const el = document.getElementById(${JSON.stringify(id)});
+    if (!el) return null;
+    el.scrollIntoView({ block: "center", inline: "center" });
+    const rect = el.getBoundingClientRect();
+    const vv = window.visualViewport;
+    const ox = vv ? vv.offsetLeft : 0;
+    const oy = vv ? vv.offsetTop : 0;
+    return { x: Math.round(rect.left - ox + rect.width / 2), y: Math.round(rect.top - oy + rect.height / 2) };
+  })()`);
+  assert.ok(pos, `Missing element #${id} for double tap`);
+  await sleep(80);
+  // Dispatch two rapid touch taps back-to-back to verify double-tap idempotency.
+  for (let i = 0; i < 2; i += 1) {
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchStart",
+      touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: i + 1 }],
+    });
+    await cdp.send("Input.dispatchTouchEvent", {
+      type: "touchEnd",
+      touchPoints: [],
+    });
+    await sleep(15);
+  }
+}
+
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+  const envInfo = assertIsolatedAvd(opts.serial);
+  const originalAirplane = getAirplaneMode(opts.serial);
+
+  let built = null;
+  let apkPath = opts.apk;
+  let installed = false;
+  let cdp = null;
+
+  try {
+    if (!apkPath) {
+      built = buildApk();
+      apkPath = built.apk;
+    }
+    adb(opts.serial, ["install", "-t", apkPath]);
+    installed = true;
+
+    // Enable airplane mode to verify genuine offline saving with no network.
+    setAirplaneMode(opts.serial, true);
+    await sleep(600);
+    assert.equal(getAirplaneMode(opts.serial), "1", "Failed to enable airplane mode");
+
+    let session = await launchAndAttach(opts.serial, opts.cdpPort);
+    cdp = session.cdp;
+    const pidInitial = session.pid;
+
+    // 1. Verify empty offline travel ledger state.
+    const initialState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const initialUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(initialState.initialized, true);
+    assert.equal(initialState.datasetId, "fixture-dataset");
+    assert.equal(initialState.travelId, "fixture-travel");
+    assert.equal(initialState.branchId, "fixture-branch");
+    assert.equal(initialState.headRevisionId, "fixture-r0");
+    assert.equal(initialState.expenseCount, 0);
+    assert.equal(initialState.totalCents, 0);
+    assert.equal(initialState.revisionCount, 1);
+    assert.equal(initialState.receiptCount, 0);
+    assert.equal(initialState.outboxCount, 0);
+    assert.equal(initialUi.ledgerViewVisible, true);
+    assert.match(initialUi.summaryText, /共 0 笔 · 合计 ¥0\.00/);
+    assert.match(initialUi.metaText, /fixture-r0/);
+
+    // 2. Open "记一笔" via real CDP touch and verify invalid amounts produce zero writes.
+    await cdp.tap("#trip-open-entry-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "entry view");
+
+    const invalidAmounts = ["", "0", "0.00", "-12.50", "86.355", "1e2", "abc", "100000000.00"];
+    const rejectedInputs = [];
+    for (const rawAmount of invalidAmounts) {
+      await setInputValue(cdp, "trip-entry-title", "无效金额测试");
+      await setInputValue(cdp, "trip-entry-amount-yuan", rawAmount);
+      await setInputValue(cdp, "trip-entry-category", "transport");
+      await cdp.tap("#trip-entry-save-btn");
+      await waitForCondition(
+        cdp,
+        `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`,
+        `error for invalid amount ${rawAmount}`,
+      );
+      const uiErr = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+      assert.equal(uiErr.entryViewVisible, true, `Should stay on entry view for invalid amount ${rawAmount}`);
+      const st = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+      assert.equal(st.expenseCount, 0, `Zero writes expected for invalid amount ${rawAmount}`);
+      assert.equal(st.revisionCount, 1);
+      assert.equal(st.receiptCount, 0);
+      assert.equal(st.outboxCount, 0);
+      rejectedInputs.push({ input: rawAmount, error: uiErr.errorText });
+    }
+
+    // 3. Enter first expense (non-fixed-lunch sample: 42.80 yuan -> 4280 cents) and rapid double-tap Save!
+    await setInputValue(cdp, "trip-entry-title", "机场快线车票");
+    await setInputValue(cdp, "trip-entry-amount-yuan", "42.80");
+    await setInputValue(cdp, "trip-entry-category", "transport");
+    await setInputValue(cdp, "trip-entry-notes", "首都机场线");
+    await doubleTapElement(cdp, "trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after first save");
+
+    const afterFirstState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const afterFirstUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(afterFirstState.expenseCount, 1, "Rapid double-tap must record only one expense");
+    assert.equal(afterFirstState.totalCents, 4280);
+    assert.equal(afterFirstState.revisionCount, 2);
+    assert.equal(afterFirstState.receiptCount, 1);
+    assert.equal(afterFirstState.outboxCount, 1);
+    const rev1 = afterFirstState.headRevisionId;
+    assert.notEqual(rev1, "fixture-r0");
+    assert.equal(afterFirstState.expenses[0].title, "机场快线车票");
+    assert.equal(afterFirstState.expenses[0].amount_cents, 4280);
+    assert.equal(afterFirstState.expenses[0].category, "transport");
+    assert.equal(afterFirstState.expenses[0].paid_on, null);
+    assert.equal(afterFirstState.expenses[0].notes, "首都机场线");
+    assert.equal(afterFirstState.expenses[0].delivery_state, "pending_send");
+    assert.notEqual(afterFirstState.expenses[0].operation_id, afterFirstState.expenses[0].id);
+    assert.match(afterFirstUi.summaryText, /共 1 笔 · 合计 ¥42\.80/);
+    assert.match(afterFirstUi.syncStatusText, /已在本机保存，待发送 1 笔/);
+    assert.ok(!afterFirstUi.syncStatusText.includes("桌面已确认"), "Must not claim desktop confirmed");
+    assert.equal(afterFirstUi.renderedItems.length, 1);
+    assert.match(afterFirstUi.renderedItems[0].text, /机场快线车票/);
+    assert.match(afterFirstUi.renderedItems[0].text, /¥42\.80/);
+    assert.match(afterFirstUi.renderedItems[0].text, /已在本机保存，待发送/);
+
+    // 4. Force-stop cold restart and verify first expense persists.
+    cdp.close();
+    session = await forceStopAndReopen(opts.serial, opts.cdpPort, pidInitial);
+    cdp = session.cdp;
+    const pidAfterFirstStop = session.pid;
+
+    const reopenedFirstState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const reopenedFirstUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(reopenedFirstState.expenseCount, 1);
+    assert.equal(reopenedFirstState.totalCents, 4280);
+    assert.equal(reopenedFirstState.headRevisionId, rev1);
+    assert.equal(reopenedFirstState.outboxCount, 1);
+    assert.match(reopenedFirstUi.summaryText, /共 1 笔 · 合计 ¥42\.80/);
+    assert.match(reopenedFirstUi.renderedItems[0].text, /已在本机保存，待发送/);
+
+    // 5. Enter second expense (86.35 yuan -> 8635 cents, matching desktop fixed lunch comparison).
+    await cdp.tap("#trip-open-entry-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "second entry view");
+    await setInputValue(cdp, "trip-entry-title", "午餐");
+    await setInputValue(cdp, "trip-entry-amount-yuan", "86.35");
+    await setInputValue(cdp, "trip-entry-category", "meal");
+    await setInputValue(cdp, "trip-entry-notes", "");
+    await cdp.tap("#trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after second save");
+
+    const afterSecondState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const afterSecondUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(afterSecondState.expenseCount, 2);
+    assert.equal(afterSecondState.totalCents, 12915);
+    assert.equal(afterSecondState.revisionCount, 3);
+    assert.equal(afterSecondState.receiptCount, 2);
+    assert.equal(afterSecondState.outboxCount, 2);
+    const rev2 = afterSecondState.headRevisionId;
+    assert.notEqual(rev2, rev1);
+    assert.match(afterSecondUi.summaryText, /共 2 笔 · 合计 ¥129\.15/);
+    assert.match(afterSecondUi.syncStatusText, /已在本机保存，待发送 2 笔/);
+    assert.equal(afterSecondUi.renderedItems.length, 2);
+    assert.match(afterSecondUi.renderedItems[1].text, /午餐/);
+    assert.match(afterSecondUi.renderedItems[1].text, /¥86\.35/);
+    assert.match(afterSecondUi.renderedItems[1].text, /已在本机保存，待发送/);
+
+    // 6. Second force-stop cold restart and verify both expenses, revision chain, and exported 0.1.0 commands.
+    cdp.close();
+    session = await forceStopAndReopen(opts.serial, opts.cdpPort, pidAfterFirstStop);
+    cdp = session.cdp;
+    const pidAfterSecondStop = session.pid;
+
+    const finalState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const finalUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    const exported = await cdp.evaluate(`window.__travelflowOfflineEntry.exportOutboxCommands()`);
+
+    assert.equal(finalState.expenseCount, 2);
+    assert.equal(finalState.totalCents, 12915);
+    assert.equal(finalState.headRevisionId, rev2);
+    assert.equal(finalState.revisionCount, 3);
+    assert.equal(finalState.receiptCount, 2);
+    assert.equal(finalState.outboxCount, 2);
+    assert.equal(finalState.revisions[0].revision_id, "fixture-r0");
+    assert.equal(finalState.revisions[0].parent_revision_id, null);
+    assert.equal(finalState.revisions[1].revision_id, rev1);
+    assert.equal(finalState.revisions[1].parent_revision_id, "fixture-r0");
+    assert.equal(finalState.revisions[2].revision_id, rev2);
+    assert.equal(finalState.revisions[2].parent_revision_id, rev1);
+    assert.match(finalUi.summaryText, /共 2 笔 · 合计 ¥129\.15/);
+
+    // Validate exported 0.1.0 outbox commands independently against p1-canonical & frozen 0.1.0 spec.
+    assert.equal(exported.contract_id, "travelflow.expense-create");
+    assert.equal(exported.contract_version, "0.1.0");
+    assert.equal(exported.count, 2);
+    assert.equal(exported.items.length, 2);
+
+    const [item1, item2] = exported.items;
+    assert.notEqual(item1.operation_id, item1.entity_id);
+    assert.notEqual(item2.operation_id, item2.entity_id);
+    assert.notEqual(item1.operation_id, item2.operation_id);
+    assert.notEqual(item1.entity_id, item2.entity_id);
+    assert.equal(item1.expected_revision_id, "fixture-r0");
+    assert.equal(item1.result_revision_id, rev1);
+    assert.equal(item2.expected_revision_id, rev1);
+    assert.equal(item2.result_revision_id, rev2);
+
+    const desktopFixture = JSON.parse(
+      readFileSync(path.join(root, "docs/internal/fixtures/p1-desktop-expense-create.json"), "utf8"),
+    );
+
+    for (const item of exported.items) {
+      assert.equal(item.delivery_state, "pending_send");
+      assert.equal(item.command.profile, "p1-host-control-1");
+      assert.equal(item.command.kind, "expense.create");
+      assert.equal(item.command.operation.dataset_id, "fixture-dataset");
+      assert.equal(item.command.operation.source_device_id, "fixture-device");
+      assert.equal(item.command.target.travel_id, "fixture-travel");
+      assert.equal(item.command.target.branch_id, "fixture-branch");
+      assert.equal(item.command.payload.currency, "CNY");
+      assert.equal(item.command.payload.paid_on, null);
+      assert.equal(item.command.payload.day, null);
+      assert.equal(item.command.payload.activity_id, null);
+      assert.deepEqual(item.command.payload.receipt_ids, []);
+      assert.equal(item.command.payload.budget_item_id, null);
+      assert.equal(item.command.payload.settles_budget, false);
+      assert.equal(item.command.payload.allow_shared_receipts, false);
+
+      const p1Canon = fingerprintIntent(Buffer.from(item.raw_command_json, "utf8"), "control");
+      assert.equal(p1Canon.accepted, true);
+      assert.equal(item.canonical_intent_json, p1Canon.canonical_json);
+      const recomputedSha = createHash("sha256").update(item.canonical_intent_json, "utf8").digest("hex");
+      assert.equal(item.intent_sha256, recomputedSha);
+      assert.equal(item.intent_sha256, p1Canon.sha256);
+
+      assert.equal(item.receipt_query.profile, "p1-host-query-1");
+      assert.equal(item.receipt_query.kind, "receipt.lookup");
+      assert.equal(item.receipt_query.operation.operation_id, item.operation_id);
+    }
+
+    // Second item payload matches frozen 0.1.0 desktop 86.35 yuan lunch payload exactly!
+    assert.deepEqual(item2.command.payload, desktopFixture.command.payload);
+
+    console.log(JSON.stringify({
+      passed: true,
+      avd: envInfo.avd,
+      sdk: envInfo.sdk,
+      package: PACKAGE,
+      offlineAirplaneModeVerified: true,
+      pids: {
+        initial: pidInitial,
+        afterFirstForceStop: pidAfterFirstStop,
+        afterSecondForceStop: pidAfterSecondStop,
+      },
+      baselineSource: finalState.baselineSource,
+      invalidAmountRejections: rejectedInputs,
+      doubleTapSingleWriteVerified: true,
+      expenses: finalState.expenses.map((e) => ({
+        entity_id: e.id,
+        operation_id: e.operation_id,
+        title: e.title,
+        amount_cents: e.amount_cents,
+        category: e.category,
+        paid_on: e.paid_on,
+        notes: e.notes,
+        delivery_state: e.delivery_state,
+        expected_revision_id: e.expected_revision_id,
+        result_revision_id: e.result_revision_id,
+        intent_sha256: e.intent_sha256,
+      })),
+      revisions: finalState.revisions.map((r) => ({
+        revision_id: r.revision_id,
+        parent_revision_id: r.parent_revision_id,
+        expense_count: r.expense_count,
+        total_cents: r.total_cents,
+      })),
+      final: {
+        expenseCount: finalState.expenseCount,
+        totalCents: finalState.totalCents,
+        revisionCount: finalState.revisionCount,
+        receiptCount: finalState.receiptCount,
+        outboxCount: finalState.outboxCount,
+        headRevisionId: finalState.headRevisionId,
+        summaryText: finalUi.summaryText,
+        syncStatusText: finalUi.syncStatusText,
+        sqlite: finalState.sqlite,
+        journal: finalState.journal,
+      },
+      exportedContract: {
+        contract_id: exported.contract_id,
+        contract_version: exported.contract_version,
+        count: exported.count,
+        secondItemMatchesDesktopLunchPayload: true,
+      },
+    }, null, 2));
+  } finally {
+    if (cdp) {
+      try { cdp.close(); } catch {}
+    }
+    try {
+      setAirplaneMode(opts.serial, originalAirplane === "1");
+    } catch {}
+    adb(opts.serial, ["forward", "--remove", `tcp:${opts.cdpPort}`], { allowFailure: true });
+    if (installed) {
+      adb(opts.serial, ["uninstall", PACKAGE], { allowFailure: true });
+    }
+    if (built) {
+      rmSync(built.tempRoot, { recursive: true, force: true });
+    }
+  }
+}
+
+await main();

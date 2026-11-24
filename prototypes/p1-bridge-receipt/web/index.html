@@ -10,18 +10,84 @@
     body { margin: 0; background: var(--tf-background); color: var(--tf-ink); font-family: system-ui, sans-serif; }
     main { max-width: 38rem; margin: auto; padding: max(1rem, env(safe-area-inset-top)) 1rem 2rem; }
     h1 { font-size: 1.4rem; margin-bottom: .5rem; }
+    h2 { font-size: 1.15rem; margin: .75rem 0 .5rem; }
     p { line-height: 1.6; overflow-wrap: anywhere; }
     label { display: block; font-weight: 600; margin-top: .75rem; }
     button, select, input { box-sizing: border-box; max-width: 100%; min-height: 44px; margin: .25rem 0; }
     pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
     #error { color: var(--tf-danger); }
+    .trip-panel { padding: 1rem; margin-bottom: 1.25rem; }
+    .trip-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; }
+    .trip-meta { font-size: .85rem; color: var(--tf-muted); margin: .25rem 0 .75rem; }
+    .trip-total { font-size: 1.15rem; font-weight: 700; margin: .5rem 0; }
+    .trip-list { list-style: none; padding: 0; margin: .75rem 0 0; display: grid; gap: .5rem; }
+    .trip-item { padding: .75rem; border: 1px solid var(--tf-line); border-radius: var(--tf-radius); background: var(--tf-paper); }
+    .trip-item-title { font-weight: 600; }
+    .trip-item-sub { font-size: .85rem; color: var(--tf-muted); margin-top: .25rem; }
+    .trip-field { width: 100%; padding: .5rem .65rem; border: 1px solid var(--tf-line); border-radius: var(--tf-radius); background: var(--tf-surface); color: var(--tf-ink); font-size: 1rem; }
+    .trip-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .75rem; }
+    .hidden { display: none; }
   </style>
 </head>
 <body>
   <main>
-    <h1>P1 桥接消费更正与回执恢复原型</h1>
-    <p>隔离测试环境，仅写入虚构消费更正与历史票据，不是正式账本或同步协议。</p>
     <p id="runtime" role="status">正在初始化原生桥…</p>
+
+    <section id="offline-trip-section" class="tf-card trip-panel" aria-label="旅行账本离线记账">
+      <div id="trip-ledger-view">
+        <div class="trip-row">
+          <h1 style="margin:0;">旅行账本（离线记账）</h1>
+          <span class="tf-badge" data-tone="slate" id="trip-offline-badge">离线可用 · 未连接桌面端</span>
+        </div>
+        <p id="trip-meta" class="trip-meta">正在读取虚构旅行账本…</p>
+        <div class="trip-row">
+          <p id="trip-summary" class="trip-total" role="status">共 0 笔 · 合计 ¥0.00</p>
+          <button class="tf-button" data-variant="primary" id="trip-open-entry-btn" type="button" disabled>记一笔</button>
+        </div>
+        <p id="trip-sync-status" class="tf-feedback" data-tone="pending" role="status">本机账本尚未读取</p>
+        <div id="trip-expense-empty" class="tf-empty" style="padding:.75rem;margin-top:.5rem;">
+          <div class="tf-empty-title">暂无消费记录</div>
+          <div class="tf-empty-description">断网状态也可记账；保存后将留在本机待发送列表，不会当作桌面已确认。</div>
+        </div>
+        <ul id="trip-expense-list" class="trip-list"></ul>
+      </div>
+
+      <div id="trip-entry-view" class="hidden" aria-label="新增离线消费">
+        <h2>记一笔（CNY 离线保存）</h2>
+        <p class="trip-meta" id="trip-entry-context">目标旅行与基线读取中…</p>
+
+        <label for="trip-entry-title">标题</label>
+        <input id="trip-entry-title" class="trip-field" type="text" maxlength="100" placeholder="例如：机场快线车票或午餐" disabled>
+
+        <label for="trip-entry-amount-yuan">金额（元，精确到分）</label>
+        <input id="trip-entry-amount-yuan" class="trip-field" type="text" inputmode="decimal" placeholder="例如：86.35" disabled>
+
+        <label for="trip-entry-category">类别</label>
+        <select id="trip-entry-category" class="trip-field" disabled>
+          <option value="meal">餐饮（meal）</option>
+          <option value="transport">交通（transport）</option>
+          <option value="lodging">住宿（lodging）</option>
+          <option value="ticket">门票（ticket）</option>
+          <option value="shopping">购物（shopping）</option>
+          <option value="other">其他（other）</option>
+        </select>
+
+        <label for="trip-entry-notes">备注（可选）</label>
+        <input id="trip-entry-notes" class="trip-field" type="text" maxlength="1000" placeholder="选填备注" disabled>
+
+        <p class="trip-meta">付款日：未知（保留 null，符合冻结契约 0.1.0 范围）</p>
+        <p id="trip-entry-error" class="tf-error hidden" role="alert"></p>
+
+        <div class="trip-actions">
+          <button class="tf-button" data-variant="primary" id="trip-entry-save-btn" type="button" disabled>保存消费</button>
+          <button class="tf-button" id="trip-entry-cancel-btn" type="button" disabled>返回账本</button>
+        </div>
+      </div>
+    </section>
+
+    <hr>
+    <h2>P1 桥接消费更正与回执恢复原型（回归入口）</h2>
+    <p>隔离测试环境，仅写入虚构消费更正与历史票据，不是正式账本或同步协议。</p>
 
     <label for="scenario">隔离场景</label>
     <select id="scenario" disabled>
