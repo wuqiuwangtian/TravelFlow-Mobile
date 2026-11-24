@@ -1,6 +1,7 @@
 // 隔离 API 35 模拟器端到端验收：从实际 TS 页面经 Capacitor 提交虚构消费更正并验证三种故障恢复。
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -260,6 +261,14 @@ async function connectWebView(port) {
     return outcome;
   }
 
+  async function tapAndWaitCreateAction(id) {
+    await tap(id);
+    await until(`!document.getElementById(${JSON.stringify(id)}).disabled && document.getElementById('create-status').textContent !== '正在执行'`);
+    const outcome = await evaluate(`window.__tfP1Bridge.getLastCreateOutcome()`);
+    assert.ok(outcome && outcome.status !== "error", `Create action ${id} failed: ${JSON.stringify(outcome)}`);
+    return outcome;
+  }
+
   return {
     evaluate,
     until,
@@ -267,6 +276,7 @@ async function connectWebView(port) {
     setSelect,
     setInput,
     tapAndWaitAction,
+    tapAndWaitCreateAction,
     tapExpectingError,
     close: () => {
       try { ws.close(); } catch {}
@@ -731,6 +741,184 @@ async function runScenarios(adb, cdpPort) {
           opReceiptCount: conflict.state.opReceiptCount,
           opOutboxCount: conflict.state.opOutboxCount,
           ticketIntact: conflict.state.ticketIntact,
+        },
+      };
+    }
+
+    // 8 & 9. 第二阶段：从空账本 TS 页面按固定桌面样例执行 expense.create（提交前中断与提交后丢应答）
+    const createFixtureBytes = readFileSync(path.join(root, "docs/internal/fixtures/p1-desktop-expense-create.json"));
+    assert.equal(
+      createHash("sha256").update(createFixtureBytes).digest("hex"),
+      "da9a97398ebb1e0e3b8e0e17097a8f8bc79da25602f6e7a119800572341a7b3f",
+    );
+    const createFixture = JSON.parse(createFixtureBytes.toString("utf8"));
+
+    for (const { scenario, faultMode } of [
+      { scenario: "create-before-commit", faultMode: "before_commit" },
+      { scenario: "create-after-commit", faultMode: "after_commit_drop_reply" },
+    ]) {
+      await session.client.setSelect("create-scenario", scenario);
+      const seeded = await session.client.tapAndWaitCreateAction("create-seed");
+      assert.equal(seeded.state.seeded, true);
+      assert.equal(seeded.state.headRevisionId, "fixture-r0");
+      assert.equal(seeded.state.expenses.length, 0);
+      assert.equal(seeded.state.revisionCount, 1);
+      assert.equal(seeded.state.receiptCount, 0);
+      assert.equal(seeded.state.outboxCount, 0);
+
+      await session.client.setSelect("create-fault-mode", faultMode);
+      const pidBefore = session.pid;
+      await session.client.tap("create-submit", { expectDeath: true });
+      await waitForPid(adb, (p) => p === null || p !== pidBefore, `${scenario} crash`);
+      session.client.close();
+
+      session = await launchAndAttach(adb, cdpPort, pidBefore);
+      await session.client.setSelect("create-scenario", scenario);
+      const afterCrash = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      assert.equal(afterCrash.pending?.operationId, "fixture-op-lunch");
+      assert.equal(afterCrash.confirmedOp, null);
+      if (faultMode === "before_commit") {
+        assert.equal(afterCrash.headRevisionId, "fixture-r0");
+        assert.equal(afterCrash.expenses.length, 0);
+        assert.equal(afterCrash.revisionCount, 1);
+        assert.equal(afterCrash.receiptCount, 0);
+        assert.equal(afterCrash.outboxCount, 0);
+      } else {
+        assert.notEqual(afterCrash.headRevisionId, "fixture-r0");
+        assert.equal(afterCrash.expenses.length, 1);
+        assert.equal(afterCrash.revisionCount, 2);
+        assert.equal(afterCrash.receiptCount, 1);
+        assert.equal(afterCrash.outboxCount, 1);
+      }
+
+      const recovered = await session.client.tapAndWaitCreateAction("create-recover");
+      const createRevision = recovered.state.headRevisionId;
+      assert.ok(createRevision && createRevision !== "fixture-r0");
+      if (faultMode === "before_commit") {
+        assert.equal(recovered.status, "recovered_by_retry");
+        assert.equal(recovered.lookup.state, "not_found_at_settled_read");
+        assert.equal(recovered.retry.replayed, false);
+        assert.equal(recovered.retry.effect, "changed");
+        assert.deepEqual(recovered.verifiedLookup, {
+          accepted: true,
+          state: "committed",
+          receipt: { effect: "changed", result_revision_id: createRevision },
+        });
+      } else {
+        assert.equal(recovered.status, "confirmed_existing");
+        assert.deepEqual(recovered.lookup, {
+          accepted: true,
+          state: "committed",
+          receipt: { effect: "changed", result_revision_id: createRevision },
+        });
+      }
+      assert.equal(recovered.state.expenses.length, 1);
+      const [lunch] = recovered.state.expenses;
+      assert.deepEqual(
+        [lunch.id, lunch.title, lunch.amount_cents, lunch.currency, lunch.paid_on, lunch.receipt_ids],
+        ["fixture-lunch", "午餐", 8635, "CNY", null, []],
+      );
+      assert.equal(recovered.state.revisionCount, 2);
+      assert.equal(recovered.state.receiptCount, 1);
+      assert.equal(recovered.state.outboxCount, 1);
+      assert.deepEqual(JSON.parse(recovered.state.receipts[0].intent_json).intent, createFixture.command);
+      for (const row of [recovered.state.receipts[0], recovered.state.outbox[0]]) {
+        assert.deepEqual(
+          [row.dataset_id, row.source_device_id, row.operation_id, row.result_revision_id],
+          ["fixture-dataset", "fixture-device", "fixture-op-lunch", createRevision],
+        );
+      }
+      assert.equal(recovered.state.pending, null);
+      assert.equal(recovered.state.confirmedOp, "fixture-op-lunch");
+      assert.equal(recovered.state.confirmedRevisionId, createRevision);
+
+      const advanced = await session.client.tapAndWaitCreateAction("create-advance-head");
+      const advancedHead = advanced.state.headRevisionId;
+      assert.equal(advanced.result.accepted, true);
+      assert.equal(advanced.result.effect, "changed");
+      assert.notEqual(advancedHead, createRevision);
+      assert.equal(advanced.state.revisionCount, 3);
+      assert.equal(advanced.state.receiptCount, 2);
+      assert.equal(advanced.state.outboxCount, 2);
+      assert.equal(advanced.state.expenses[0].notes, "虚构更正");
+
+      const replayed = await session.client.tapAndWaitCreateAction("create-replay");
+      for (const entry of [replayed.replayOriginal, replayed.replayReordered]) {
+        assert.deepEqual(entry, {
+          accepted: true,
+          kind: "committed",
+          replayed: true,
+          effect: "changed",
+          result_revision_id: createRevision,
+        });
+      }
+      assert.equal(replayed.state.headRevisionId, advancedHead);
+      assert.equal(replayed.state.revisionCount, 3);
+      assert.equal(replayed.state.receiptCount, 2);
+      assert.equal(replayed.state.outboxCount, 2);
+
+      const rejections = await session.client.tapAndWaitCreateAction("create-check-rejections");
+      assert.deepEqual(rejections.diffAmount, { accepted: false, error: "intent_conflict" });
+      assert.deepEqual(rejections.diffShare, { accepted: false, error: "intent_conflict" });
+      assert.deepEqual(rejections.staleBaseline, { accepted: false, error: "baseline_conflict" });
+      assert.deepEqual(rejections.duplicateEntity, { accepted: false, error: "entity_exists" });
+      assert.deepEqual(
+        rejections.invalidAmounts.map((item) => [item.amount, item.tsError, item.nativeResult]),
+        [
+          [0, "integer_range", { accepted: false, error: "integer_range" }],
+          [true, "type", { accepted: false, error: "type" }],
+          [1.25, "integer_range", { accepted: false, error: "integer_range" }],
+          [10000000000, "integer_range", { accepted: false, error: "integer_range" }],
+        ],
+      );
+      assert.equal(rejections.state.headRevisionId, advancedHead);
+      assert.equal(rejections.state.revisionCount, 3);
+      assert.equal(rejections.state.receiptCount, 2);
+      assert.equal(rejections.state.outboxCount, 2);
+      assert.equal(rejections.state.expenses.length, 1);
+
+      const auth = await session.client.tapAndWaitCreateAction("create-check-auth");
+      assert.equal(auth.results.length, 3);
+      for (const item of auth.results) {
+        assert.deepEqual(item.response, { accepted: false, error: "denied" });
+        assert.equal(Object.hasOwn(item.response, "receipt"), false);
+        assert.equal(item.readsAfter, item.readsBefore);
+      }
+      assert.equal(auth.state.headRevisionId, advancedHead);
+      assert.equal(auth.state.revisionCount, 3);
+      assert.equal(auth.state.receiptCount, 2);
+      assert.equal(auth.state.outboxCount, 2);
+
+      report.scenarios[scenario] = {
+        pidBefore,
+        pidAfter: session.pid,
+        operationId: "fixture-op-lunch",
+        entityId: "fixture-lunch",
+        result_revision_id: createRevision,
+        advanced_head_revision_id: advancedHead,
+        afterCrash: {
+          headRevisionId: afterCrash.headRevisionId,
+          expenses: afterCrash.expenses.length,
+          revisionCount: afterCrash.revisionCount,
+          receiptCount: afterCrash.receiptCount,
+          outboxCount: afterCrash.outboxCount,
+        },
+        recoveredStatus: recovered.status,
+        replay_after_head_advance: true,
+        rejections: {
+          diffAmount: rejections.diffAmount.error,
+          diffShare: rejections.diffShare.error,
+          staleBaseline: rejections.staleBaseline.error,
+          duplicateEntity: rejections.duplicateEntity.error,
+          invalidAmounts: rejections.invalidAmounts.map((item) => [item.amount, item.nativeResult.error]),
+          authDeniedZeroReads: true,
+        },
+        final: {
+          headRevisionId: auth.state.headRevisionId,
+          expenses: auth.state.expenses.length,
+          revisionCount: auth.state.revisionCount,
+          receiptCount: auth.state.receiptCount,
+          outboxCount: auth.state.outboxCount,
         },
       };
     }

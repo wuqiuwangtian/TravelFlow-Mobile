@@ -2,11 +2,15 @@ import { Capacitor, registerPlugin } from "./capacitor-core.js";
 import { summarizeLedger } from "./ledger-core.js";
 import {
   MAX_AMOUNT_CENTS,
+  type ExpenseCreateIntent,
+  type ExpensePatchIntent,
+  type ReceiptLookupIntent,
   buildExpensePatchIntent,
   buildReceiptLookupIntent,
   canonicalizeControlDocument,
   canonicalizeQueryDocument,
   parseStrictAmountCents,
+  validateExpenseCreateAmount,
 } from "./bridge-command.js";
 
 type ScenarioName =
@@ -18,7 +22,99 @@ type ScenarioName =
   | "bound-int32-over"
   | "bound-max-cents";
 
+type CreateScenarioName = "create-before-commit" | "create-after-commit";
+
 type FaultMode = "none" | "before_commit" | "after_commit_drop_reply";
+
+interface DesktopCreateFixture {
+  command: ExpenseCreateIntent;
+  receipt_query: ReceiptLookupIntent;
+}
+
+interface SyntheticPrincipal {
+  authenticated: boolean;
+  can_query: boolean;
+  can_write: boolean;
+  dataset_id: string;
+  source_device_id: string;
+}
+
+interface CreatePendingRecord {
+  operationId: string;
+  rawCommandJson: string;
+  canonicalIntentJson: string;
+}
+
+interface CreatePendingStateResult {
+  pending: CreatePendingRecord | null;
+  confirmedOp: string | null;
+  confirmedRevisionId: string | null;
+}
+
+interface CreateExecuteResult {
+  accepted: boolean;
+  kind?: "committed";
+  replayed?: boolean;
+  effect?: "changed";
+  result_revision_id?: string;
+  error?: string;
+}
+
+interface CreateLookupResult {
+  accepted: boolean;
+  state?: "committed" | "not_found_at_settled_read" | "pending_busy";
+  receipt?: {
+    effect: string;
+    result_revision_id: string;
+  };
+  error?: string;
+}
+
+interface CreateExpenseRow {
+  id: string;
+  title: string;
+  amount_cents: number;
+  currency: string;
+  paid_on: string | null;
+  category: string;
+  day: number | null;
+  activity_id: string | null;
+  notes: string;
+  receipt_ids: string[];
+  allow_shared_receipts: boolean;
+  budget_item_id: string | null;
+  settles_budget: boolean;
+}
+
+interface CreateInspectStateResult {
+  seeded: boolean;
+  headRevisionId: string | null;
+  expenses: CreateExpenseRow[];
+  revisionCount: number;
+  receiptCount: number;
+  outboxCount: number;
+  receipts: Array<{
+    dataset_id: string;
+    source_device_id: string;
+    operation_id: string;
+    intent_json: string;
+    effect: string;
+    result_revision_id: string;
+  }>;
+  outbox: Array<{
+    dataset_id: string;
+    source_device_id: string;
+    operation_id: string;
+    result_revision_id: string;
+  }>;
+  journal: string;
+  sqlite: string;
+  callerPid: number;
+  receiptReadCount: number;
+  pending: CreatePendingRecord | null;
+  confirmedOp: string | null;
+  confirmedRevisionId: string | null;
+}
 
 interface PendingRecord {
   operationId: string;
@@ -116,6 +212,44 @@ interface P1BridgeReceiptPlugin {
     commitOnRelease: boolean;
   }): Promise<{ writerPid: number; callerPid: number }>;
   releaseWriterLock(options: { scenario: ScenarioName }): Promise<{ writerPid: number; callerPid: number }>;
+  seedCreateScenario(options: {
+    scenario: CreateScenarioName;
+    datasetId: string;
+    travelId: string;
+    branchId: string;
+    initialRevisionId: string;
+  }): Promise<CreateInspectStateResult>;
+  saveCreatePendingIntent(options: {
+    scenario: CreateScenarioName;
+    operationId: string;
+    rawCommandJson: string;
+    canonicalIntentJson: string;
+  }): Promise<CreatePendingStateResult>;
+  loadCreatePendingIntent(options: { scenario: CreateScenarioName }): Promise<CreatePendingStateResult>;
+  confirmCreatePendingIntent(options: {
+    scenario: CreateScenarioName;
+    operationId: string;
+    revisionId: string;
+  }): Promise<CreatePendingStateResult>;
+  submitExpenseCreate(options: {
+    scenario: CreateScenarioName;
+    rawCommandJson: string;
+    canonicalIntentJson: string;
+    faultMode: FaultMode;
+  }): Promise<CreateExecuteResult>;
+  submitCreateNotesPatch(options: {
+    scenario: CreateScenarioName;
+    rawCommandJson: string;
+    canonicalIntentJson: string;
+  }): Promise<CreateExecuteResult>;
+  lookupCreateReceipt(options: {
+    scenario: CreateScenarioName;
+    datasetId: string;
+    sourceDeviceId: string;
+    operationId: string;
+    principal: SyntheticPrincipal;
+  }): Promise<CreateLookupResult>;
+  inspectCreateState(options: { scenario: CreateScenarioName }): Promise<CreateInspectStateResult>;
 }
 
 const bridge = registerPlugin<P1BridgeReceiptPlugin>("P1BridgeReceipt");
@@ -135,6 +269,10 @@ const pendingEl = byId<HTMLParagraphElement>("pending-state");
 const actionStatusEl = byId<HTMLParagraphElement>("action-status");
 const errorEl = byId<HTMLParagraphElement>("error");
 const snapshotEl = byId<HTMLPreElement>("snapshot-json");
+const createScenarioEl = byId<HTMLSelectElement>("create-scenario");
+const createFaultModeEl = byId<HTMLSelectElement>("create-fault-mode");
+const createLedgerEl = byId<HTMLParagraphElement>("create-ledger");
+const createStatusEl = byId<HTMLParagraphElement>("create-status");
 
 const buttonIds = [
   "seed-scenario",
@@ -146,8 +284,43 @@ const buttonIds = [
   "conflict-check",
 ] as const;
 
+const createButtonIds = [
+  "create-seed",
+  "create-submit",
+  "create-recover",
+  "create-advance-head",
+  "create-replay",
+  "create-check-rejections",
+  "create-check-auth",
+] as const;
+
 let lastOutcome: Record<string, unknown> | null = null;
 let lastState: InspectStateResult | null = null;
+let lastCreateOutcome: Record<string, unknown> | null = null;
+let desktopCreateFixture: DesktopCreateFixture | null = null;
+
+const SYNTHETIC_PRINCIPAL: SyntheticPrincipal = {
+  authenticated: true,
+  can_query: true,
+  can_write: true,
+  dataset_id: "fixture-dataset",
+  source_device_id: "fixture-device",
+};
+
+function currentCreateScenario(): CreateScenarioName {
+  return createScenarioEl.value as CreateScenarioName;
+}
+
+function currentCreateFaultMode(): FaultMode {
+  return createFaultModeEl.value as FaultMode;
+}
+
+function requireCreateFixture(): DesktopCreateFixture {
+  if (!desktopCreateFixture) {
+    throw new Error("Desktop create fixture not loaded");
+  }
+  return desktopCreateFixture;
+}
 
 function currentScenario(): ScenarioName {
   return scenarioEl.value as ScenarioName;
@@ -165,8 +338,45 @@ function setControlsEnabled(enabled: boolean): void {
   scenarioEl.disabled = !enabled;
   faultModeEl.disabled = !enabled;
   amountEl.disabled = !enabled;
+  createScenarioEl.disabled = !enabled;
+  createFaultModeEl.disabled = !enabled;
   for (const id of buttonIds) {
     byId<HTMLButtonElement>(id).disabled = !enabled;
+  }
+  for (const id of createButtonIds) {
+    byId<HTMLButtonElement>(id).disabled = !enabled;
+  }
+}
+
+function renderCreateState(state: CreateInspectStateResult): void {
+  if (!state.seeded) {
+    createLedgerEl.textContent = `新增场景 ${currentCreateScenario()} 尚未初始化`;
+    return;
+  }
+  const summary = summarizeLedger({
+    expenses: state.expenses.map((item) => ({ id: item.id, amount_cents: item.amount_cents })),
+    adjustments: [],
+  });
+  createLedgerEl.textContent =
+    `空账本场景 ${currentCreateScenario()} · 头版本 ${state.headRevisionId} · 消费 ${state.expenses.length} 笔` +
+    `（合计 ¥${(summary.paid_cents / 100).toFixed(2)}）· 修订 ${state.revisionCount} · 回执 ${state.receiptCount} · 待发送 ${state.outboxCount}`;
+}
+
+async function runCreateAction(label: string, work: () => Promise<Record<string, unknown>>): Promise<void> {
+  setControlsEnabled(false);
+  errorEl.textContent = "";
+  createStatusEl.textContent = `正在执行：${label}`;
+  try {
+    const outcome = await work();
+    lastCreateOutcome = outcome;
+    createStatusEl.textContent = `${label}完成：${String(outcome.status ?? "ok")}`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    lastCreateOutcome = { status: "error", error: message };
+    errorEl.textContent = message;
+    createStatusEl.textContent = `${label}失败`;
+  } finally {
+    setControlsEnabled(true);
   }
 }
 
@@ -410,12 +620,310 @@ scenarioEl.onchange = () => {
   });
 };
 
+createScenarioEl.onchange = () => {
+  void runCreateAction("切换新增场景", async () => {
+    const state = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
+    renderCreateState(state);
+    return { status: "switched", state };
+  });
+};
+
+byId<HTMLButtonElement>("create-seed").onclick = () =>
+  void runCreateAction("初始化空账本", async () => {
+    const fixture = requireCreateFixture();
+    const state = await bridge.seedCreateScenario({
+      scenario: currentCreateScenario(),
+      datasetId: fixture.command.operation.dataset_id,
+      travelId: fixture.command.target.travel_id,
+      branchId: fixture.command.target.branch_id,
+      initialRevisionId: fixture.command.expected_revision_id,
+    });
+    renderCreateState(state);
+    return { status: "seeded", state };
+  });
+
+byId<HTMLButtonElement>("create-submit").onclick = () =>
+  void runCreateAction("提交固定新增午餐", async () => {
+    const scenario = currentCreateScenario();
+    const faultMode = currentCreateFaultMode();
+    const fixture = requireCreateFixture();
+    const rawCommandJson = JSON.stringify(fixture.command);
+    const canonicalIntentJson = canonicalizeControlDocument(fixture.command);
+    await bridge.saveCreatePendingIntent({
+      scenario,
+      operationId: fixture.command.operation.operation_id,
+      rawCommandJson,
+      canonicalIntentJson,
+    });
+    const result = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson,
+      canonicalIntentJson,
+      faultMode,
+    });
+    if (result.accepted && result.result_revision_id) {
+      await bridge.confirmCreatePendingIntent({
+        scenario,
+        operationId: fixture.command.operation.operation_id,
+        revisionId: result.result_revision_id,
+      });
+    }
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: result.accepted ? "committed" : (result.error ?? "rejected"), result, state };
+  });
+
+byId<HTMLButtonElement>("create-recover").onclick = () =>
+  void runCreateAction("查询并恢复新增消费", async () => {
+    const scenario = currentCreateScenario();
+    const fixture = requireCreateFixture();
+    const callerState = await bridge.loadCreatePendingIntent({ scenario });
+    const pending = callerState.pending;
+    if (!pending) {
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: callerState.confirmedOp ? "already_confirmed" : "idle", state };
+    }
+    const lookup = await bridge.lookupCreateReceipt({
+      scenario,
+      datasetId: fixture.receipt_query.operation.dataset_id,
+      sourceDeviceId: fixture.receipt_query.operation.source_device_id,
+      operationId: pending.operationId,
+      principal: SYNTHETIC_PRINCIPAL,
+    });
+    if (!lookup.accepted) {
+      throw new Error(`Receipt lookup rejected: ${lookup.error}`);
+    }
+    if (lookup.state === "committed" && lookup.receipt?.result_revision_id) {
+      await bridge.confirmCreatePendingIntent({
+        scenario,
+        operationId: pending.operationId,
+        revisionId: lookup.receipt.result_revision_id,
+      });
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: "confirmed_existing", lookup, state };
+    }
+    if (lookup.state === "not_found_at_settled_read") {
+      const retry = await bridge.submitExpenseCreate({
+        scenario,
+        rawCommandJson: pending.rawCommandJson,
+        canonicalIntentJson: pending.canonicalIntentJson,
+        faultMode: "none",
+      });
+      if (!retry.accepted || !retry.result_revision_id) {
+        throw new Error(`Retry create failed: ${JSON.stringify(retry)}`);
+      }
+      await bridge.confirmCreatePendingIntent({
+        scenario,
+        operationId: pending.operationId,
+        revisionId: retry.result_revision_id,
+      });
+      const verifiedLookup = await bridge.lookupCreateReceipt({
+        scenario,
+        datasetId: fixture.receipt_query.operation.dataset_id,
+        sourceDeviceId: fixture.receipt_query.operation.source_device_id,
+        operationId: pending.operationId,
+        principal: SYNTHETIC_PRINCIPAL,
+      });
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: "recovered_by_retry", lookup, retry, verifiedLookup, state };
+    }
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: lookup.state ?? "unknown", lookup, state };
+  });
+
+byId<HTMLButtonElement>("create-advance-head").onclick = () =>
+  void runCreateAction("推进分支头备注更正", async () => {
+    const scenario = currentCreateScenario();
+    const fixture = requireCreateFixture();
+    const before = await bridge.inspectCreateState({ scenario });
+    if (!before.headRevisionId) {
+      throw new Error("Missing current headRevisionId");
+    }
+    const notesPatch: ExpensePatchIntent = {
+      profile: fixture.command.profile,
+      kind: "expense.patch",
+      operation: {
+        ...fixture.command.operation,
+        operation_id: "fixture-op-notes",
+      },
+      target: { ...fixture.command.target },
+      expected_revision_id: before.headRevisionId,
+      payload: { notes: "虚构更正" },
+    };
+    const result = await bridge.submitCreateNotesPatch({
+      scenario,
+      rawCommandJson: JSON.stringify(notesPatch),
+      canonicalIntentJson: canonicalizeControlDocument(notesPatch),
+    });
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: result.accepted ? "advanced" : (result.error ?? "rejected"), result, state };
+  });
+
+byId<HTMLButtonElement>("create-replay").onclick = () =>
+  void runCreateAction("重放原请求与键重排请求", async () => {
+    const scenario = currentCreateScenario();
+    const fixture = requireCreateFixture();
+    const originalCanon = canonicalizeControlDocument(fixture.command);
+    const reorderedCommand = {
+      ...Object.fromEntries(Object.entries(fixture.command).reverse()),
+      payload: Object.fromEntries(Object.entries(fixture.command.payload).reverse()),
+    } as ExpenseCreateIntent;
+    const reorderedCanon = canonicalizeControlDocument(reorderedCommand);
+    if (reorderedCanon !== originalCanon) {
+      throw new Error("Reordered command canonical JSON mismatch");
+    }
+    const replayOriginal = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(fixture.command),
+      canonicalIntentJson: originalCanon,
+      faultMode: "none",
+    });
+    const replayReordered = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(reorderedCommand),
+      canonicalIntentJson: reorderedCanon,
+      faultMode: "none",
+    });
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: "replayed", replayOriginal, replayReordered, state };
+  });
+
+byId<HTMLButtonElement>("create-check-rejections").onclick = () =>
+  void runCreateAction("验证冲突与非法金额拒绝", async () => {
+    const scenario = currentCreateScenario();
+    const fixture = requireCreateFixture();
+    const current = await bridge.inspectCreateState({ scenario });
+    if (!current.headRevisionId) {
+      throw new Error("Missing current headRevisionId");
+    }
+
+    const diffAmountCmd: ExpenseCreateIntent = {
+      ...fixture.command,
+      payload: { ...fixture.command.payload, amount_cents: 8636 },
+    };
+    const diffAmount = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(diffAmountCmd),
+      canonicalIntentJson: canonicalizeControlDocument(diffAmountCmd),
+      faultMode: "none",
+    });
+
+    const diffShareCmd: ExpenseCreateIntent = {
+      ...fixture.command,
+      payload: { ...fixture.command.payload, allow_shared_receipts: true },
+    };
+    const diffShare = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(diffShareCmd),
+      canonicalIntentJson: canonicalizeControlDocument(diffShareCmd),
+      faultMode: "none",
+    });
+
+    const staleBaselineCmd: ExpenseCreateIntent = {
+      ...fixture.command,
+      operation: { ...fixture.command.operation, operation_id: "fixture-op-second" },
+      target: { ...fixture.command.target, entity_id: "fixture-second" },
+    };
+    const staleBaseline = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(staleBaselineCmd),
+      canonicalIntentJson: canonicalizeControlDocument(staleBaselineCmd),
+      faultMode: "none",
+    });
+
+    const duplicateEntityCmd: ExpenseCreateIntent = {
+      ...fixture.command,
+      operation: { ...fixture.command.operation, operation_id: "fixture-op-second" },
+      expected_revision_id: current.headRevisionId,
+    };
+    const duplicateEntity = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(duplicateEntityCmd),
+      canonicalIntentJson: canonicalizeControlDocument(duplicateEntityCmd),
+      faultMode: "none",
+    });
+
+    const invalidAmounts: Array<{ amount: unknown; tsError: string; nativeResult: CreateExecuteResult }> = [];
+    for (const badAmount of [0, true, 1.25, 10000000000] as unknown[]) {
+      const tsCheck = validateExpenseCreateAmount(badAmount);
+      if (!("error" in tsCheck)) {
+        throw new Error(`Expected TS rejection for ${String(badAmount)}`);
+      }
+      const badCommand = {
+        ...fixture.command,
+        operation: { ...fixture.command.operation, operation_id: "fixture-op-second" },
+        target: { ...fixture.command.target, entity_id: "fixture-second" },
+        expected_revision_id: current.headRevisionId,
+        payload: { ...fixture.command.payload, amount_cents: badAmount },
+      };
+      const nativeResult = await bridge.submitExpenseCreate({
+        scenario,
+        rawCommandJson: JSON.stringify(badCommand),
+        canonicalIntentJson: JSON.stringify(badCommand),
+        faultMode: "none",
+      });
+      invalidAmounts.push({ amount: badAmount, tsError: tsCheck.error, nativeResult });
+    }
+
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return {
+      status: "rejections_checked",
+      diffAmount,
+      diffShare,
+      staleBaseline,
+      duplicateEntity,
+      invalidAmounts,
+      state,
+    };
+  });
+
+byId<HTMLButtonElement>("create-check-auth").onclick = () =>
+  void runCreateAction("验证身份与权限拒绝查询", async () => {
+    const scenario = currentCreateScenario();
+    const fixture = requireCreateFixture();
+    const results: Array<{ mismatch: Record<string, unknown>; readsBefore: number; readsAfter: number; response: CreateLookupResult }> = [];
+    for (const mismatch of [
+      { can_query: false },
+      { source_device_id: "fixture-other" },
+      { authenticated: false },
+    ]) {
+      const before = await bridge.inspectCreateState({ scenario });
+      const response = await bridge.lookupCreateReceipt({
+        scenario,
+        datasetId: fixture.receipt_query.operation.dataset_id,
+        sourceDeviceId: fixture.receipt_query.operation.source_device_id,
+        operationId: fixture.receipt_query.operation.operation_id,
+        principal: { ...SYNTHETIC_PRINCIPAL, ...mismatch },
+      });
+      const after = await bridge.inspectCreateState({ scenario });
+      results.push({
+        mismatch,
+        readsBefore: before.receiptReadCount,
+        readsAfter: after.receiptReadCount,
+        response,
+      });
+    }
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: "auth_checked", results, state };
+  });
+
 // 只读调试接口与受控测试辅助：供 CDP 验证脚本查询最新状态及协调独立写进程锁。
 (window as unknown as Record<string, unknown>).__tfP1Bridge = {
   getLastOutcome: () => lastOutcome,
   getLastState: () => lastState,
+  getLastCreateOutcome: () => lastCreateOutcome,
   inspectState: (scenario: ScenarioName, operationId?: string) =>
     bridge.inspectState({ scenario, ...(operationId ? { operationId } : {}) }),
+  inspectCreateState: (scenario: CreateScenarioName) =>
+    bridge.inspectCreateState({ scenario }),
   holdWriterLock: (options: {
     scenario: ScenarioName;
     operationId: string;
@@ -432,7 +940,14 @@ async function init(): Promise<void> {
     if (!Capacitor.isNativePlatform()) {
       throw new Error("P1 bridge receipt prototype requires Android native runtime");
     }
+    const fixtureResponse = await fetch("./p1-desktop-expense-create.json");
+    if (!fixtureResponse.ok) {
+      throw new Error(`Failed to load desktop create fixture: ${fixtureResponse.status}`);
+    }
+    desktopCreateFixture = (await fixtureResponse.json()) as DesktopCreateFixture;
     const state = await refreshState();
+    const createState = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
+    renderCreateState(createState);
     runtimeEl.textContent = `Android原生桥已就绪（PID ${state.callerPid}）`;
     setControlsEnabled(true);
   } catch (error) {

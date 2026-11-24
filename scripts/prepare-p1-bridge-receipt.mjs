@@ -1,4 +1,5 @@
 // 在仓库外新目录生成 P1 桥接消费更正与回执恢复的隔离 Capacitor 8.6.0 Android 工程。
+import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -45,6 +46,12 @@ if (process.platform === "win32") {
 const www = path.join(output, "www");
 mkdirSync(www);
 cpSync(path.join(bridgeSource, "web/index.html"), path.join(www, "index.html"));
+const createFixturePath = path.join(root, "docs/internal/fixtures/p1-desktop-expense-create.json");
+const createFixtureBytes = readFileSync(createFixturePath);
+if (createHash("sha256").update(createFixtureBytes).digest("hex") !== "da9a97398ebb1e0e3b8e0e17097a8f8bc79da25602f6e7a119800572341a7b3f") {
+  throw new Error("Pinned p1-desktop-expense-create.json digest mismatch");
+}
+writeFileSync(path.join(www, "p1-desktop-expense-create.json"), createFixtureBytes);
 for (const name of ["tokens.css", "components.css"]) {
   cpSync(path.join(root, "vendor/design", name), path.join(www, name));
 }
@@ -78,6 +85,7 @@ mkdirSync(javaDir, { recursive: true });
 for (const name of [
   "MainActivity.java",
   "BridgeLedgerStore.java",
+  "BridgeCreateLedgerStore.java",
   "BridgeLockHolderProvider.java",
   "P1BridgeReceiptPlugin.java",
 ]) {
