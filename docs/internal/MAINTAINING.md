@@ -556,8 +556,10 @@ node scripts/check-p1-bridge-android.mjs --build-only
 node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
 ```
 
-脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图），以及三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与历史票据完整性；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
+脚本核对显式序列号、AVD 名、API 35 与启动状态，拒绝覆盖已有 `org.travelflow.p1bridge`。随后通过 WebView CDP 真实触摸（`Input.dispatchTouchEvent`）从编译后的实际 TS 页面依次验证 `before-commit`（提交前杀进程）、`after-commit-drop-reply`（提交成功但应答前杀进程）、`lock-busy-commit` 与 `lock-busy-rollback`（独立 `:writer` 进程持有 SQLite 写锁时查询返回 `pending_busy` 并保留原操作 ID 与意图）、三组金额边界回归（拒绝 `842.9`、`1e3`、`10000000000` 且账本与待核实状态不变；贯通 `2147483647`、`2147483648`、`9999999999` 的保存、独立写进程、SQLite、确认、重放与冲突拒绝），以及第二阶段空账本新增消费（`create-before-commit`、`create-after-commit`、`create-conflict-amount`、`create-conflict-share`，读取固定 `docs/internal/fixtures/p1-desktop-expense-create.json`，验证提交前／后中断恢复、逐版完整业务字段快照在重放与冷重开后保持、恢复时同键异金额／仅共享票据许可不同保留待核实并报 `intent_conflict`、写入时意图与入账内容一致校验、推进分支头后原请求与键重排请求重放回原版本、`intent_conflict`／`baseline_conflict`／`entity_exists`／四个非法金额拒绝、以及虚构身份或权限不符时零回执读取拒绝）。预期输出 `passed: true` 及各场景断前／断后／恢复计数与结果版本；结束后自动移除本轮 CDP 转发并卸载测试包，不触碰 `org.travelflow.p0`。
 
 ### 桌面新增消费候选的移动宿主复验
 
 Linux／WSL、Node 22.16+，根目录运行 `pnpm check:p1-desktop-create`。输入为桌面提交 `5c457e61f5238825f4bfc12cceba3ca9f5e4413a` 的 `backend/tests/fixtures/p1_expense_create_candidate.json` 原字节，固定在本仓内部测试资料。脚本验证文件及两条规范化摘要，只创建并清理自己的临时 SQLite 库。输出两次独立尝试的实际结果版本、拒绝码和摘要，版本 ID 每次生成，按同一操作重放是否返回原 ID 断言。预期两个子进程分别在提交前和提交后被 SIGKILL。该入口不需要电脑仓、SDK、设备或个人账本。
+
+集成版 Android 当前消费与历史快照共用同一读取路径，检查 12 个消费字段。共享票据许可 `allow_shared_receipts` 随原命令保存在回执意图中；仅改变这一项也应在重放／恢复时报告冲突。

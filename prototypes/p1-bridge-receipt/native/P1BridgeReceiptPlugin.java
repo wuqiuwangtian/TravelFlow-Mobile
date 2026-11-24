@@ -16,15 +16,17 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.File;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicLong;
 import org.json.JSONObject;
 
 /**
- * Isolated P1 Capacitor plugin bridging TS expense.patch + receipt.lookup commands
+ * Isolated P1 Capacitor plugin bridging TS expense.patch, expense.create and receipt.lookup commands
  * to durable Android SQLite transactions and synchronous caller-side intent persistence.
  */
 @CapacitorPlugin(name = "P1BridgeReceipt")
 public class P1BridgeReceiptPlugin extends Plugin {
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final AtomicLong createReceiptReadCount = new AtomicLong(0L);
 
     private SharedPreferences callerPrefs(String scenario) {
         return getContext().getSharedPreferences("p1-bridge-caller-" + scenario, Context.MODE_PRIVATE);
@@ -465,6 +467,232 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 call.resolve(result);
             } catch (Exception error) {
                 call.reject(error.getMessage(), "RELEASE_LOCK_FAILED");
+            }
+        });
+    }
+
+    private SharedPreferences createCallerPrefs(String scenario) {
+        return getContext().getSharedPreferences("p1-bridge-create-caller-" + scenario, Context.MODE_PRIVATE);
+    }
+
+    private JSObject buildCreatePendingState(String scenario) throws Exception {
+        SharedPreferences prefs = createCallerPrefs(scenario);
+        JSObject result = new JSObject();
+        String pendingRaw = prefs.getString("pending", null);
+        result.put("pending", pendingRaw != null ? new JSObject(pendingRaw) : JSONObject.NULL);
+        String confirmedOp = prefs.getString("confirmed_op", null);
+        result.put("confirmedOp", confirmedOp != null ? confirmedOp : JSONObject.NULL);
+        String confirmedRev = prefs.getString("confirmed_rev_id", null);
+        result.put("confirmedRevisionId", confirmedRev != null ? confirmedRev : JSONObject.NULL);
+        return result;
+    }
+
+    @PluginMethod
+    public void seedCreateScenario(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String datasetId = call.getString("datasetId", "");
+        String travelId = call.getString("travelId", "");
+        String branchId = call.getString("branchId", "");
+        String initialRevisionId = call.getString("initialRevisionId", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || datasetId.isEmpty() || travelId.isEmpty()
+                        || branchId.isEmpty() || initialRevisionId.isEmpty()) {
+                    call.reject("Invalid seedCreateScenario arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                BridgeCreateLedgerStore.seedEmpty(dir, datasetId, travelId, branchId, initialRevisionId);
+                JSObject state = BridgeCreateLedgerStore.inspectState(dir, createReceiptReadCount.get());
+                JSObject pending = buildCreatePendingState(scenario);
+                state.put("pending", pending.get("pending"));
+                state.put("confirmedOp", pending.get("confirmedOp"));
+                state.put("confirmedRevisionId", pending.get("confirmedRevisionId"));
+                call.resolve(state);
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "SEED_CREATE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void saveCreatePendingIntent(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String operationId = call.getString("operationId", "");
+        String rawCommandJson = call.getString("rawCommandJson", "");
+        String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || operationId.isEmpty() || rawCommandJson.isEmpty() || canonicalIntentJson.isEmpty()) {
+                    call.reject("Invalid saveCreatePendingIntent arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                SharedPreferences prefs = createCallerPrefs(scenario);
+                if (prefs.contains("pending") || prefs.contains("confirmed_op")) {
+                    call.reject("An operation already exists for this create scenario", "OPERATION_EXISTS");
+                    return;
+                }
+                JSONObject pending = new JSONObject()
+                        .put("operationId", operationId)
+                        .put("rawCommandJson", rawCommandJson)
+                        .put("canonicalIntentJson", canonicalIntentJson);
+                if (!prefs.edit().putString("pending", pending.toString()).commit()) {
+                    call.reject("Failed to persist create pending intent", "PENDING_SAVE_FAILED");
+                    return;
+                }
+                call.resolve(buildCreatePendingState(scenario));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "PENDING_SAVE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void loadCreatePendingIntent(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)) {
+                    call.reject("Unknown create scenario", "INVALID_ARGUMENTS");
+                    return;
+                }
+                call.resolve(buildCreatePendingState(scenario));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "PENDING_LOAD_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void confirmCreatePendingIntent(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String operationId = call.getString("operationId", "");
+        String revisionId = call.getString("revisionId", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario) || operationId.isEmpty() || revisionId.isEmpty()) {
+                    call.reject("Invalid confirmCreatePendingIntent arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                SharedPreferences prefs = createCallerPrefs(scenario);
+                String pendingRaw = prefs.getString("pending", null);
+                if (pendingRaw == null) {
+                    if (operationId.equals(prefs.getString("confirmed_op", null))) {
+                        call.resolve(buildCreatePendingState(scenario));
+                        return;
+                    }
+                    call.reject("No matching pending create operation", "NO_PENDING");
+                    return;
+                }
+                JSONObject pending = new JSONObject(pendingRaw);
+                if (!operationId.equals(pending.getString("operationId"))) {
+                    call.reject("Pending create operation ID mismatch", "OPERATION_MISMATCH");
+                    return;
+                }
+                boolean ok = prefs.edit()
+                        .remove("pending")
+                        .putString("confirmed_op", operationId)
+                        .putString("confirmed_rev_id", revisionId)
+                        .commit();
+                if (!ok) {
+                    call.reject("Failed to confirm create pending intent", "CONFIRM_FAILED");
+                    return;
+                }
+                call.resolve(buildCreatePendingState(scenario));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CONFIRM_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void submitExpenseCreate(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String rawCommandJson = call.getString("rawCommandJson", "");
+        String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        String faultMode = call.getString("faultMode", "none");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || rawCommandJson.isEmpty() || canonicalIntentJson.isEmpty()
+                        || (!"none".equals(faultMode) && !"before_commit".equals(faultMode)
+                                && !"after_commit_drop_reply".equals(faultMode))) {
+                    call.reject("Invalid submitExpenseCreate arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                call.resolve(BridgeCreateLedgerStore.executeCreate(dir, rawCommandJson, canonicalIntentJson, faultMode));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CREATE_SUBMIT_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void submitCreateNotesPatch(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String rawCommandJson = call.getString("rawCommandJson", "");
+        String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || rawCommandJson.isEmpty() || canonicalIntentJson.isEmpty()) {
+                    call.reject("Invalid submitCreateNotesPatch arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                call.resolve(BridgeCreateLedgerStore.executeNotesPatch(dir, rawCommandJson, canonicalIntentJson));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CREATE_PATCH_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void lookupCreateReceipt(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String datasetId = call.getString("datasetId", "");
+        String sourceDeviceId = call.getString("sourceDeviceId", "");
+        String operationId = call.getString("operationId", "");
+        String expectedCanonicalIntentJson = call.getString("canonicalIntentJson", null);
+        JSObject principal = call.getObject("principal");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || datasetId.isEmpty() || sourceDeviceId.isEmpty() || operationId.isEmpty()) {
+                    call.reject("Invalid lookupCreateReceipt arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                call.resolve(BridgeCreateLedgerStore.lookupReceipt(
+                        dir, principal, datasetId, sourceDeviceId, operationId,
+                        expectedCanonicalIntentJson, createReceiptReadCount));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CREATE_LOOKUP_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void inspectCreateState(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)) {
+                    call.reject("Unknown create scenario", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                JSObject state = BridgeCreateLedgerStore.inspectState(dir, createReceiptReadCount.get());
+                JSObject pending = buildCreatePendingState(scenario);
+                state.put("pending", pending.get("pending"));
+                state.put("confirmedOp", pending.get("confirmedOp"));
+                state.put("confirmedRevisionId", pending.get("confirmedRevisionId"));
+                call.resolve(state);
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CREATE_INSPECT_FAILED");
             }
         });
     }

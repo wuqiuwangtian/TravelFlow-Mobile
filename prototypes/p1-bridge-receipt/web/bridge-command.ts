@@ -29,8 +29,34 @@ export interface ExpensePatchIntent {
   };
   expected_revision_id: string;
   payload: {
+    amount_cents?: number;
+    notes?: string;
+  };
+}
+
+export interface ExpenseCreateIntent {
+  profile: typeof CONTROL_PROFILE;
+  kind: "expense.create";
+  operation: OperationIdentity;
+  target: {
+    travel_id: string;
+    branch_id: string;
+    entity_id: string;
+  };
+  expected_revision_id: string;
+  payload: {
+    title: string;
     amount_cents: number;
+    currency: "CNY";
+    paid_on: string | null;
+    category: string;
+    day: number | null;
+    activity_id: string | null;
     notes: string;
+    receipt_ids: string[];
+    allow_shared_receipts: boolean;
+    budget_item_id: string | null;
+    settles_budget: boolean;
   };
 }
 
@@ -130,12 +156,22 @@ function canonicalizeValue(value: unknown): string {
   throw new Error("Unsupported canonical value");
 }
 
-export function canonicalizeControlDocument(intent: ExpensePatchIntent): string {
+export function canonicalizeControlDocument(intent: ExpensePatchIntent | ExpenseCreateIntent): string {
   return canonicalizeValue({
     canonical_profile: CANONICAL_PROFILE,
     channel: "control",
     intent,
   });
+}
+
+export function validateExpenseCreateAmount(raw: unknown): { ok: true; value: number } | { ok: false; error: "type" | "integer_range" } {
+  if (typeof raw !== "number") {
+    return { ok: false, error: "type" };
+  }
+  if (!Number.isSafeInteger(raw) || raw < MIN_AMOUNT_CENTS || raw > MAX_AMOUNT_CENTS) {
+    return { ok: false, error: "integer_range" };
+  }
+  return { ok: true, value: raw };
 }
 
 export function canonicalizeQueryDocument(intent: ReceiptLookupIntent): string {

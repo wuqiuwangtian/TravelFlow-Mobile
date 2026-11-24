@@ -650,3 +650,25 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 2. 正常触摸新增与备注更正后，只读检查实验包已关闭的 SQLite 文件副本。当前 expenses 行有 category=meal、receipt_ids_json=[]；修订 2 和 3 的 snapshot_json 各只有 id、title、amount_cents、currency、paid_on、notes，均缺分类与票据引用等业务字段。改为完整保存该候选支持的消费业务字段（共享票据许可属于命令控制）；以独立固定预期核对各版快照内容、显式 null 和空数组。重开并重放后历史保持原样。
 
 下一次在原执行分支修正两项，保留九项回归，回传提交号。上述实验只使用虚构账本；测试包、端口转发与本次启动的模拟器均已清理。
+
+## 2026-11-24 第二阶段：Android 隔离页面新增消费与恢复实测
+
+在执行分支 `antigravity/mobile-expense-create`（起点 `e5530a7`）复用了 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，固定 Capacitor 8.6.0），新增 `BridgeCreateLedgerStore.java` 及 TS 页面空账本 `expense.create` 入口，保留全部 7 组消费更正与金额边界回归。输入严格采用固定样例 `docs/internal/fixtures/p1-desktop-expense-create.json`（SHA-256 `da9a97398ebb1e0e3b8e0e17097a8f8bc79da25602f6e7a119800572341a7b3f`），TS 规范化命令与回执查询摘要与桌面／移动宿主一致（`e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd` 与 `6eae8c5e2bbda98cd3e7dab4858f6d573f8593698ce3c9ce97ffee3f45ea8315`）。
+
+在隔离 API 35 模拟器 `travelflow_p0_api35`（`emulator-5580`，x86_64，SQLite `3.44.3`，`DELETE`／`FULL`，`-read-only` 覆盖层）运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 11 组通过（`passed: true`）：
+
+- 既有 7 组更正与金额边界场景全部回归通过（`before-commit`、`after-commit-drop-reply`、`lock-busy-commit`、`lock-busy-rollback`、`bound-int32-max`、`bound-int32-over`、`bound-max-cents`）。
+- `create-before-commit`：空账本（`fixture-r0`，消费 0、修订 1、回执 0、待发送 0）提交新增午餐前杀进程（PID `2591 -> 2682`），重开账本仍为空且待核实操作保留；查询得 `not_found_at_settled_read` 后以原操作 ID（`fixture-op-lunch`）和原意图重试提交一次，生成 `fixture-27b2728a-d5ee-4361-bd04-a9760062abd1`，消费 1 笔（`fixture-lunch`、午餐、CNY 8635 分、`paid_on: null`、`category: meal`、`receipt_ids: []` 等全部 13 字段完整），修订 2、回执 1、待发送 1。
+- `create-after-commit`：空账本提交成功但在 Capacitor 应答前杀进程（PID `2779 -> 2869`），重开携带完整持久意图查回 `committed`／`changed` 与原结果版本 `fixture-d801f4d2-5dfb-4375-9eb1-748a66ad1b74`，仅确认不重复写入。
+- 两组在通过备注更正推进分支头至新版本（修订 3、回执 2、待发送 2）后，重放原请求及键重排请求均返回最初新增结果版本，再次强停冷重开（PID `2779`／`2969`）后逐版核对三份历史快照的全部 13 项业务字段（含分类、票据引用、显式 `null` 与备注变化）均保持原样；改金额（8636）或仅改 `allow_shared_receipts: true` 均返回 `intent_conflict`，旧基线新操作返回 `baseline_conflict`，同消费 ID 新操作返回 `entity_exists`，四个非法金额（`0`、`true`、`1.25`、`10000000000`）按宿主预期分别返回 `integer_range`／`type`，且均零写入；三种虚构身份／权限不符的回执查询均返回 `denied`、无 `receipt` 字段且回执表读取计数未增加。
+- 恢复意图核对与写入一致性对照（`create-conflict-amount`、`create-conflict-share`）：已提交原午餐（8635 分、`allow_shared_receipts: false`）后，写入时传入与规范化意图不一致的命令被 `intent_mismatch` 拒绝且零写入；调用方持有同键异金额（8636）或仅改 `allow_shared_receipts: true` 的待核实意图并在冷重开后触发恢复，均返回 `intent_conflict`、保留原待核实记录（`confirmedOp: null`）且账本与全部历史快照不变。
+
+未验证项：本次仅覆盖隔离 API 35 模拟器的单分支虚构新增消费，未覆盖真机、网络同步、生产身份认证与共享契约版本分配。复验入口见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。
+
+## 2026-11-24 Android 固定新增消费返修集成验收
+
+执行提交 `95030e6b21086d81c51b94e57a35f8496bad7d0e` 及最终集成 APK 在隔离 API 35 AVD 分别通过 11 个场景。最终版本提交前中断重试的新增结果为 `fixture-2352bae6-2c3c-4963-ad51-dfeed36387e8`，提交后应答丢失查回的新增结果为 `fixture-4f07749d-d4ec-4c3a-bdbe-fd863d66fab4`。头推进后重放保持原结果；金额或仅共享票据许可不同的请求报告冲突，已记消费、回执、待发送和原待核实意图均保留。原始命令与规范化意图不符时拒绝写入。类型、命令摘要与宿主新增检查均通过。
+
+独立重复首次评审的相反顺序：页面挂起 8635 分请求、同键 8636 分先成功，页面恢复返回 intent_conflict，待核实原文未变、未标记确认。另从正常新增与备注更正后的实验库只读副本核对三份 snapshot_json、完整消费字段、父版本关系及原回执。集成版统一当前消费与历史读取，12 项消费字段逐版与固定预期一致。共享票据许可属于命令控制，原意图完整保留供冲突判断。未对旧实验快照补造缺失字段。仅验证单分支固定输入和模拟器，尚无网络同步或正式契约。
+
+已从电脑固定提交 `20c84f0` 归档运行 20 项桌面隔离执行／导出检查，通过。下一项核对两个执行器的能力限制、结果与回执语义：桌面拒绝当前未支持的关联字段，在 2000 笔上限返回 expense_limit_exceeded；移动宿主使用 expense_count。Android 固定午餐成功不证明两端边界均一致。执行范围见[路线](PRODUCT_ROADMAP.md#新增消费的跨端边界对照)。

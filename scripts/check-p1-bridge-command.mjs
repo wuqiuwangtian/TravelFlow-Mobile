@@ -94,10 +94,29 @@ try {
     notes: "invalid",
   }));
 
+  const desktopFixtureBytes = readFileSync(path.join(root, "docs/internal/fixtures/p1-desktop-expense-create.json"));
+  assert.equal(
+    createHash("sha256").update(desktopFixtureBytes).digest("hex"),
+    "da9a97398ebb1e0e3b8e0e17097a8f8bc79da25602f6e7a119800572341a7b3f",
+  );
+  const desktopFixture = JSON.parse(desktopFixtureBytes.toString("utf8"));
+  const createCanon = mod.canonicalizeControlDocument(desktopFixture.command);
+  const createSha = createHash("sha256").update(createCanon, "utf8").digest("hex");
+  assert.equal(createSha, "e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd");
+  const createQueryCanon = mod.canonicalizeQueryDocument(desktopFixture.receipt_query);
+  const createQuerySha = createHash("sha256").update(createQueryCanon, "utf8").digest("hex");
+  assert.equal(createQuerySha, "6eae8c5e2bbda98cd3e7dab4858f6d573f8593698ce3c9ce97ffee3f45ea8315");
+
+  for (const [bad, expectedErr] of [[0, "integer_range"], [true, "type"], [1.25, "integer_range"], [10000000000, "integer_range"]]) {
+    assert.deepEqual(mod.validateExpenseCreateAmount(bad), { ok: false, error: expectedErr });
+  }
+
   console.log(JSON.stringify({
     passed: true,
     controlCanonicalSha256: p1Control.sha256,
     queryCanonicalSha256: p1Query.sha256,
+    desktopCreateCommandSha256: createSha,
+    desktopCreateQuerySha256: createQuerySha,
     boundaryDigests,
     shared_contract_version: null,
     android_native_executed: false,
