@@ -24,15 +24,19 @@ function parseArgs(argv) {
       opts.serial = argv[++i] ?? null;
     } else if (arg === "--cdp-port") {
       opts.cdpPort = Number.parseInt(argv[++i] ?? "", 10);
+    } else if (arg === "--desktop-vectors") {
+      opts.desktopVectors = argv[++i];
+      assert.ok(opts.desktopVectors && !opts.desktopVectors.startsWith("--"), "Missing vectors JSON path");
     } else if (arg === "--apk") {
       opts.apk = argv[++i] ?? null;
     } else {
-      throw new Error("Usage: check-p1-bridge-android.mjs (--build-only | --serial emulator-5580 [--cdp-port 19240] [--apk PATH])");
+      throw new Error("Usage: check-p1-bridge-android.mjs (--build-only | --serial emulator-5580 [--cdp-port 19240] [--apk PATH] [--desktop-vectors JSON])");
     }
   }
   if (opts.buildOnly === Boolean(opts.serial)) {
     throw new Error("Specify exactly one of --build-only or --serial emulator-N");
   }
+  assert.ok(!opts.desktopVectors || opts.serial, "--desktop-vectors requires --serial");
   if (!Number.isInteger(opts.cdpPort) || opts.cdpPort < 1024 || opts.cdpPort > 65535) {
     throw new Error("Invalid --cdp-port");
   }
@@ -1324,7 +1328,15 @@ async function main() {
     const installOut = adb("install", "-t", apk);
     assert.ok(installOut.includes("Success"), `APK install failed: ${installOut}`);
     try {
-      const report = await runScenarios(adb, opts.cdpPort);
+      let report;
+      if (opts.desktopVectors) {
+        const { checkVectorGaps } = await import("./check-p1-vector-gaps.mjs");
+        const { client } = await launchAndAttach(adb, opts.cdpPort);
+        try { report = await checkVectorGaps(opts.desktopVectors, { client, adb }); }
+        finally { client.close(); }
+      } else {
+        report = await runScenarios(adb, opts.cdpPort);
+      }
       console.log(JSON.stringify(report, null, 2));
     } finally {
       try { adb("forward", "--remove", `tcp:${opts.cdpPort}`); } catch {}
