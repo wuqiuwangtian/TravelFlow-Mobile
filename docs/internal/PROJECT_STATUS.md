@@ -763,3 +763,13 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 第二候选包 `94ec1fb` 增量复核通过。宿主两项非法输入原码已收录；宿主与 Android 从持久回执复算原意图及共享票据许可翻转样例的摘要均匹配。移动侧在本候选范围内无定版阻碍，等桌面仓分配共享版本。[复跑与实读结果](P1_EXPENSE_VECTOR_REVIEW.md#第二候选包增量复核)
 
 已从桌面固定提交 `d916697828ad3d2f0e87a3a231b996c7873d421b` 导入 `vendor/contracts/expense-create-v0.1.0/`。清单 SHA-256 为 `759145bea1b98f086af4c70938ae33932b6cc0ba0527e12dc62faaf90733b8b1`；六个普通文件的集合及五项内容摘要均相符。逐段核对 SPEC，并逐项比较四份 JSON：相对第二候选，仅有冻结标识、版本元数据、证据来源及复跑说明的变化。字段范围、原子提交与确认规则、规范化摘要、10 场景 36 步、原始返回断言及错误映射均无业务差异。宿主和 Android 复用 `8ba3365` 的运行证据。本仓独立归档中运行 `node scripts/check-contracts.mjs` 即可校验正式快照及与已验候选的 JSON 对照。
+
+## Android 离线旅行记账首交评审（7fb2bb0）
+
+从 `7fb2bb00d0ddee0094c6e3e0862b9b22559cffee` 构建，在指定只读 API 35 AVD 独立执行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241 --apk "$apk"` 和既有 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240 --apk "$apk"`。离线页面两笔合计 12915 分，8 类非法金额零写入，连点和两次冷重开通过；三版历史、两份本机回执、两条待发送命令。原有 17 项通过。类型、只读投影、桥命令和冻结快照检查通过。补测发现如下问题，执行分支暂缓合入。
+
+- **正常输入被静默截断**。新安装打开记一笔，在标题框用 WebView CDP 的 Input.insertText 输入 51 个“𠮷”（每个是一个 Unicode 标量），填 86.35 并保存。输入框及导出的原命令实际均只剩 50 个；移动宿主 fingerprintIntent 接受原始 51 字。HTML maxlength、TS length 和原生 String.length 都按 UTF-16 单元计数。按冻结规格的标题 100／备注 1000 标量在表单和原生层一致校验；有效输入保留全文，超限给出提示并保留草稿。覆盖包含非 BMP 字符的两项上限及超限。
+- **已保存命令与移动规范化实现不一致**。正常表单备注设为字符串 `"A\uFEFFB"`（中间为实际 U+FEFF），Android 新增、待发送导出成功；对导出的 raw_command_json 调用移动 fingerprintIntent 返回 `text_control`。须明确此字符的处理与冻结规格及两端既有文字规则的关系，确保本地声称可发送的输入可复算；禁止静默删除用户文字。确需变更契约语义时单列差异，交维护者协调。
+- **原生落库前漏检必填字段**。在上述两笔之后从隔离桥提交新操作／实体，基线取当前头，从合法命令删除 payload.paid_on 并用同一修改后对象生成规范化封装。saveOfflineTripExpense 实返 accepted=true，消费、待发送都从 2 增至 3。冻结输入要求显式 null，移动宿主校验缺键为 shape。返修在原生写事务前核对冻结命令字段集合，覆盖缺少显式空字段和未知字段，断言所有持久状态零变化；合法显式 null 继续可保存。
+
+沿用 `antigravity/android-offline-expense-entry` 实施；复跑上述路径和既有离线回归。仍为虚构旅行本地发送侧，桌面接收、真实连接另验。
