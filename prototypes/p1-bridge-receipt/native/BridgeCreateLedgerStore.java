@@ -21,7 +21,8 @@ final class BridgeCreateLedgerStore {
     private BridgeCreateLedgerStore() {}
 
     static boolean isCreateScenario(String scenario) {
-        return scenario != null && scenario.matches("create-before-commit|create-after-commit");
+        return scenario != null && scenario.matches(
+                "create-before-commit|create-after-commit|create-conflict-amount|create-conflict-share");
     }
 
     static File scenarioDir(File filesDir, String scenario) {
@@ -127,6 +128,60 @@ final class BridgeCreateLedgerStore {
         return null;
     }
 
+    private static boolean jsonValuesEqual(Object left, Object right) throws Exception {
+        boolean leftNull = left == null || left == JSONObject.NULL;
+        boolean rightNull = right == null || right == JSONObject.NULL;
+        if (leftNull || rightNull) {
+            return leftNull && rightNull;
+        }
+        if (left instanceof JSONObject && right instanceof JSONObject) {
+            JSONObject a = (JSONObject) left;
+            JSONObject b = (JSONObject) right;
+            if (a.length() != b.length()) {
+                return false;
+            }
+            java.util.Iterator<String> keys = a.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                if (!b.has(key) || !jsonValuesEqual(a.opt(key), b.opt(key))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if (left instanceof JSONArray && right instanceof JSONArray) {
+            JSONArray a = (JSONArray) left;
+            JSONArray b = (JSONArray) right;
+            if (a.length() != b.length()) {
+                return false;
+            }
+            for (int i = 0; i < a.length(); i++) {
+                if (!jsonValuesEqual(a.opt(i), b.opt(i))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if ((left instanceof Integer || left instanceof Long) && (right instanceof Integer || right instanceof Long)) {
+            return ((Number) left).longValue() == ((Number) right).longValue();
+        }
+        return left.getClass().equals(right.getClass()) && left.equals(right);
+    }
+
+    private static boolean canonicalMatchesCommand(JSONObject rawCommand, String canonicalIntentJson) {
+        try {
+            JSONObject doc = new JSONObject(canonicalIntentJson);
+            if (!"p1-host-intent-c14n-1".equals(doc.optString("canonical_profile"))
+                    || !"control".equals(doc.optString("channel"))) {
+                return false;
+            }
+            JSONObject canonicalIntent = doc.optJSONObject("intent");
+            return canonicalIntent != null && jsonValuesEqual(rawCommand, canonicalIntent);
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     static JSObject executeCreate(
             File dir,
             String rawCommandJson,
@@ -154,6 +209,9 @@ final class BridgeCreateLedgerStore {
         String amountError = validateAmountCents(payload, parsedCents);
         if (amountError != null) {
             return rejected(amountError);
+        }
+        if (!canonicalMatchesCommand(command, canonicalIntentJson)) {
+            return rejected("intent_mismatch");
         }
         long amountCents = parsedCents[0];
         String currency = payload.isNull("currency") ? null : payload.optString("currency", null);
@@ -293,6 +351,9 @@ final class BridgeCreateLedgerStore {
                 || !"expense.patch".equals(command.optString("kind"))) {
             return rejected("unsupported_command");
         }
+        if (!canonicalMatchesCommand(command, canonicalIntentJson)) {
+            return rejected("intent_mismatch");
+        }
         JSONObject op = command.getJSONObject("operation");
         JSONObject target = command.getJSONObject("target");
         JSONObject payload = command.getJSONObject("payload");
@@ -372,6 +433,7 @@ final class BridgeCreateLedgerStore {
             String datasetId,
             String sourceDeviceId,
             String operationId,
+            String expectedCanonicalIntentJson,
             AtomicLong receiptReadCounter
     ) throws Exception {
         // Synthetic principal/permission gate happens strictly before any receipt table read.
@@ -391,17 +453,22 @@ final class BridgeCreateLedgerStore {
                 try {
                     receiptReadCounter.incrementAndGet();
                     try (Cursor row = db.rawQuery(
-                            "SELECT effect, result_revision_id FROM receipts "
+                            "SELECT intent_json, effect, result_revision_id FROM receipts "
                                     + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?",
                             new String[]{datasetId, sourceDeviceId, operationId})) {
                         JSObject result = new JSObject();
-                        result.put("accepted", true);
                         if (!row.moveToFirst()) {
+                            result.put("accepted", true);
                             result.put("state", "not_found_at_settled_read");
+                        } else if (expectedCanonicalIntentJson != null
+                                && !expectedCanonicalIntentJson.isEmpty()
+                                && !expectedCanonicalIntentJson.equals(row.getString(0))) {
+                            return rejected("intent_conflict");
                         } else {
                             JSObject receipt = new JSObject();
-                            receipt.put("effect", row.getString(0));
-                            receipt.put("result_revision_id", row.getString(1));
+                            receipt.put("effect", row.getString(1));
+                            receipt.put("result_revision_id", row.getString(2));
+                            result.put("accepted", true);
                             result.put("state", "committed");
                             result.put("receipt", receipt);
                         }
@@ -427,6 +494,7 @@ final class BridgeCreateLedgerStore {
             data.put("seeded", false);
             data.put("headRevisionId", JSONObject.NULL);
             data.put("expenses", new JSArray());
+            data.put("revisions", new JSArray());
             data.put("revisionCount", 0);
             data.put("receiptCount", 0);
             data.put("outboxCount", 0);
@@ -499,6 +567,20 @@ final class BridgeCreateLedgerStore {
                 }
             }
             data.put("outbox", outbox);
+
+            JSArray revisions = new JSArray();
+            try (Cursor rows = db.rawQuery(
+                    "SELECT revision_id, parent_revision_id, snapshot_json FROM revisions ORDER BY seq",
+                    null)) {
+                while (rows.moveToNext()) {
+                    JSObject item = new JSObject();
+                    item.put("revision_id", rows.getString(0));
+                    item.put("parent_revision_id", rows.isNull(1) ? JSONObject.NULL : rows.getString(1));
+                    item.put("snapshot", new JSONObject(rows.getString(2)));
+                    revisions.put(item);
+                }
+            }
+            data.put("revisions", revisions);
             data.put("journal", DatabaseUtils.stringForQuery(db, "PRAGMA journal_mode", null));
             data.put("sqlite", DatabaseUtils.stringForQuery(db, "SELECT sqlite_version()", null));
         }
@@ -508,7 +590,9 @@ final class BridgeCreateLedgerStore {
     private static String buildSnapshotJson(SQLiteDatabase db) throws Exception {
         JSONArray list = new JSONArray();
         try (Cursor rows = db.rawQuery(
-                "SELECT entity_id, title, amount_cents, currency, paid_on, notes FROM expenses ORDER BY entity_id",
+                "SELECT entity_id, title, amount_cents, currency, paid_on, category, day, activity_id, "
+                        + "notes, receipt_ids_json, allow_shared_receipts, budget_item_id, settles_budget "
+                        + "FROM expenses ORDER BY entity_id",
                 null)) {
             while (rows.moveToNext()) {
                 JSONObject item = new JSONObject();
@@ -517,7 +601,14 @@ final class BridgeCreateLedgerStore {
                 item.put("amount_cents", rows.getLong(2));
                 item.put("currency", rows.getString(3));
                 item.put("paid_on", rows.isNull(4) ? JSONObject.NULL : rows.getString(4));
-                item.put("notes", rows.getString(5));
+                item.put("category", rows.getString(5));
+                item.put("day", rows.isNull(6) ? JSONObject.NULL : rows.getInt(6));
+                item.put("activity_id", rows.isNull(7) ? JSONObject.NULL : rows.getString(7));
+                item.put("notes", rows.getString(8));
+                item.put("receipt_ids", new JSONArray(rows.getString(9)));
+                item.put("allow_shared_receipts", rows.getInt(10) != 0);
+                item.put("budget_item_id", rows.isNull(11) ? JSONObject.NULL : rows.getString(11));
+                item.put("settles_budget", rows.getInt(12) != 0);
                 list.put(item);
             }
         }

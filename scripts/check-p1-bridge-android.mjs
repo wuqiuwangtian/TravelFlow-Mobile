@@ -753,6 +753,44 @@ async function runScenarios(adb, cdpPort) {
     );
     const createFixture = JSON.parse(createFixtureBytes.toString("utf8"));
 
+    const expectedLunchV1 = {
+      id: "fixture-lunch",
+      title: "午餐",
+      amount_cents: 8635,
+      currency: "CNY",
+      paid_on: null,
+      category: "meal",
+      day: null,
+      activity_id: null,
+      notes: "",
+      receipt_ids: [],
+      allow_shared_receipts: false,
+      budget_item_id: null,
+      settles_budget: false,
+    };
+    const expectedLunchV2 = { ...expectedLunchV1, notes: "虚构更正" };
+
+    function assertCreateRevisions(revisions, createRevision, advancedHead) {
+      assert.equal(revisions.length, advancedHead ? 3 : 2);
+      assert.deepEqual(revisions[0], {
+        revision_id: "fixture-r0",
+        parent_revision_id: null,
+        snapshot: { expenses: [] },
+      });
+      assert.deepEqual(revisions[1], {
+        revision_id: createRevision,
+        parent_revision_id: "fixture-r0",
+        snapshot: { expenses: [expectedLunchV1] },
+      });
+      if (advancedHead) {
+        assert.deepEqual(revisions[2], {
+          revision_id: advancedHead,
+          parent_revision_id: createRevision,
+          snapshot: { expenses: [expectedLunchV2] },
+        });
+      }
+    }
+
     for (const { scenario, faultMode } of [
       { scenario: "create-before-commit", faultMode: "before_commit" },
       { scenario: "create-after-commit", faultMode: "after_commit_drop_reply" },
@@ -888,10 +926,25 @@ async function runScenarios(adb, cdpPort) {
       assert.equal(auth.state.revisionCount, 3);
       assert.equal(auth.state.receiptCount, 2);
       assert.equal(auth.state.outboxCount, 2);
+      assertCreateRevisions(auth.state.revisions, createRevision, advancedHead);
+
+      // Force-stop and reopen to verify full historical snapshots survive cold restart after replay.
+      const pidBeforeReopen = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario} reopen`);
+      session = await launchAndAttach(adb, cdpPort, pidBeforeReopen);
+      await session.client.setSelect("create-scenario", scenario);
+      const reopenedState = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      assertCreateRevisions(reopenedState.revisions, createRevision, advancedHead);
+      assert.deepEqual(reopenedState.expenses, [expectedLunchV2]);
+      assert.equal(reopenedState.receiptCount, 2);
+      assert.equal(reopenedState.outboxCount, 2);
 
       report.scenarios[scenario] = {
         pidBefore,
-        pidAfter: session.pid,
+        pidAfter: pidBeforeReopen,
+        pidAfterReopen: session.pid,
         operationId: "fixture-op-lunch",
         entityId: "fixture-lunch",
         result_revision_id: createRevision,
@@ -905,6 +958,7 @@ async function runScenarios(adb, cdpPort) {
         },
         recoveredStatus: recovered.status,
         replay_after_head_advance: true,
+        fullSnapshotsVerifiedAcrossReopen: true,
         rejections: {
           diffAmount: rejections.diffAmount.error,
           diffShare: rejections.diffShare.error,
@@ -914,11 +968,70 @@ async function runScenarios(adb, cdpPort) {
           authDeniedZeroReads: true,
         },
         final: {
-          headRevisionId: auth.state.headRevisionId,
-          expenses: auth.state.expenses.length,
-          revisionCount: auth.state.revisionCount,
-          receiptCount: auth.state.receiptCount,
-          outboxCount: auth.state.outboxCount,
+          headRevisionId: reopenedState.headRevisionId,
+          expenses: reopenedState.expenses.length,
+          revisionCount: reopenedState.revisionCount,
+          receiptCount: reopenedState.receiptCount,
+          outboxCount: reopenedState.outboxCount,
+        },
+      };
+    }
+
+    // 10 & 11. 恢复时完整意图核对冲突对照（同键异金额、仅共享票据许可不同）及写入意图一致性校验
+    for (const { scenario, diff } of [
+      { scenario: "create-conflict-amount", diff: { amount_cents: 8636 } },
+      { scenario: "create-conflict-share", diff: { allow_shared_receipts: true } },
+    ]) {
+      await session.client.setSelect("create-scenario", scenario);
+      const staged = await session.client.evaluate(
+        `window.__tfP1Bridge.stageCreateRecoveryConflict(${JSON.stringify(scenario)}, ${JSON.stringify(diff)})`,
+      );
+      assert.equal(staged.committed.accepted, true);
+      const committedRev = staged.committed.result_revision_id;
+      assertCreateRevisions(staged.state.revisions, committedRev, null);
+
+      const mismatchResult = await session.client.evaluate(
+        `window.__tfP1Bridge.submitMismatchedCreateIntent(${JSON.stringify(scenario)})`,
+      );
+      assert.deepEqual(mismatchResult, { accepted: false, error: "intent_mismatch" });
+
+      // Cold restart before triggering recovery from the TS page.
+      const pidBeforeKill = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario}`);
+      session = await launchAndAttach(adb, cdpPort, pidBeforeKill);
+      await session.client.setSelect("create-scenario", scenario);
+
+      const recovered = await session.client.tapAndWaitCreateAction("create-recover");
+      assert.equal(recovered.status, "intent_conflict");
+      assert.deepEqual(recovered.lookup, { accepted: false, error: "intent_conflict" });
+      assert.equal(recovered.state.pending?.operationId, "fixture-op-lunch");
+      assert.equal(recovered.state.pending?.canonicalIntentJson, staged.conflictingCanon);
+      assert.equal(recovered.state.confirmedOp, null);
+      assert.equal(recovered.state.confirmedRevisionId, null);
+      assert.equal(recovered.state.headRevisionId, committedRev);
+      assert.equal(recovered.state.revisionCount, 2);
+      assert.equal(recovered.state.receiptCount, 1);
+      assert.equal(recovered.state.outboxCount, 1);
+      assert.deepEqual(recovered.state.expenses, [expectedLunchV1]);
+      assertCreateRevisions(recovered.state.revisions, committedRev, null);
+
+      report.scenarios[scenario] = {
+        pidBeforeKill,
+        pidAfterReopen: session.pid,
+        diff,
+        committedRevisionId: committedRev,
+        writeMismatchError: mismatchResult.error,
+        recoverStatus: recovered.status,
+        pendingPreserved: true,
+        confirmedOp: recovered.state.confirmedOp,
+        final: {
+          headRevisionId: recovered.state.headRevisionId,
+          expenses: recovered.state.expenses.length,
+          revisionCount: recovered.state.revisionCount,
+          receiptCount: recovered.state.receiptCount,
+          outboxCount: recovered.state.outboxCount,
         },
       };
     }

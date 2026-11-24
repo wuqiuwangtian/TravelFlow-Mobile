@@ -656,6 +656,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String datasetId = call.getString("datasetId", "");
         String sourceDeviceId = call.getString("sourceDeviceId", "");
         String operationId = call.getString("operationId", "");
+        String expectedCanonicalIntentJson = call.getString("canonicalIntentJson", null);
         JSObject principal = call.getObject("principal");
         executor.execute(() -> {
             try {
@@ -666,7 +667,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 }
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
                 call.resolve(BridgeCreateLedgerStore.lookupReceipt(
-                        dir, principal, datasetId, sourceDeviceId, operationId, createReceiptReadCount));
+                        dir, principal, datasetId, sourceDeviceId, operationId,
+                        expectedCanonicalIntentJson, createReceiptReadCount));
             } catch (Exception error) {
                 call.reject(error.getMessage(), "CREATE_LOOKUP_FAILED");
             }

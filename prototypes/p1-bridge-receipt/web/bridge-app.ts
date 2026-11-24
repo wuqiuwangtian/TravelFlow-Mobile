@@ -22,7 +22,11 @@ type ScenarioName =
   | "bound-int32-over"
   | "bound-max-cents";
 
-type CreateScenarioName = "create-before-commit" | "create-after-commit";
+type CreateScenarioName =
+  | "create-before-commit"
+  | "create-after-commit"
+  | "create-conflict-amount"
+  | "create-conflict-share";
 
 type FaultMode = "none" | "before_commit" | "after_commit_drop_reply";
 
@@ -90,6 +94,11 @@ interface CreateInspectStateResult {
   seeded: boolean;
   headRevisionId: string | null;
   expenses: CreateExpenseRow[];
+  revisions: Array<{
+    revision_id: string;
+    parent_revision_id: string | null;
+    snapshot: { expenses: CreateExpenseRow[] };
+  }>;
   revisionCount: number;
   receiptCount: number;
   outboxCount: number;
@@ -247,6 +256,7 @@ interface P1BridgeReceiptPlugin {
     datasetId: string;
     sourceDeviceId: string;
     operationId: string;
+    canonicalIntentJson?: string;
     principal: SyntheticPrincipal;
   }): Promise<CreateLookupResult>;
   inspectCreateState(options: { scenario: CreateScenarioName }): Promise<CreateInspectStateResult>;
@@ -689,9 +699,16 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
       datasetId: fixture.receipt_query.operation.dataset_id,
       sourceDeviceId: fixture.receipt_query.operation.source_device_id,
       operationId: pending.operationId,
+      canonicalIntentJson: pending.canonicalIntentJson,
       principal: SYNTHETIC_PRINCIPAL,
     });
     if (!lookup.accepted) {
+      if (lookup.error === "intent_conflict") {
+        // 冲突时保留待核实记录，不确认也不清除。
+        const state = await bridge.inspectCreateState({ scenario });
+        renderCreateState(state);
+        return { status: "intent_conflict", lookup, state };
+      }
       throw new Error(`Receipt lookup rejected: ${lookup.error}`);
     }
     if (lookup.state === "committed" && lookup.receipt?.result_revision_id) {
@@ -724,6 +741,7 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
         datasetId: fixture.receipt_query.operation.dataset_id,
         sourceDeviceId: fixture.receipt_query.operation.source_device_id,
         operationId: pending.operationId,
+        canonicalIntentJson: pending.canonicalIntentJson,
         principal: SYNTHETIC_PRINCIPAL,
       });
       const state = await bridge.inspectCreateState({ scenario });
@@ -924,6 +942,56 @@ byId<HTMLButtonElement>("create-check-auth").onclick = () =>
     bridge.inspectState({ scenario, ...(operationId ? { operationId } : {}) }),
   inspectCreateState: (scenario: CreateScenarioName) =>
     bridge.inspectCreateState({ scenario }),
+  stageCreateRecoveryConflict: async (scenario: CreateScenarioName, diff: { amount_cents?: number; allow_shared_receipts?: boolean }) => {
+    const fixture = requireCreateFixture();
+    await bridge.seedCreateScenario({
+      scenario,
+      datasetId: fixture.command.operation.dataset_id,
+      travelId: fixture.command.target.travel_id,
+      branchId: fixture.command.target.branch_id,
+      initialRevisionId: fixture.command.expected_revision_id,
+    });
+    const originalCanon = canonicalizeControlDocument(fixture.command);
+    const committed = await bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(fixture.command),
+      canonicalIntentJson: originalCanon,
+      faultMode: "none",
+    });
+    const conflictingCommand: ExpenseCreateIntent = {
+      ...fixture.command,
+      payload: { ...fixture.command.payload, ...diff },
+    };
+    const conflictingCanon = canonicalizeControlDocument(conflictingCommand);
+    const saved = await bridge.saveCreatePendingIntent({
+      scenario,
+      operationId: fixture.command.operation.operation_id,
+      rawCommandJson: JSON.stringify(conflictingCommand),
+      canonicalIntentJson: conflictingCanon,
+    });
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { committed, saved, conflictingCanon, state };
+  },
+  submitMismatchedCreateIntent: async (scenario: CreateScenarioName) => {
+    const fixture = requireCreateFixture();
+    const rawWith8636: ExpenseCreateIntent = {
+      ...fixture.command,
+      operation: { ...fixture.command.operation, operation_id: "fixture-op-mismatch" },
+      target: { ...fixture.command.target, entity_id: "fixture-mismatch" },
+      payload: { ...fixture.command.payload, amount_cents: 8636 },
+    };
+    const canonWith8635 = canonicalizeControlDocument({
+      ...rawWith8636,
+      payload: { ...rawWith8636.payload, amount_cents: 8635 },
+    });
+    return bridge.submitExpenseCreate({
+      scenario,
+      rawCommandJson: JSON.stringify(rawWith8636),
+      canonicalIntentJson: canonWith8635,
+      faultMode: "none",
+    });
+  },
   holdWriterLock: (options: {
     scenario: ScenarioName;
     operationId: string;
