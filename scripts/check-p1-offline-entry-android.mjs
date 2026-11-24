@@ -223,6 +223,19 @@ async function setInputValue(cdp, id, value) {
   assert.equal(ok, true, `Failed to set #${id}`);
 }
 
+async function insertTextViaCdp(cdp, id, value) {
+  await cdp.evaluate(`(() => {
+    const el = document.getElementById(${JSON.stringify(id)});
+    if (!el) throw new Error("Missing element #" + ${JSON.stringify(id)});
+    el.focus();
+    el.value = "";
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  })()`);
+  await cdp.send("Input.insertText", { text: value });
+  const actual = await cdp.evaluate(`document.getElementById(${JSON.stringify(id)}).value`);
+  assert.equal(actual, value, `Input.insertText truncated or altered #${id}`);
+}
+
 async function waitForCondition(cdp, expression, label, timeoutMs = 15000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -230,14 +243,16 @@ async function waitForCondition(cdp, expression, label, timeoutMs = 15000) {
     if (matched) return;
     await sleep(120);
   }
-  throw new Error(`Timed out waiting for ${label}`);
+  const ui = await cdp.evaluate(`window.__travelflowOfflineEntry?.getUiState?.()`).catch(() => null);
+  throw new Error(`Timed out waiting for ${label} (ui=${JSON.stringify(ui)})`);
 }
 
 async function doubleTapElement(cdp, id) {
-  const pos = await cdp.evaluate(`(() => {
+  const pos = await cdp.evaluate(`(async () => {
     const el = document.getElementById(${JSON.stringify(id)});
     if (!el) return null;
     el.scrollIntoView({ block: "center", inline: "center" });
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const rect = el.getBoundingClientRect();
     const vv = window.visualViewport;
     const ox = vv ? vv.offsetLeft : 0;
@@ -329,6 +344,41 @@ async function main() {
       assert.equal(st.outboxCount, 0);
       rejectedInputs.push({ input: rawAmount, error: uiErr.errorText });
     }
+
+    // 2b. Verify non-BMP scalar over-limit (101 "𠮷" title / 1001 "𠮷" notes) & U+FEFF are rejected without silent truncation or stripping.
+    const nonBmp100 = "𠮷".repeat(100);
+    const nonBmp101 = "𠮷".repeat(101);
+    const nonBmp1000 = "𠮷".repeat(1000);
+    const nonBmp1001 = "𠮷".repeat(1001);
+
+    await insertTextViaCdp(cdp, "trip-entry-title", nonBmp101);
+    await setInputValue(cdp, "trip-entry-amount-yuan", "86.35");
+    await setInputValue(cdp, "trip-entry-category", "meal");
+    await setInputValue(cdp, "trip-entry-notes", "");
+    await cdp.tap("#trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for 101-scalar title");
+    const uiOverTitle = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(uiOverTitle.entryViewVisible, true);
+    assert.equal(uiOverTitle.titleValue, nonBmp101, "Over-limit title draft must be preserved without silent truncation");
+    assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
+
+    await insertTextViaCdp(cdp, "trip-entry-title", nonBmp100);
+    await insertTextViaCdp(cdp, "trip-entry-notes", nonBmp1001);
+    await cdp.tap("#trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for 1001-scalar notes");
+    const uiOverNotes = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(uiOverNotes.entryViewVisible, true);
+    assert.equal(uiOverNotes.notesValue, nonBmp1001, "Over-limit notes draft must be preserved without silent truncation");
+    assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
+
+    await setInputValue(cdp, "trip-entry-title", "FEFF检查");
+    await setInputValue(cdp, "trip-entry-notes", "A\uFEFFB");
+    await cdp.tap("#trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for U+FEFF notes");
+    const uiFeff = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
+    assert.equal(uiFeff.entryViewVisible, true);
+    assert.equal(uiFeff.notesValue, "A\uFEFFB", "U+FEFF must be rejected without silent stripping");
+    assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
 
     // 3. Enter first expense (non-fixed-lunch sample: 42.80 yuan -> 4280 cents) and rapid double-tap Save!
     await setInputValue(cdp, "trip-entry-title", "机场快线车票");
@@ -479,6 +529,100 @@ async function main() {
     // Second item payload matches frozen 0.1.0 desktop 86.35 yuan lunch payload exactly!
     assert.deepEqual(item2.command.payload, desktopFixture.command.payload);
 
+    // 7. Native pre-transaction shape validation: missing explicit-null field (paid_on) & unknown fields must reject with zero writes.
+    const baseCommand = {
+      profile: "p1-host-control-1",
+      kind: "expense.create",
+      operation: {
+        dataset_id: "fixture-dataset",
+        source_device_id: "fixture-device",
+        operation_id: "op-shape-missing-paid-on",
+      },
+      target: {
+        travel_id: "fixture-travel",
+        branch_id: "fixture-branch",
+        entity_id: "exp-shape-missing-paid-on",
+      },
+      expected_revision_id: rev2,
+      payload: {
+        title: "缺字段测试",
+        amount_cents: 1200,
+        currency: "CNY",
+        paid_on: null,
+        category: "other",
+        day: null,
+        activity_id: null,
+        notes: "",
+        receipt_ids: [],
+        allow_shared_receipts: false,
+        budget_item_id: null,
+        settles_budget: false,
+      },
+    };
+    const missingPaidOnCmd = structuredClone(baseCommand);
+    delete missingPaidOnCmd.payload.paid_on;
+    const resMissingPaidOn = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawCommand(${JSON.stringify(missingPaidOnCmd)})`,
+    );
+    assert.equal(resMissingPaidOn.accepted, false);
+    assert.equal(resMissingPaidOn.error, "shape");
+
+    const unknownPayloadFieldCmd = structuredClone(baseCommand);
+    unknownPayloadFieldCmd.operation.operation_id = "op-shape-unknown-payload";
+    unknownPayloadFieldCmd.target.entity_id = "exp-shape-unknown-payload";
+    unknownPayloadFieldCmd.payload.extra_field = 1;
+    const resUnknownPayload = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawCommand(${JSON.stringify(unknownPayloadFieldCmd)})`,
+    );
+    assert.equal(resUnknownPayload.accepted, false);
+    assert.equal(resUnknownPayload.error, "shape");
+
+    const unknownTopFieldCmd = structuredClone(baseCommand);
+    unknownTopFieldCmd.operation.operation_id = "op-shape-unknown-top";
+    unknownTopFieldCmd.target.entity_id = "exp-shape-unknown-top";
+    unknownTopFieldCmd.extra_top = true;
+    const resUnknownTop = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawCommand(${JSON.stringify(unknownTopFieldCmd)})`,
+    );
+    assert.equal(resUnknownTop.accepted, false);
+    assert.equal(resUnknownTop.error, "shape");
+
+    const afterShapeRejects = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    assert.equal(afterShapeRejects.expenseCount, 2, "Shape rejections must cause zero writes");
+    assert.equal(afterShapeRejects.totalCents, 12915);
+    assert.equal(afterShapeRejects.revisionCount, 3);
+    assert.equal(afterShapeRejects.receiptCount, 2);
+    assert.equal(afterShapeRejects.outboxCount, 2);
+    assert.equal(afterShapeRejects.headRevisionId, rev2);
+
+    // 8. Positive non-BMP exact-limit test via real CDP Input.insertText: 100 "𠮷" title + 1000 "𠮷" notes saves intact & passes fingerprintIntent.
+    await cdp.tap("#trip-open-entry-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "third entry view");
+    await insertTextViaCdp(cdp, "trip-entry-title", nonBmp100);
+    await setInputValue(cdp, "trip-entry-amount-yuan", "12.34");
+    await setInputValue(cdp, "trip-entry-category", "other");
+    await insertTextViaCdp(cdp, "trip-entry-notes", nonBmp1000);
+    await cdp.tap("#trip-entry-save-btn");
+    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after non-BMP save");
+
+    const afterNonBmpState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    const exportedAfterNonBmp = await cdp.evaluate(`window.__travelflowOfflineEntry.exportOutboxCommands()`);
+    assert.equal(afterNonBmpState.expenseCount, 3);
+    assert.equal(afterNonBmpState.totalCents, 14149);
+    assert.equal(afterNonBmpState.revisionCount, 4);
+    assert.equal(afterNonBmpState.receiptCount, 3);
+    assert.equal(afterNonBmpState.outboxCount, 3);
+    const item3 = exportedAfterNonBmp.items[2];
+    assert.equal(Array.from(item3.command.payload.title).length, 100);
+    assert.equal(item3.command.payload.title, nonBmp100);
+    assert.equal(Array.from(item3.command.payload.notes).length, 1000);
+    assert.equal(item3.command.payload.notes, nonBmp1000);
+    assert.equal(item3.command.payload.paid_on, null);
+    const p1Canon3 = fingerprintIntent(Buffer.from(item3.raw_command_json, "utf8"), "control");
+    assert.equal(p1Canon3.accepted, true);
+    assert.equal(item3.canonical_intent_json, p1Canon3.canonical_json);
+    assert.equal(item3.intent_sha256, p1Canon3.sha256);
+
     console.log(JSON.stringify({
       passed: true,
       avd: envInfo.avd,
@@ -492,6 +636,18 @@ async function main() {
       },
       baselineSource: finalState.baselineSource,
       invalidAmountRejections: rejectedInputs,
+      textValidationRegressions: {
+        overLimitTitle101RejectedAndPreserved: true,
+        overLimitNotes1001RejectedAndPreserved: true,
+        feffRejectedAndPreserved: true,
+        nonBmpExact100Title1000NotesSavedAndCanonicalized: true,
+      },
+      nativeShapeRejections: {
+        missingPaidOn: resMissingPaidOn.error,
+        unknownPayloadField: resUnknownPayload.error,
+        unknownTopField: resUnknownTop.error,
+        zeroWritesVerified: true,
+      },
       doubleTapSingleWriteVerified: true,
       expenses: finalState.expenses.map((e) => ({
         entity_id: e.id,
@@ -512,7 +668,7 @@ async function main() {
         expense_count: r.expense_count,
         total_cents: r.total_cents,
       })),
-      final: {
+      finalTwoExpenseSnapshot: {
         expenseCount: finalState.expenseCount,
         totalCents: finalState.totalCents,
         revisionCount: finalState.revisionCount,
@@ -523,6 +679,15 @@ async function main() {
         syncStatusText: finalUi.syncStatusText,
         sqlite: finalState.sqlite,
         journal: finalState.journal,
+      },
+      finalAfterNonBmp: {
+        expenseCount: afterNonBmpState.expenseCount,
+        totalCents: afterNonBmpState.totalCents,
+        revisionCount: afterNonBmpState.revisionCount,
+        receiptCount: afterNonBmpState.receiptCount,
+        outboxCount: afterNonBmpState.outboxCount,
+        headRevisionId: afterNonBmpState.headRevisionId,
+        nonBmpIntentSha256: item3.intent_sha256,
       },
       exportedContract: {
         contract_id: exported.contract_id,

@@ -166,6 +166,37 @@ try {
     category: "meal",
   }));
 
+  // Non-BMP Unicode scalar boundary tests (each "𠮷" is 1 Unicode scalar, 2 UTF-16 code units).
+  const nonBmp51 = "𠮷".repeat(51);
+  const nonBmp100 = "𠮷".repeat(100);
+  const nonBmp101 = "𠮷".repeat(101);
+  const nonBmpNotes1000 = "𠮷".repeat(1000);
+  const nonBmpNotes1001 = "𠮷".repeat(1001);
+  assert.equal(mod.validateExpenseTitle(nonBmp51), nonBmp51);
+  assert.equal(mod.validateExpenseTitle(nonBmp100), nonBmp100);
+  assert.throws(() => mod.validateExpenseTitle(nonBmp101));
+  assert.equal(mod.validateExpenseNotes(nonBmpNotes1000), nonBmpNotes1000);
+  assert.throws(() => mod.validateExpenseNotes(nonBmpNotes1001));
+  // U+FEFF must be rejected without silent stripping, matching p1-canonical fingerprintIntent (text_control).
+  assert.throws(() => mod.validateExpenseTitle("A\uFEFFB"));
+  assert.throws(() => mod.validateExpenseNotes("A\uFEFFB"));
+  const nonBmpMaxIntent = mod.buildOfflineExpenseCreateIntent({
+    datasetId: mod.OFFLINE_DATASET_ID,
+    sourceDeviceId: mod.OFFLINE_DEVICE_ID,
+    operationId: "op-offline-nonbmp-max",
+    travelId: mod.OFFLINE_TRAVEL_ID,
+    branchId: mod.OFFLINE_BRANCH_ID,
+    entityId: "exp-offline-nonbmp-max",
+    expectedRevisionId: mod.OFFLINE_INITIAL_REVISION_ID,
+    title: nonBmp100,
+    amountCents: 8635,
+    category: "meal",
+    notes: nonBmpNotes1000,
+  });
+  const p1NonBmp = fingerprintIntent(Buffer.from(JSON.stringify(nonBmpMaxIntent), "utf8"), "control");
+  assert.equal(p1NonBmp.accepted, true);
+  assert.equal(mod.canonicalizeControlDocument(nonBmpMaxIntent), p1NonBmp.canonical_json);
+
   console.log(JSON.stringify({
     passed: true,
     controlCanonicalSha256: p1Control.sha256,

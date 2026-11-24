@@ -25,8 +25,22 @@ final class OfflineTripLedgerStore {
     static final String CONTRACT_VERSION = "0.1.0";
     static final String DELIVERY_STATE_PENDING_SEND = "pending_send";
     static final int MAX_BRANCH_EXPENSES = 2000;
+    static final int MAX_CANONICAL_BYTES = 65536;
     private static final Set<String> VALID_CATEGORIES = new HashSet<>(
             Arrays.asList("transport", "lodging", "meal", "ticket", "shopping", "other"));
+    private static final Set<String> COMMAND_KEYS = new HashSet<>(
+            Arrays.asList("profile", "kind", "operation", "target", "expected_revision_id", "payload"));
+    private static final Set<String> OPERATION_KEYS = new HashSet<>(
+            Arrays.asList("dataset_id", "source_device_id", "operation_id"));
+    private static final Set<String> TARGET_KEYS = new HashSet<>(
+            Arrays.asList("travel_id", "branch_id", "entity_id"));
+    private static final Set<String> PAYLOAD_KEYS = new HashSet<>(Arrays.asList(
+            "title", "amount_cents", "currency", "paid_on", "category", "day",
+            "activity_id", "notes", "receipt_ids", "allow_shared_receipts",
+            "budget_item_id", "settles_budget"));
+    private static final Set<Integer> TITLE_WHITESPACE = new HashSet<>(Arrays.asList(
+            0x20, 0xA0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006,
+            0x2007, 0x2008, 0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000));
 
     private OfflineTripLedgerStore() {}
 
@@ -171,20 +185,73 @@ final class OfflineTripLedgerStore {
         }
     }
 
-    private static boolean hasDisallowedControlChars(String value, boolean allowWhitespaceControls) {
-        for (int i = 0; i < value.length(); i++) {
-            char ch = value.charAt(i);
-            if (ch < 0x20) {
-                if (allowWhitespaceControls && (ch == '\t' || ch == '\n' || ch == '\r')) {
-                    continue;
-                }
-                return true;
-            }
-            if (ch >= 0x7F && ch <= 0x9F) {
-                return true;
+    private static boolean hasExactKeys(JSONObject obj, Set<String> expected) {
+        if (obj == null || obj.length() != expected.size()) {
+            return false;
+        }
+        Iterator<String> keys = obj.keys();
+        while (keys.hasNext()) {
+            if (!expected.contains(keys.next())) {
+                return false;
             }
         }
-        return false;
+        return true;
+    }
+
+    private static String validateIdentifier(JSONObject obj, String key) {
+        Object raw = obj.opt(key);
+        if (!(raw instanceof String)) {
+            return null;
+        }
+        String value = (String) raw;
+        int scalars = 0;
+        for (int i = 0; i < value.length(); ) {
+            int cp = value.codePointAt(i);
+            if (cp >= 0xD800 && cp <= 0xDFFF) {
+                return null;
+            }
+            if (cp < 0x20 || cp == 0xFEFF || (cp >= 0x7F && cp <= 0x9F)) {
+                return null;
+            }
+            scalars++;
+            i += Character.charCount(cp);
+        }
+        if (scalars == 0 || scalars > 128
+                || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128) {
+            return null;
+        }
+        return value;
+    }
+
+    private static String validateTextField(Object raw, int maxScalars, boolean isTitle) {
+        if (!(raw instanceof String)) {
+            return "type";
+        }
+        String value = (String) raw;
+        int scalars = 0;
+        boolean hasNonWhitespace = false;
+        for (int i = 0; i < value.length(); ) {
+            int cp = value.codePointAt(i);
+            if (cp >= 0xD800 && cp <= 0xDFFF) {
+                return "unicode";
+            }
+            if (cp == 0xFEFF || (cp >= 0x7F && cp <= 0x9F)
+                    || (cp < 0x20 && (isTitle || (cp != 9 && cp != 10 && cp != 13)))) {
+                return "text_control";
+            }
+            if (isTitle && !TITLE_WHITESPACE.contains(cp)) {
+                hasNonWhitespace = true;
+            }
+            scalars++;
+            i += Character.charCount(cp);
+        }
+        if (scalars > maxScalars || (isTitle && scalars == 0)) {
+            return "text_length";
+        }
+        if (isTitle && !hasNonWhitespace) {
+            return "title_blank";
+        }
+        return null;
     }
 
     static JSObject saveOfflineExpense(
@@ -192,24 +259,38 @@ final class OfflineTripLedgerStore {
             String rawCommandJson,
             String canonicalIntentJson
     ) throws Exception {
+        if (rawCommandJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES
+                || canonicalIntentJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) {
+            return rejected("canonical_bytes");
+        }
         JSONObject command = new JSONObject(rawCommandJson);
-        if (!"p1-host-control-1".equals(command.optString("profile"))
-                || !"expense.create".equals(command.optString("kind"))) {
+        if (!hasExactKeys(command, COMMAND_KEYS)) {
+            return rejected("shape");
+        }
+        if (!"p1-host-control-1".equals(command.opt("profile"))
+                || !"expense.create".equals(command.opt("kind"))) {
             return rejected("unsupported_command");
         }
-        JSONObject op = command.getJSONObject("operation");
-        JSONObject target = command.getJSONObject("target");
-        JSONObject payload = command.getJSONObject("payload");
+        JSONObject op = command.optJSONObject("operation");
+        JSONObject target = command.optJSONObject("target");
+        JSONObject payload = command.optJSONObject("payload");
+        if (!hasExactKeys(op, OPERATION_KEYS)
+                || !hasExactKeys(target, TARGET_KEYS)
+                || !hasExactKeys(payload, PAYLOAD_KEYS)) {
+            return rejected("shape");
+        }
 
-        String datasetId = op.getString("dataset_id");
-        String sourceDeviceId = op.getString("source_device_id");
-        String operationId = op.getString("operation_id");
-        String travelId = target.getString("travel_id");
-        String branchId = target.getString("branch_id");
-        String entityId = target.getString("entity_id");
-        String expectedRevisionId = command.getString("expected_revision_id");
+        String datasetId = validateIdentifier(op, "dataset_id");
+        String sourceDeviceId = validateIdentifier(op, "source_device_id");
+        String operationId = validateIdentifier(op, "operation_id");
+        String travelId = validateIdentifier(target, "travel_id");
+        String branchId = validateIdentifier(target, "branch_id");
+        String entityId = validateIdentifier(target, "entity_id");
+        String expectedRevisionId = validateIdentifier(command, "expected_revision_id");
 
-        if (operationId.isEmpty() || entityId.isEmpty() || operationId.equals(entityId)) {
+        if (datasetId == null || sourceDeviceId == null || operationId == null
+                || travelId == null || branchId == null || entityId == null
+                || expectedRevisionId == null || operationId.equals(entityId)) {
             return rejected("invalid_identity");
         }
 
@@ -222,30 +303,27 @@ final class OfflineTripLedgerStore {
             return rejected("intent_mismatch");
         }
 
-        Object rawTitle = payload.opt("title");
-        if (!(rawTitle instanceof String)) {
-            return rejected("type");
+        String titleError = validateTextField(payload.opt("title"), 100, true);
+        if (titleError != null) {
+            return rejected(titleError);
         }
-        String title = (String) rawTitle;
-        if (title.trim().isEmpty() || title.length() > 100 || hasDisallowedControlChars(title, false)) {
-            return rejected("invalid_field");
-        }
+        String title = payload.getString("title");
 
-        Object rawNotes = payload.opt("notes");
-        if (!(rawNotes instanceof String)) {
-            return rejected("type");
+        String notesError = validateTextField(payload.opt("notes"), 1000, false);
+        if (notesError != null) {
+            return rejected(notesError);
         }
-        String notes = (String) rawNotes;
-        if (notes.length() > 1000 || hasDisallowedControlChars(notes, true)) {
-            return rejected("invalid_field");
-        }
+        String notes = payload.getString("notes");
 
-        String currency = payload.isNull("currency") ? null : payload.optString("currency", null);
-        if (!"CNY".equals(currency)) {
+        Object rawCurrency = payload.opt("currency");
+        if (!"CNY".equals(rawCurrency)) {
             return rejected("unsupported_capability");
         }
-        if (!payload.isNull("paid_on") || !payload.isNull("day")
-                || !payload.isNull("activity_id") || !payload.isNull("budget_item_id")) {
+        String currency = "CNY";
+        if (payload.opt("paid_on") != JSONObject.NULL
+                || payload.opt("day") != JSONObject.NULL
+                || payload.opt("activity_id") != JSONObject.NULL
+                || payload.opt("budget_item_id") != JSONObject.NULL) {
             return rejected("unsupported_capability");
         }
         Object rawCategory = payload.opt("category");

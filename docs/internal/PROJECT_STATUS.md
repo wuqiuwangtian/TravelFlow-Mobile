@@ -778,3 +778,13 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 - **原桥回归保留**：在同一隔离 API 35 模拟器运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 **17/17 项**通过（`passed: true`）。
 
 未验证项：本次仅覆盖隔离 API 35 模拟器的本地离线连续记账与 0.1.0 命令导出，未覆盖跨设备真实网络连接、多笔跨端投递与基线衔接、真机、个人主库或共享协议变更。复跑入口见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。
+
+## 2026-11-24 Android 离线旅行记账按评审（2f622ac）返修实测
+
+在执行分支 `antigravity/android-offline-expense-entry` 针对评审 `2f622ac` 的三项问题完成返修并独立复跑：
+
+1. **Unicode 标量长度与禁止静默截断**：移除 `index.html` 表单上的 UTF-16 `maxlength` 属性，在 TS（`bridge-command.ts`）与原生存储（`OfflineTripLedgerStore.java`）统一按 Unicode 标量计数（标题 `1..100` 标量、备注 `0..1000` 标量）并拒绝孤立代理项。超限输入（101 个 `𠮷` 标题、1001 个 `𠮷` 备注）报错且完整保留表单草稿、SQLite 零写入；通过 WebView CDP `Input.insertText` 实输 100 个 `𠮷` 标题与 1000 个 `𠮷` 备注（`12.34` 元）可完整保存并由移动宿主 `fingerprintIntent` 复算通过（`nonBmpIntentSha256: e338c2c8b212b0d961613806c9fe79476e9c4e2fde8a73d4dddce208f01b1ddf`）。
+2. **`U+FEFF` 与移动规范化器对齐**：TS 与原生文本校验统一对齐 `prototypes/p1-patch/expense.mjs`（拒绝 `U+FEFF`、C0/C1 控制字符及孤立代理项，对应 `text_control`），禁止静默剥离用户输入。实测表单备注 `"A\uFEFFB"` 被拒、草稿原文保留且零写入；所有导出待发送命令均可由 `fingerprintIntent` 无错复算。
+3. **原生写事务前严格冻结命令字段集合校验**：`OfflineTripLedgerStore.java` 新增顶层、`operation`、`target` 与 `payload` 12 字段精确键集合检查，并以 `payload.opt(...) != JSONObject.NULL` 严格区分显式 `null` 与缺键。实测删除 `payload.paid_on`、追加未知 `payload.extra_field` 或顶层 `extra_top` 均在事务前返回 `shape` 且零写入；合法显式 `paid_on: null` 继续可保存。
+
+实测结果：宿主 `pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command` 均通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`（`-read-only`，SQLite `3.44.3`）运行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`（全程飞行模式）与 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`（17/17 场景）均通过（`passed: true`）。

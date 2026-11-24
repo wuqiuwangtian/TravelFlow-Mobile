@@ -195,8 +195,22 @@ export function canonicalizeQueryDocument(intent: ReceiptLookupIntent): string {
   });
 }
 
-const DISALLOWED_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]/;
-const DISALLOWED_NOTES_CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
+const TITLE_WHITESPACE_POINTS = new Set([
+  0x20, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
+function extractUnicodeScalars(value: string): number[] {
+  const points: number[] = [];
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!;
+    if (cp >= 0xd800 && cp <= 0xdfff) {
+      throw new Error("文本包含无效的 Unicode 代理项");
+    }
+    points.push(cp);
+  }
+  return points;
+}
 
 export function parseDecimalYuanToCents(raw: string): number {
   if (typeof raw !== "string" || !/^\d+(?:\.\d{1,2})?$/.test(raw)) {
@@ -223,25 +237,33 @@ export function validateExpenseTitle(raw: string): string {
   if (typeof raw !== "string") {
     throw new Error("标题不能为空");
   }
-  const trimmed = raw.trim();
-  if (trimmed.length === 0 || trimmed.length > 100) {
-    throw new Error("标题须为 1 至 100 个非空白字符");
+  const points = extractUnicodeScalars(raw);
+  if (points.length === 0 || points.length > 100) {
+    throw new Error("标题须为 1 至 100 个字符（按 Unicode 标量计数）");
   }
-  if (DISALLOWED_TITLE_CONTROL_RE.test(trimmed)) {
-    throw new Error("标题不能包含控制字符");
+  for (const cp of points) {
+    if (cp === 0xfeff || cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) {
+      throw new Error("标题不能包含控制字符或 U+FEFF");
+    }
   }
-  return trimmed;
+  if (!points.some((cp) => !TITLE_WHITESPACE_POINTS.has(cp))) {
+    throw new Error("标题不能全为空白字符");
+  }
+  return raw;
 }
 
 export function validateExpenseNotes(raw: string): string {
   if (typeof raw !== "string") {
     throw new Error("备注须为文本");
   }
-  if (raw.length > 1000) {
-    throw new Error("备注长度不能超过 1000 个字符");
+  const points = extractUnicodeScalars(raw);
+  if (points.length > 1000) {
+    throw new Error("备注长度不能超过 1000 个字符（按 Unicode 标量计数）");
   }
-  if (DISALLOWED_NOTES_CONTROL_RE.test(raw)) {
-    throw new Error("备注包含不允许的控制字符");
+  for (const cp of points) {
+    if (cp === 0xfeff || (cp >= 0x7f && cp <= 0x9f) || (cp < 0x20 && cp !== 9 && cp !== 10 && cp !== 13)) {
+      throw new Error("备注包含不允许的控制字符或 U+FEFF");
+    }
   }
   return raw;
 }

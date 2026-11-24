@@ -1861,6 +1861,11 @@ tripEntrySaveBtn.addEventListener("click", () => {
     return state;
   },
   exportOutboxCommands: () => bridge.exportOfflineOutboxCommands(),
+  submitRawCommand: (rawCommand: Record<string, unknown>) =>
+    bridge.saveOfflineTripExpense({
+      rawCommandJson: JSON.stringify(rawCommand),
+      canonicalIntentJson: canonicalizeControlDocument(rawCommand as unknown as ExpenseCreateIntent),
+    }),
   getUiState: () => ({
     ledgerViewVisible: !tripLedgerViewEl.classList.contains("hidden"),
     entryViewVisible: !tripEntryViewEl.classList.contains("hidden"),
@@ -1868,6 +1873,8 @@ tripEntrySaveBtn.addEventListener("click", () => {
     summaryText: tripSummaryEl.textContent ?? "",
     syncStatusText: tripSyncStatusEl.textContent ?? "",
     errorText: tripEntryErrorEl.classList.contains("hidden") ? "" : (tripEntryErrorEl.textContent ?? ""),
+    titleValue: tripEntryTitleEl.value,
+    notesValue: tripEntryNotesEl.value,
     renderedItems: Array.from(tripExpenseListEl.querySelectorAll("li")).map((li) => ({
       entityId: li.dataset.entityId ?? "",
       operationId: li.dataset.operationId ?? "",
