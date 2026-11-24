@@ -69,6 +69,7 @@
       <option value="create-conflict-amount">create-conflict-amount（恢复时同键异金额冲突）</option>
       <option value="create-conflict-share">create-conflict-share（恢复时仅共享票据许可冲突）</option>
       <option value="create-boundary-fields-scope">create-boundary-fields-scope（字段支持范围、身份与作用域）</option>
+      <option value="create-boundary-over-20">create-boundary-over-20（20→21 跨分页与完整历史快照）</option>
       <option value="create-boundary-cap-2000">create-boundary-cap-2000（1999→2000 与满额重放）</option>
     </select>
 
@@ -87,8 +88,11 @@
       <button class="tf-button" id="create-replay" disabled>重放原请求与键重排请求</button>
       <button class="tf-button" id="create-check-rejections" disabled>验证冲突与非法金额拒绝</button>
       <button class="tf-button" id="create-check-auth" disabled>验证身份与权限拒绝查询</button>
+      <button class="tf-button" id="create-page-prev" disabled>上一页明细</button>
+      <button class="tf-button" id="create-page-next" disabled>下一页明细</button>
     </div>
     <p id="create-ledger" role="status">空账本状态尚未读取</p>
+    <p id="create-page-info" role="status">明细分页尚未读取</p>
     <p id="create-status" role="status">等待新增操作</p>
   </main>
   <script type="module" src="./bridge-app.js"></script>

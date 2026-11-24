@@ -28,6 +28,7 @@ type CreateScenarioName =
   | "create-conflict-amount"
   | "create-conflict-share"
   | "create-boundary-fields-scope"
+  | "create-boundary-over-20"
   | "create-boundary-cap-2000";
 
 type FaultMode = "none" | "before_commit" | "after_commit_drop_reply";
@@ -95,11 +96,18 @@ interface CreateInspectStateResult {
   seeded: boolean;
   headRevisionId: string | null;
   expenseCount: number;
+  totalCents: number;
+  pageOffset: number;
+  pageLimit: number;
+  hasMoreExpenses: boolean;
   expenses: CreateExpenseRow[];
   revisions: Array<{
     revision_id: string;
     parent_revision_id: string | null;
-    snapshot: { expenses: CreateExpenseRow[] };
+    expense_count: number;
+    total_cents: number;
+    snapshot_sha256: string;
+    snapshot?: { expenses: CreateExpenseRow[] };
   }>;
   revisionCount: number;
   receiptCount: number;
@@ -264,7 +272,29 @@ interface P1BridgeReceiptPlugin {
     canonicalIntentJson?: string;
     principal: SyntheticPrincipal;
   }): Promise<CreateLookupResult>;
-  inspectCreateState(options: { scenario: CreateScenarioName }): Promise<CreateInspectStateResult>;
+  inspectCreateState(options: {
+    scenario: CreateScenarioName;
+    pageOffset?: number;
+    pageLimit?: number;
+  }): Promise<CreateInspectStateResult>;
+  readCreateRevisionPage(options: {
+    scenario: CreateScenarioName;
+    revisionId: string;
+    offset?: number;
+    limit?: number;
+  }): Promise<{
+    accepted: boolean;
+    error?: string;
+    revision_id?: string;
+    parent_revision_id?: string | null;
+    expense_count?: number;
+    total_cents?: number;
+    snapshot_sha256?: string;
+    offset?: number;
+    limit?: number;
+    has_more?: boolean;
+    expenses?: CreateExpenseRow[];
+  }>;
 }
 
 const bridge = registerPlugin<P1BridgeReceiptPlugin>("P1BridgeReceipt");
@@ -287,6 +317,7 @@ const snapshotEl = byId<HTMLPreElement>("snapshot-json");
 const createScenarioEl = byId<HTMLSelectElement>("create-scenario");
 const createFaultModeEl = byId<HTMLSelectElement>("create-fault-mode");
 const createLedgerEl = byId<HTMLParagraphElement>("create-ledger");
+const createPageInfoEl = byId<HTMLParagraphElement>("create-page-info");
 const createStatusEl = byId<HTMLParagraphElement>("create-status");
 
 const buttonIds = [
@@ -307,12 +338,16 @@ const createButtonIds = [
   "create-replay",
   "create-check-rejections",
   "create-check-auth",
+  "create-page-prev",
+  "create-page-next",
 ] as const;
 
 let lastOutcome: Record<string, unknown> | null = null;
 let lastState: InspectStateResult | null = null;
 let lastCreateOutcome: Record<string, unknown> | null = null;
 let desktopCreateFixture: DesktopCreateFixture | null = null;
+let createPageOffset = 0;
+const CREATE_PAGE_LIMIT = 20;
 
 const SYNTHETIC_PRINCIPAL: SyntheticPrincipal = {
   authenticated: true,
@@ -366,15 +401,24 @@ function setControlsEnabled(enabled: boolean): void {
 function renderCreateState(state: CreateInspectStateResult): void {
   if (!state.seeded) {
     createLedgerEl.textContent = `新增场景 ${currentCreateScenario()} 尚未初始化`;
+    createPageInfoEl.textContent = "明细分页：无数据";
     return;
   }
-  const summary = summarizeLedger({
+  const pageSummary = summarizeLedger({
     expenses: state.expenses.map((item) => ({ id: item.id, amount_cents: item.amount_cents })),
     adjustments: [],
   });
+  if (state.expenseCount === state.expenses.length && pageSummary.paid_cents !== state.totalCents) {
+    throw new Error("Native/TS create ledger total mismatch");
+  }
+  createPageOffset = state.pageOffset;
   createLedgerEl.textContent =
-    `空账本场景 ${currentCreateScenario()} · 头版本 ${state.headRevisionId} · 消费 ${state.expenses.length} 笔` +
-    `（合计 ¥${(summary.paid_cents / 100).toFixed(2)}）· 修订 ${state.revisionCount} · 回执 ${state.receiptCount} · 待发送 ${state.outboxCount}`;
+    `空账本场景 ${currentCreateScenario()} · 头版本 ${state.headRevisionId} · 消费 ${state.expenseCount} 笔` +
+    `（合计 ¥${(state.totalCents / 100).toFixed(2)}）· 修订 ${state.revisionCount} · 回执 ${state.receiptCount} · 待发送 ${state.outboxCount}`;
+  const start = state.expenseCount === 0 ? 0 : state.pageOffset + 1;
+  const end = state.pageOffset + state.expenses.length;
+  createPageInfoEl.textContent =
+    `明细分页：第 ${start}-${end} / 共 ${state.expenseCount} 笔 · 本页 ${state.expenses.length} 笔（¥${(pageSummary.paid_cents / 100).toFixed(2)}）`;
 }
 
 async function runCreateAction(label: string, work: () => Promise<Record<string, unknown>>): Promise<void> {
@@ -637,11 +681,40 @@ scenarioEl.onchange = () => {
 
 createScenarioEl.onchange = () => {
   void runCreateAction("切换新增场景", async () => {
-    const state = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
+    createPageOffset = 0;
+    const state = await bridge.inspectCreateState({
+      scenario: currentCreateScenario(),
+      pageOffset: 0,
+      pageLimit: CREATE_PAGE_LIMIT,
+    });
     renderCreateState(state);
     return { status: "switched", state };
   });
 };
+
+byId<HTMLButtonElement>("create-page-prev").onclick = () =>
+  void runCreateAction("上一页明细", async () => {
+    const nextOffset = Math.max(0, createPageOffset - CREATE_PAGE_LIMIT);
+    const state = await bridge.inspectCreateState({
+      scenario: currentCreateScenario(),
+      pageOffset: nextOffset,
+      pageLimit: CREATE_PAGE_LIMIT,
+    });
+    renderCreateState(state);
+    return { status: "paged", state };
+  });
+
+byId<HTMLButtonElement>("create-page-next").onclick = () =>
+  void runCreateAction("下一页明细", async () => {
+    const nextOffset = createPageOffset + CREATE_PAGE_LIMIT;
+    const state = await bridge.inspectCreateState({
+      scenario: currentCreateScenario(),
+      pageOffset: nextOffset,
+      pageLimit: CREATE_PAGE_LIMIT,
+    });
+    renderCreateState(state);
+    return { status: "paged", state };
+  });
 
 byId<HTMLButtonElement>("create-seed").onclick = () =>
   void runCreateAction("初始化空账本", async () => {
@@ -955,8 +1028,10 @@ byId<HTMLButtonElement>("create-check-auth").onclick = () =>
   getLastCreateOutcome: () => lastCreateOutcome,
   inspectState: (scenario: ScenarioName, operationId?: string) =>
     bridge.inspectState({ scenario, ...(operationId ? { operationId } : {}) }),
-  inspectCreateState: (scenario: CreateScenarioName) =>
-    bridge.inspectCreateState({ scenario }),
+  inspectCreateState: (scenario: CreateScenarioName, pageOffset = 0, pageLimit = CREATE_PAGE_LIMIT) =>
+    bridge.inspectCreateState({ scenario, pageOffset, pageLimit }),
+  readCreateRevisionPage: (scenario: CreateScenarioName, revisionId: string, offset = 0, limit = CREATE_PAGE_LIMIT) =>
+    bridge.readCreateRevisionPage({ scenario, revisionId, offset, limit }),
   stageCreateRecoveryConflict: async (scenario: CreateScenarioName, diff: { amount_cents?: number; allow_shared_receipts?: boolean }) => {
     const fixture = requireCreateFixture();
     await bridge.seedCreateScenario({
@@ -1096,93 +1171,186 @@ byId<HTMLButtonElement>("create-check-auth").onclick = () =>
       faultMode: "none",
     });
     const stateAfterValid = await bridge.inspectCreateState({ scenario });
-    renderCreateState(stateAfterValid);
-    return { fieldCases, identityCases, scopeCases, stateAfterRejections, validCommit, stateAfterValid };
+
+    // Reused create operation_id targeting wrong travel/branch must be rejected by scope BEFORE receipt lookup.
+    const usedCreateScopeCases: Array<{ label: string; result: CreateExecuteResult }> = [];
+    for (const [label, targetOverride] of [
+      ["used_create_wrong_travel", { travel_id: "fixture-other-travel" }],
+      ["used_create_wrong_branch", { branch_id: "fixture-other-branch" }],
+    ] as Array<[string, Record<string, string>]>) {
+      const cmd = {
+        ...fixture.command,
+        target: { ...fixture.command.target, ...targetOverride },
+      };
+      const result = await bridge.submitExpenseCreate({
+        scenario,
+        principal: SYNTHETIC_PRINCIPAL,
+        rawCommandJson: JSON.stringify(cmd),
+        canonicalIntentJson: canonicalizeControlDocument(cmd),
+        faultMode: "none",
+      });
+      usedCreateScopeCases.push({ label, result });
+    }
+
+    // Notes patch: new key targeting wrong travel/branch must be rejected before receipt lookup.
+    const baseNotesPatch: ExpensePatchIntent = {
+      profile: fixture.command.profile,
+      kind: "expense.patch",
+      operation: { ...fixture.command.operation, operation_id: "fixture-op-notes" },
+      target: { ...fixture.command.target },
+      expected_revision_id: validCommit.result_revision_id ?? "fixture-r0",
+      payload: { notes: "虚构更正" },
+    };
+    const newPatchScopeCases: Array<{ label: string; result: CreateExecuteResult }> = [];
+    for (const [label, targetOverride] of [
+      ["new_patch_wrong_travel", { travel_id: "fixture-other-travel" }],
+      ["new_patch_wrong_branch", { branch_id: "fixture-other-branch" }],
+    ] as Array<[string, Record<string, string>]>) {
+      const cmd: ExpensePatchIntent = {
+        ...baseNotesPatch,
+        operation: { ...baseNotesPatch.operation, operation_id: `fixture-op-${label}` },
+        target: { ...baseNotesPatch.target, ...targetOverride },
+      };
+      const result = await bridge.submitCreateNotesPatch({
+        scenario,
+        principal: SYNTHETIC_PRINCIPAL,
+        rawCommandJson: JSON.stringify(cmd),
+        canonicalIntentJson: canonicalizeControlDocument(cmd),
+      });
+      newPatchScopeCases.push({ label, result });
+    }
+
+    const validNotesPatch = await bridge.submitCreateNotesPatch({
+      scenario,
+      principal: SYNTHETIC_PRINCIPAL,
+      rawCommandJson: JSON.stringify(baseNotesPatch),
+      canonicalIntentJson: canonicalizeControlDocument(baseNotesPatch),
+    });
+
+    // Already-used notes patch key targeting wrong travel/branch must also reject with scope_mismatch before receipt lookup.
+    const usedPatchScopeCases: Array<{ label: string; result: CreateExecuteResult }> = [];
+    for (const [label, targetOverride] of [
+      ["used_patch_wrong_travel", { travel_id: "fixture-other-travel" }],
+      ["used_patch_wrong_branch", { branch_id: "fixture-other-branch" }],
+    ] as Array<[string, Record<string, string>]>) {
+      const cmd: ExpensePatchIntent = {
+        ...baseNotesPatch,
+        target: { ...baseNotesPatch.target, ...targetOverride },
+      };
+      const result = await bridge.submitCreateNotesPatch({
+        scenario,
+        principal: SYNTHETIC_PRINCIPAL,
+        rawCommandJson: JSON.stringify(cmd),
+        canonicalIntentJson: canonicalizeControlDocument(cmd),
+      });
+      usedPatchScopeCases.push({ label, result });
+    }
+
+    const stateFinal = await bridge.inspectCreateState({ scenario });
+    renderCreateState(stateFinal);
+    return {
+      fieldCases,
+      identityCases,
+      scopeCases,
+      stateAfterRejections,
+      validCommit,
+      stateAfterValid,
+      usedCreateScopeCases,
+      newPatchScopeCases,
+      validNotesPatch,
+      usedPatchScopeCases,
+      stateFinal,
+    };
   },
-  runCreateBoundaryCap2000: async () => {
-    const scenario: CreateScenarioName = "create-boundary-cap-2000";
+  seedAndCommitCreateCount: async (scenario: CreateScenarioName, initialCount: number, initialRevisionId: string) => {
     const fixture = requireCreateFixture();
     const seeded = await bridge.seedCreateScenario({
       scenario,
       datasetId: fixture.command.operation.dataset_id,
       travelId: fixture.command.target.travel_id,
       branchId: fixture.command.target.branch_id,
-      initialRevisionId: "fixture-r1999",
-      initialCount: 1999,
+      initialRevisionId,
+      initialCount,
     });
-
-    const cmd2000: ExpenseCreateIntent = {
+    const cmdNext: ExpenseCreateIntent = {
       ...fixture.command,
-      expected_revision_id: "fixture-r1999",
+      expected_revision_id: initialRevisionId,
     };
-    const canon2000 = canonicalizeControlDocument(cmd2000);
-    const commit2000 = await bridge.submitExpenseCreate({
+    const commitNext = await bridge.submitExpenseCreate({
       scenario,
       principal: SYNTHETIC_PRINCIPAL,
-      rawCommandJson: JSON.stringify(cmd2000),
-      canonicalIntentJson: canon2000,
+      rawCommandJson: JSON.stringify(cmdNext),
+      canonicalIntentJson: canonicalizeControlDocument(cmdNext),
       faultMode: "none",
     });
-    const stateAt2000 = await bridge.inspectCreateState({ scenario });
-
-    const cmd2001: ExpenseCreateIntent = {
+    const stateAfterCommit = await bridge.inspectCreateState({ scenario, pageOffset: 0, pageLimit: CREATE_PAGE_LIMIT });
+    renderCreateState(stateAfterCommit);
+    return { seeded, commitNext, stateAfterCommit };
+  },
+  checkCreatePostRestartGuards: async (
+    scenario: CreateScenarioName,
+    initialRevisionId: string,
+    committedRevId: string,
+    expectCapReject: boolean,
+  ) => {
+    const fixture = requireCreateFixture();
+    const cmdOrig: ExpenseCreateIntent = {
       ...fixture.command,
-      operation: { ...fixture.command.operation, operation_id: "fixture-op-2001" },
-      target: { ...fixture.command.target, entity_id: "fixture-expense-2001" },
-      expected_revision_id: commit2000.result_revision_id ?? "fixture-r1999",
+      expected_revision_id: initialRevisionId,
     };
-    const reject2001 = await bridge.submitExpenseCreate({
+    const canonOrig = canonicalizeControlDocument(cmdOrig);
+
+    const newOpCmd: ExpenseCreateIntent = {
+      ...fixture.command,
+      operation: { ...fixture.command.operation, operation_id: "fixture-op-extra" },
+      target: {
+        ...fixture.command.target,
+        entity_id: expectCapReject ? "fixture-expense-2001" : fixture.command.target.entity_id,
+      },
+      expected_revision_id: committedRevId,
+    };
+    const rejectNew = await bridge.submitExpenseCreate({
       scenario,
       principal: SYNTHETIC_PRINCIPAL,
-      rawCommandJson: JSON.stringify(cmd2001),
-      canonicalIntentJson: canonicalizeControlDocument(cmd2001),
+      rawCommandJson: JSON.stringify(newOpCmd),
+      canonicalIntentJson: canonicalizeControlDocument(newOpCmd),
       faultMode: "none",
     });
-    const stateAfterReject2001 = await bridge.inspectCreateState({ scenario });
 
-    const reordered2000 = {
-      ...Object.fromEntries(Object.entries(cmd2000).reverse()),
-      payload: Object.fromEntries(Object.entries(cmd2000.payload).reverse()),
+    const reorderedOrig = {
+      ...Object.fromEntries(Object.entries(cmdOrig).reverse()),
+      payload: Object.fromEntries(Object.entries(cmdOrig.payload).reverse()),
     } as ExpenseCreateIntent;
-    const replay2000Original = await bridge.submitExpenseCreate({
+    const replayOriginal = await bridge.submitExpenseCreate({
       scenario,
       principal: SYNTHETIC_PRINCIPAL,
-      rawCommandJson: JSON.stringify(cmd2000),
-      canonicalIntentJson: canon2000,
+      rawCommandJson: JSON.stringify(cmdOrig),
+      canonicalIntentJson: canonOrig,
       faultMode: "none",
     });
-    const replay2000Reordered = await bridge.submitExpenseCreate({
+    const replayReordered = await bridge.submitExpenseCreate({
       scenario,
       principal: SYNTHETIC_PRINCIPAL,
-      rawCommandJson: JSON.stringify(reordered2000),
-      canonicalIntentJson: canonicalizeControlDocument(reordered2000),
+      rawCommandJson: JSON.stringify(reorderedOrig),
+      canonicalIntentJson: canonicalizeControlDocument(reorderedOrig),
       faultMode: "none",
     });
 
-    const conflict2000Cmd: ExpenseCreateIntent = {
-      ...cmd2000,
-      payload: { ...cmd2000.payload, amount_cents: 8636 },
+    const conflictCmd: ExpenseCreateIntent = {
+      ...cmdOrig,
+      payload: { ...cmdOrig.payload, amount_cents: 8636 },
     };
-    const conflict2000 = await bridge.submitExpenseCreate({
+    const conflictResult = await bridge.submitExpenseCreate({
       scenario,
       principal: SYNTHETIC_PRINCIPAL,
-      rawCommandJson: JSON.stringify(conflict2000Cmd),
-      canonicalIntentJson: canonicalizeControlDocument(conflict2000Cmd),
+      rawCommandJson: JSON.stringify(conflictCmd),
+      canonicalIntentJson: canonicalizeControlDocument(conflictCmd),
       faultMode: "none",
     });
-    const stateFinal = await bridge.inspectCreateState({ scenario });
+
+    const stateFinal = await bridge.inspectCreateState({ scenario, pageOffset: 0, pageLimit: CREATE_PAGE_LIMIT });
     renderCreateState(stateFinal);
-    return {
-      seeded,
-      commit2000,
-      stateAt2000,
-      reject2001,
-      stateAfterReject2001,
-      replay2000Original,
-      replay2000Reordered,
-      conflict2000,
-      stateFinal,
-    };
+    return { rejectNew, replayOriginal, replayReordered, conflictResult, stateFinal };
   },
   holdWriterLock: (options: {
     scenario: ScenarioName;

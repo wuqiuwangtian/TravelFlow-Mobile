@@ -507,7 +507,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
                 BridgeCreateLedgerStore.seedWithExpenseCount(
                         dir, datasetId, travelId, branchId, initialRevisionId, initialCount);
-                JSObject state = BridgeCreateLedgerStore.inspectState(dir, createReceiptReadCount.get());
+                JSObject state = BridgeCreateLedgerStore.inspectState(
+                        dir, createReceiptReadCount.get(), 0, BridgeCreateLedgerStore.DEFAULT_PAGE_LIMIT);
                 JSObject pending = buildCreatePendingState(scenario);
                 state.put("pending", pending.get("pending"));
                 state.put("confirmedOp", pending.get("confirmedOp"));
@@ -685,6 +686,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
     @PluginMethod
     public void inspectCreateState(PluginCall call) {
         String scenario = call.getString("scenario", "");
+        int pageOffset = call.getInt("pageOffset", 0);
+        int pageLimit = call.getInt("pageLimit", BridgeCreateLedgerStore.DEFAULT_PAGE_LIMIT);
         executor.execute(() -> {
             try {
                 if (!BridgeCreateLedgerStore.isCreateScenario(scenario)) {
@@ -692,7 +695,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
                     return;
                 }
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
-                JSObject state = BridgeCreateLedgerStore.inspectState(dir, createReceiptReadCount.get());
+                JSObject state = BridgeCreateLedgerStore.inspectState(
+                        dir, createReceiptReadCount.get(), pageOffset, pageLimit);
                 JSObject pending = buildCreatePendingState(scenario);
                 state.put("pending", pending.get("pending"));
                 state.put("confirmedOp", pending.get("confirmedOp"));
@@ -700,6 +704,26 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 call.resolve(state);
             } catch (Exception error) {
                 call.reject(error.getMessage(), "CREATE_INSPECT_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void readCreateRevisionPage(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String revisionId = call.getString("revisionId", "");
+        int offset = call.getInt("offset", 0);
+        int limit = call.getInt("limit", BridgeCreateLedgerStore.DEFAULT_PAGE_LIMIT);
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario) || revisionId.isEmpty()) {
+                    call.reject("Invalid readCreateRevisionPage arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                call.resolve(BridgeCreateLedgerStore.readRevisionPage(dir, revisionId, offset, limit));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "CREATE_REVISION_PAGE_FAILED");
             }
         });
     }

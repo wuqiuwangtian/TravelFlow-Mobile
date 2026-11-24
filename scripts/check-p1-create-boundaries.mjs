@@ -138,6 +138,33 @@ function seedExpenses(count) {
       reason: "storage_busy",
     });
     contender.exec("ROLLBACK");
+    contender.close();
+    contender = null;
+
+    // Commit create + notes patch, then verify already-used keys targeting wrong travel/branch reject BEFORE receipt lookup.
+    const created = store.execute(encode(command), principal);
+    assert.equal(created.accepted, true);
+    const notesPatch = {
+      ...command,
+      kind: "expense.patch",
+      operation: { ...command.operation, operation_id: "fixture-op-notes" },
+      expected_revision_id: created.result_revision_id,
+      payload: { notes: "虚构更正" },
+    };
+    const patched = store.execute(encode(notesPatch), principal);
+    assert.equal(patched.accepted, true);
+    const beginsAfterCommit = store.stats.begins;
+    const changesAfterCommit = store.totalChanges();
+    for (const baseCmd of [command, notesPatch]) {
+      for (const targetOverride of [{ travel_id: "fixture-other-travel" }, { branch_id: "fixture-other-branch" }]) {
+        assert.deepEqual(
+          store.execute(encode({ ...baseCmd, target: { ...baseCmd.target, ...targetOverride } }), principal),
+          { accepted: false, error: "denied" },
+        );
+      }
+    }
+    assert.equal(store.stats.begins, beginsAfterCommit, "Reused keys with wrong target must reject before BEGIN");
+    assert.equal(store.totalChanges(), changesAfterCommit);
   } finally {
     contender?.close();
     store.close();
@@ -147,30 +174,30 @@ function seedExpenses(count) {
 
 console.log(JSON.stringify({
   passed: true,
-  desktop_reference_commit: "20c84f0",
+  desktop_reference_commit: "73bb8f4",
   cross_end_differences: {
     unsupported_create_fields: {
-      desktop_20c84f0: "unsupported_capability (paid_on/day/activity_id/receipt_ids/budget_item_id/non-CNY), invalid_field (settles_budget=true/unknown category)",
+      desktop_73bb8f4: "unsupported_capability (paid_on/day/activity_id/receipt_ids/budget_item_id/non-CNY), invalid_field (settles_budget=true/unknown category)",
       mobile_host: "accepts paid_on/day/activity_id/receipt_ids/budget_item_id when context links exist; rejects non-CNY with currency",
-      android_candidate: "aligned with desktop_20c84f0 exchangeable subset: unsupported_capability + invalid_field",
+      android_candidate: "aligned with desktop_73bb8f4 exchangeable subset: unsupported_capability + invalid_field",
     },
     expense_cap_2000: {
-      desktop_20c84f0: "expense_limit_exceeded (replay at 2000 succeeds)",
+      desktop_73bb8f4: "expense_limit_exceeded (replay at 2000 succeeds)",
       mobile_host: "expense_count (replay at 2000 succeeds)",
       android_candidate: "expense_count (replay at 2000 succeeds)",
     },
     caller_identity_rejection: {
-      desktop_20c84f0: "unauthorized (checked before SQLite open)",
+      desktop_73bb8f4: "unauthorized (checked before SQLite open)",
       mobile_host: "denied (checked before BEGIN IMMEDIATE)",
       android_candidate: "denied (checked before SQLite open)",
     },
     target_travel_or_branch_mismatch: {
-      desktop_20c84f0: "target_not_found (branches lookup)",
-      mobile_host: "denied (checked in #authorize before BEGIN)",
-      android_candidate: "scope_mismatch (checked against branch_head before write)",
+      desktop_73bb8f4: "unauthorized (checked against branches BEFORE receipt lookup for new and reused keys)",
+      mobile_host: "denied (checked in #authorize BEFORE BEGIN IMMEDIATE and receipt lookup for new and reused keys)",
+      android_candidate: "scope_mismatch (checked against branch_head BEFORE receipt lookup for new and reused create/patch keys)",
     },
     receipt_lookup_absent_and_busy: {
-      desktop_20c84f0: "read-only SELECT: state=not_found (no write-lock serialization on lookup)",
+      desktop_73bb8f4: "BEGIN IMMEDIATE (timeout=0.0): state=not_found_at_settled_read / state=unknown + reason=storage_busy",
       mobile_host: "BEGIN IMMEDIATE (busy_timeout=0): state=not_found_at_settled_read / state=unknown + reason=storage_busy",
       android_candidate: "beginTransactionNonExclusive: state=not_found_at_settled_read / state=pending_busy + full intent_conflict check on recovery",
     },

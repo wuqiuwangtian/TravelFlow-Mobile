@@ -673,17 +673,17 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 
 已从电脑固定提交 `20c84f0` 归档运行 20 项桌面隔离执行／导出检查，通过。下一项核对两个执行器的能力限制、结果与回执语义：桌面拒绝当前未支持的关联字段，在 2000 笔上限返回 expense_limit_exceeded；移动宿主使用 expense_count。Android 固定午餐成功不证明两端边界均一致。执行范围见[路线](PRODUCT_ROADMAP.md#新增消费的跨端边界对照)。
 
-## 2026-11-24 新增消费的跨端边界对照（桌面 `20c84f0` vs 移动宿主 vs Android 候选）
+## 2026-11-24 新增消费的跨端边界对照（桌面 `73bb8f4` vs 移动宿主 vs Android 候选）
 
-在执行分支 `antigravity/mobile-create-boundaries`（起点 `5783ba5`）对照桌面隔离执行器 `20c84f0` 与移动宿主，补齐 Android 候选的可交换字段范围校验、写入前虚构身份与目标作用域校验、2000 笔上限及满额重放保护，新增宿主检查 `pnpm check:p1-create-boundaries`，并在隔离 API 35 模拟器（`travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`）通过全部 13 组回归（保留原 11 组并新增 2 组边界场景）：
+在执行分支 `antigravity/mobile-create-boundaries`（起点 `5783ba5`）对照桌面隔离执行器 `73bb8f4` 与移动宿主，补齐 Android 候选的可交换字段范围校验、写入前虚构身份与先于回执查询的目标作用域校验、2000 笔上限及满额重放保护，修复超过 20 笔时页面归零与历史快照仅存计数的问题（改为始终持久化全量 12 字段历史快照、分页读取当前／历史明细并提供 SHA-256 摘要），新增宿主检查 `pnpm check:p1-create-boundaries`，并在隔离 API 35 模拟器（`travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`）通过全部 14 组回归（保留原 13 组并新增 `20→21` 场景）：
 
-- `create-boundary-fields-scope`：非空 `paid_on`、`day`、`activity_id`、非空 `receipt_ids`、非空 `budget_item_id`、非 `CNY` 币种均返回 `unsupported_capability`；`settles_budget: true` 与未知 `category` 返回 `invalid_field`；写入前虚构身份不符（未认证、无写权限、错误 `dataset_id`／`source_device_id`）返回 `denied`；错误 `travel_id`／`branch_id` 返回 `scope_mismatch`；全部 14 次拒绝后零写入（消费 0、修订 1、回执 0、待发送 0），随后合法午餐正常提交（`fixture-7c2c2de3-7e0c-4845-9b87-75efc7cc7f69`）。
-- `create-boundary-cap-2000`：预置 1999 笔后提交第 2000 笔成功（`fixture-abc75149-162f-483b-b27f-2ecd11d8d287`，消费 2000、修订 2、回执 1、待发送 1）；第 2001 笔新操作返回 `expense_count` 且零写入；满额状态下重放第 2000 笔原请求与键重排请求均返回原结果（`replayed: true`），同键异金额返回 `intent_conflict`。
+- `create-boundary-fields-scope`：非空 `paid_on`、`day`、`activity_id`、非空 `receipt_ids`、非空 `budget_item_id`、非 `CNY` 币种均返回 `unsupported_capability`；`settles_budget: true` 与未知 `category` 返回 `invalid_field`；写入前虚构身份不符（未认证、无写权限、错误 `dataset_id`／`source_device_id`）返回 `denied`；新增与备注更正的新键及已用键指向错误 `travel_id`／`branch_id` 均先于回执查询返回 `scope_mismatch` 且零写入；合法午餐（`fixture-b3631ff2-963b-4f0b-bb87-7a02648c1820`）与备注更正（`fixture-82d56c90-9d8c-4411-b167-bd4f5c1208f0`）正常提交。
+- `create-boundary-over-20`（`20→21`）与 `create-boundary-cap-2000`（`1999→2000`）：冷重开后页面独立核对 `消费 21 笔（合计 ¥106.35）` 与 `消费 2000 笔（合计 ¥2085.35）` 未归零，`20→21` 经真实 CDP 触摸验证上一页／下一页分页；逐版核对全部历史快照的独立 SHA-256 摘要（`20→21`：`deaca4e0...`／`b9551c6a...`；`1999→2000`：`ec025294...`／`1740e7a9...`）及分页历史明细还原；随后新键拒绝（`entity_exists`／`expense_count`）、原请求与键重排重放（`replayed: true`）及同键异金额冲突（`intent_conflict`）均未改动笔数、总额与两版快照摘要。
 - 两端现有差异（待两端共同确认共享错误名与协议版本）：
-  - 未支持关联字段：桌面 `20c84f0` 与 Android 候选均拒绝（`unsupported_capability`／`invalid_field`），产品仍保留完整业务目标；移动宿主在上下文存在时允许上述字段，非 CNY 返回 `currency`。
-  - 2000 笔上限错误码：桌面 `20c84f0` 为 `expense_limit_exceeded`，移动宿主与 Android 候选为 `expense_count`；三者满额重放均返回原结果。
-  - 调用身份拒绝码：桌面 `20c84f0` 为 `unauthorized`（打开 SQLite 前），移动宿主与 Android 候选为 `denied`（写事务前）。
-  - 目标旅行／分支不匹配：桌面 `20c84f0` 为 `target_not_found`，移动宿主为 `denied`，Android 候选为 `scope_mismatch`。
-  - 回执查询缺失／忙锁语义：桌面 `20c84f0` 为只读查询（`not_found`，无写锁串行）；移动宿主为 `BEGIN IMMEDIATE`（`not_found_at_settled_read`／`unknown`+`storage_busy`）；Android 候选为 `beginTransactionNonExclusive`（`not_found_at_settled_read`／`pending_busy`，恢复时另核对完整意图并在冲突时返回 `intent_conflict`）。
+  - 未支持关联字段：桌面 `73bb8f4` 与 Android 候选均拒绝（`unsupported_capability`／`invalid_field`），产品仍保留完整业务目标；移动宿主在上下文存在时允许上述字段，非 CNY 返回 `currency`。
+  - 2000 笔上限错误码：桌面 `73bb8f4` 为 `expense_limit_exceeded`，移动宿主与 Android 候选为 `expense_count`；三者满额重放均返回原结果。
+  - 调用身份拒绝码：桌面 `73bb8f4` 为 `unauthorized`（打开 SQLite 前），移动宿主与 Android 候选为 `denied`（写事务前）。
+  - 目标旅行／分支不匹配（均先于回执查询拒绝新键与已用键）：桌面 `73bb8f4` 为 `unauthorized`，移动宿主为 `denied`，Android 候选为 `scope_mismatch`。
+  - 回执查询缺失／忙锁语义：桌面 `73bb8f4` 与移动宿主均采用 `BEGIN IMMEDIATE`（`not_found_at_settled_read`／`unknown`+`storage_busy`）；Android 候选为 `beginTransactionNonExclusive`（`not_found_at_settled_read`／`pending_busy`，恢复时另核对完整意图并在冲突时返回 `intent_conflict`）。
 
 未验证项：共享错误名定版、共享契约版本号分配、网络同步、生产身份与真机均未纳入本单。

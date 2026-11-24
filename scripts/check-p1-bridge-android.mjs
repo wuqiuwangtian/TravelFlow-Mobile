@@ -769,22 +769,52 @@ async function runScenarios(adb, cdpPort) {
     };
     const expectedLunchV2 = { ...expectedLunchV1, notes: "虚构更正" };
 
+    function buildSeedExpense(index) {
+      return {
+        id: `fixture-seed-${String(index).padStart(4, "0")}`,
+        title: "seed",
+        amount_cents: 100,
+        currency: "CNY",
+        paid_on: null,
+        category: "other",
+        day: null,
+        activity_id: null,
+        notes: "",
+        receipt_ids: [],
+        budget_item_id: null,
+        settles_budget: false,
+      };
+    }
+
+    function snapshotSha256(expenses) {
+      return createHash("sha256").update(JSON.stringify({ expenses }), "utf8").digest("hex");
+    }
+
     function assertCreateRevisions(revisions, createRevision, advancedHead) {
       assert.equal(revisions.length, advancedHead ? 3 : 2);
       assert.deepEqual(revisions[0], {
         revision_id: "fixture-r0",
         parent_revision_id: null,
+        expense_count: 0,
+        total_cents: 0,
+        snapshot_sha256: snapshotSha256([]),
         snapshot: { expenses: [] },
       });
       assert.deepEqual(revisions[1], {
         revision_id: createRevision,
         parent_revision_id: "fixture-r0",
+        expense_count: 1,
+        total_cents: 8635,
+        snapshot_sha256: snapshotSha256([expectedLunchV1]),
         snapshot: { expenses: [expectedLunchV1] },
       });
       if (advancedHead) {
         assert.deepEqual(revisions[2], {
           revision_id: advancedHead,
           parent_revision_id: createRevision,
+          expense_count: 1,
+          total_cents: 8635,
+          snapshot_sha256: snapshotSha256([expectedLunchV2]),
           snapshot: { expenses: [expectedLunchV2] },
         });
       }
@@ -1073,76 +1103,184 @@ async function runScenarios(adb, cdpPort) {
       assert.equal(res.stateAfterValid.outboxCount, 1);
       assertCreateRevisions(res.stateAfterValid.revisions, res.validCommit.result_revision_id, null);
 
+      for (const item of res.usedCreateScopeCases) {
+        assert.deepEqual(item.result, { accepted: false, error: "scope_mismatch" }, `Used create scope ${item.label}`);
+      }
+      for (const item of res.newPatchScopeCases) {
+        assert.deepEqual(item.result, { accepted: false, error: "scope_mismatch" }, `New patch scope ${item.label}`);
+      }
+      assert.equal(res.validNotesPatch.accepted, true);
+      for (const item of res.usedPatchScopeCases) {
+        assert.deepEqual(item.result, { accepted: false, error: "scope_mismatch" }, `Used patch scope ${item.label}`);
+      }
+      assert.equal(res.stateFinal.expenseCount, 1);
+      assert.equal(res.stateFinal.totalCents, 8635);
+      assert.equal(res.stateFinal.revisionCount, 3);
+      assert.equal(res.stateFinal.receiptCount, 2);
+      assert.equal(res.stateFinal.outboxCount, 2);
+      assertCreateRevisions(res.stateFinal.revisions, res.validCommit.result_revision_id, res.validNotesPatch.result_revision_id);
+
       report.scenarios[scenario] = {
         fieldRejections: Object.fromEntries(res.fieldCases.map((item) => [item.label, item.result.error])),
         identityRejections: Object.fromEntries(res.identityCases.map((item) => [item.label, item.result.error])),
-        scopeRejections: Object.fromEntries(res.scopeCases.map((item) => [item.label, item.result.error])),
+        scopeRejections: Object.fromEntries([
+          ...res.scopeCases,
+          ...res.usedCreateScopeCases,
+          ...res.newPatchScopeCases,
+          ...res.usedPatchScopeCases,
+        ].map((item) => [item.label, item.result.error])),
         zeroWritesAfterAllRejections: true,
         validCommitRevisionId: res.validCommit.result_revision_id,
+        validNotesPatchRevisionId: res.validNotesPatch.result_revision_id,
         final: {
-          expenseCount: res.stateAfterValid.expenseCount,
-          revisionCount: res.stateAfterValid.revisionCount,
-          receiptCount: res.stateAfterValid.receiptCount,
-          outboxCount: res.stateAfterValid.outboxCount,
+          expenseCount: res.stateFinal.expenseCount,
+          totalCents: res.stateFinal.totalCents,
+          revisionCount: res.stateFinal.revisionCount,
+          receiptCount: res.stateFinal.receiptCount,
+          outboxCount: res.stateFinal.outboxCount,
         },
       };
     }
 
-    // 13. create-boundary-cap-2000: 1999→2000、满额 2000 拒绝新操作且零写入、满额重放原操作仍返回原结果
-    {
-      const scenario = "create-boundary-cap-2000";
+    // 13 & 14. 20→21 与 1999→2000：冷重开后独立核对页面笔数、总额、分页明细与逐版完整历史快照摘要，再核对拒绝与重放零改账
+    for (const { scenario, initialCount, initialRevisionId, expectCapReject } of [
+      { scenario: "create-boundary-over-20", initialCount: 20, initialRevisionId: "fixture-r20", expectCapReject: false },
+      { scenario: "create-boundary-cap-2000", initialCount: 1999, initialRevisionId: "fixture-r1999", expectCapReject: true },
+    ]) {
+      const targetCount = initialCount + 1;
+      const expectedInitialCents = initialCount * 100;
+      const expectedFinalCents = expectedInitialCents + 8635;
+      const initialList = Array.from({ length: initialCount }, (_, i) => buildSeedExpense(i + 1));
+      const finalList = [expectedLunchV1, ...initialList]; // "fixture-lunch" sorts before "fixture-seed-0001"
+      const expectedInitSha = snapshotSha256(initialList);
+      const expectedFinalSha = snapshotSha256(finalList);
+
       await session.client.setSelect("create-scenario", scenario);
-      const res = await session.client.evaluate(`window.__tfP1Bridge.runCreateBoundaryCap2000()`);
+      const created = await session.client.evaluate(
+        `window.__tfP1Bridge.seedAndCommitCreateCount(${JSON.stringify(scenario)}, ${initialCount}, ${JSON.stringify(initialRevisionId)})`,
+      );
+      assert.equal(created.seeded.expenseCount, initialCount);
+      assert.equal(created.seeded.totalCents, expectedInitialCents);
+      assert.equal(created.commitNext.accepted, true);
+      assert.equal(created.commitNext.replayed, false);
+      const committedRev = created.commitNext.result_revision_id;
+      assert.equal(created.stateAfterCommit.expenseCount, targetCount);
+      assert.equal(created.stateAfterCommit.totalCents, expectedFinalCents);
 
-      assert.equal(res.seeded.expenseCount, 1999);
-      assert.equal(res.seeded.revisionCount, 1);
-      assert.equal(res.seeded.receiptCount, 0);
-      assert.equal(res.seeded.outboxCount, 0);
+      // Cold restart before independent page, pagination, and per-revision snapshot verification.
+      const pidBeforeKill = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario}`);
+      session = await launchAndAttach(adb, cdpPort, pidBeforeKill);
+      await session.client.setSelect("create-scenario", scenario);
 
-      assert.equal(res.commit2000.accepted, true);
-      assert.equal(res.commit2000.replayed, false);
-      const rev2000 = res.commit2000.result_revision_id;
-      assert.equal(res.stateAt2000.expenseCount, 2000);
-      assert.equal(res.stateAt2000.revisionCount, 2);
-      assert.equal(res.stateAt2000.receiptCount, 1);
-      assert.equal(res.stateAt2000.outboxCount, 1);
+      const ledgerText = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const formattedYuan = (expectedFinalCents / 100).toFixed(2);
+      assert.ok(ledgerText.includes(`消费 ${targetCount} 笔`), `Unexpected ledger count text: ${ledgerText}`);
+      assert.ok(ledgerText.includes(`合计 ¥${formattedYuan}`), `Unexpected ledger total text: ${ledgerText}`);
 
-      assert.deepEqual(res.reject2001, { accepted: false, error: "expense_count" });
-      assert.equal(res.stateAfterReject2001.headRevisionId, rev2000);
-      assert.equal(res.stateAfterReject2001.expenseCount, 2000);
-      assert.equal(res.stateAfterReject2001.revisionCount, 2);
-      assert.equal(res.stateAfterReject2001.receiptCount, 1);
-      assert.equal(res.stateAfterReject2001.outboxCount, 1);
+      const reopened = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)}, 0, 20)`);
+      assert.equal(reopened.expenseCount, targetCount);
+      assert.equal(reopened.totalCents, expectedFinalCents);
+      assert.equal(reopened.expenses.length, 20);
+      assert.equal(reopened.hasMoreExpenses, true);
+      assert.deepEqual(reopened.expenses[0], expectedLunchV1);
+      assert.equal(reopened.revisions.length, 2);
+      assert.equal(reopened.revisions[0].revision_id, initialRevisionId);
+      assert.equal(reopened.revisions[0].expense_count, initialCount);
+      assert.equal(reopened.revisions[0].total_cents, expectedInitialCents);
+      assert.equal(reopened.revisions[0].snapshot_sha256, expectedInitSha);
+      assert.equal(reopened.revisions[1].revision_id, committedRev);
+      assert.equal(reopened.revisions[1].parent_revision_id, initialRevisionId);
+      assert.equal(reopened.revisions[1].expense_count, targetCount);
+      assert.equal(reopened.revisions[1].total_cents, expectedFinalCents);
+      assert.equal(reopened.revisions[1].snapshot_sha256, expectedFinalSha);
 
-      for (const replay of [res.replay2000Original, res.replay2000Reordered]) {
+      // Verify UI pagination controls via real CDP touch on 20->21.
+      if (!expectCapReject) {
+        const page2 = await session.client.tapAndWaitCreateAction("create-page-next");
+        assert.equal(page2.state.pageOffset, 20);
+        assert.equal(page2.state.expenses.length, 1);
+        assert.equal(page2.state.hasMoreExpenses, false);
+        assert.deepEqual(page2.state.expenses[0], buildSeedExpense(20));
+        const page1 = await session.client.tapAndWaitCreateAction("create-page-prev");
+        assert.equal(page1.state.pageOffset, 0);
+        assert.equal(page1.state.expenses.length, 20);
+        assert.equal(page1.state.hasMoreExpenses, true);
+      }
+
+      // Independently reconstruct paginated historical records from both revisions.
+      const rev0LastPage = await session.client.evaluate(
+        `window.__tfP1Bridge.readCreateRevisionPage(${JSON.stringify(scenario)}, ${JSON.stringify(initialRevisionId)}, ${initialCount - 1}, 20)`,
+      );
+      assert.equal(rev0LastPage.accepted, true);
+      assert.equal(rev0LastPage.expense_count, initialCount);
+      assert.equal(rev0LastPage.total_cents, expectedInitialCents);
+      assert.equal(rev0LastPage.snapshot_sha256, expectedInitSha);
+      assert.deepEqual(rev0LastPage.expenses, [buildSeedExpense(initialCount)]);
+
+      const rev1FirstPage = await session.client.evaluate(
+        `window.__tfP1Bridge.readCreateRevisionPage(${JSON.stringify(scenario)}, ${JSON.stringify(committedRev)}, 0, 20)`,
+      );
+      assert.equal(rev1FirstPage.accepted, true);
+      assert.equal(rev1FirstPage.expense_count, targetCount);
+      assert.equal(rev1FirstPage.total_cents, expectedFinalCents);
+      assert.equal(rev1FirstPage.snapshot_sha256, expectedFinalSha);
+      assert.deepEqual(rev1FirstPage.expenses[0], expectedLunchV1);
+
+      const rev1LastPage = await session.client.evaluate(
+        `window.__tfP1Bridge.readCreateRevisionPage(${JSON.stringify(scenario)}, ${JSON.stringify(committedRev)}, ${targetCount - 1}, 20)`,
+      );
+      assert.equal(rev1LastPage.accepted, true);
+      assert.deepEqual(rev1LastPage.expenses, [buildSeedExpense(initialCount)]);
+
+      // Verify rejections and replays do not mutate ledger, totals, or revision digests.
+      const guards = await session.client.evaluate(
+        `window.__tfP1Bridge.checkCreatePostRestartGuards(${JSON.stringify(scenario)}, ${JSON.stringify(initialRevisionId)}, ${JSON.stringify(committedRev)}, ${expectCapReject})`,
+      );
+      assert.deepEqual(guards.rejectNew, {
+        accepted: false,
+        error: expectCapReject ? "expense_count" : "entity_exists",
+      });
+      for (const replay of [guards.replayOriginal, guards.replayReordered]) {
         assert.deepEqual(replay, {
           accepted: true,
           kind: "committed",
           replayed: true,
           effect: "changed",
-          result_revision_id: rev2000,
+          result_revision_id: committedRev,
         });
       }
-      assert.deepEqual(res.conflict2000, { accepted: false, error: "intent_conflict" });
-      assert.equal(res.stateFinal.headRevisionId, rev2000);
-      assert.equal(res.stateFinal.expenseCount, 2000);
-      assert.equal(res.stateFinal.revisionCount, 2);
-      assert.equal(res.stateFinal.receiptCount, 1);
-      assert.equal(res.stateFinal.outboxCount, 1);
+      assert.deepEqual(guards.conflictResult, { accepted: false, error: "intent_conflict" });
+      assert.equal(guards.stateFinal.headRevisionId, committedRev);
+      assert.equal(guards.stateFinal.expenseCount, targetCount);
+      assert.equal(guards.stateFinal.totalCents, expectedFinalCents);
+      assert.equal(guards.stateFinal.revisionCount, 2);
+      assert.equal(guards.stateFinal.receiptCount, 1);
+      assert.equal(guards.stateFinal.outboxCount, 1);
+      assert.equal(guards.stateFinal.revisions[0].snapshot_sha256, expectedInitSha);
+      assert.equal(guards.stateFinal.revisions[1].snapshot_sha256, expectedFinalSha);
 
       report.scenarios[scenario] = {
-        seededCount: res.seeded.expenseCount,
-        rev2000,
-        reject2001Error: res.reject2001.error,
-        replayAt2000OriginalReplayed: res.replay2000Original.replayed,
-        replayAt2000ReorderedReplayed: res.replay2000Reordered.replayed,
-        conflictAt2000Error: res.conflict2000.error,
+        pidBeforeKill,
+        pidAfterReopen: session.pid,
+        seededCount: initialCount,
+        committedRev,
+        pageLedgerText: ledgerText,
+        rev0Sha256: expectedInitSha,
+        rev1Sha256: expectedFinalSha,
+        rejectNewError: guards.rejectNew.error,
+        replayOriginalReplayed: guards.replayOriginal.replayed,
+        replayReorderedReplayed: guards.replayReordered.replayed,
+        conflictError: guards.conflictResult.error,
         final: {
-          headRevisionId: res.stateFinal.headRevisionId,
-          expenseCount: res.stateFinal.expenseCount,
-          revisionCount: res.stateFinal.revisionCount,
-          receiptCount: res.stateFinal.receiptCount,
-          outboxCount: res.stateFinal.outboxCount,
+          headRevisionId: guards.stateFinal.headRevisionId,
+          expenseCount: guards.stateFinal.expenseCount,
+          totalCents: guards.stateFinal.totalCents,
+          revisionCount: guards.stateFinal.revisionCount,
+          receiptCount: guards.stateFinal.receiptCount,
+          outboxCount: guards.stateFinal.outboxCount,
         },
       };
     }
