@@ -711,3 +711,13 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 ## 2026-11-24 Android 待发送输入恢复任务已准备
 
 电脑 `fef2651` 已接收共同样例回执，桌面发送方实现和 Android 进程恢复可并行。移动基线 `9dec892` 的宿主检查再次确认带付款日的午餐可以在宿主本地提交，写锁期间查询返回 unknown / storage_busy。Android 既有完整意图恢复已覆盖提交应答丢失；EC07 写锁与 EC10 能力不匹配时的待发送输入能否跨应用重开保持，仍待本单实测。交接见[Android 并行任务](PRODUCT_ROADMAP.md#android-并行任务重开后保留原待发送消费)。
+
+## Android 待发送恢复首轮独立评审（340a59b，待返修）
+
+从 `340a59bc5c9a1b5eedff737573d1e52ad84180da` 构建 APK，在只读 API 35 AVD `travelflow_p0_api35` 用 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240 --apk "$candidate_apk"` 独立复跑，16/16 通过。付款日和原始意图在强停后仍可读；可交换午餐丢应答后能找回原版本，最终 1 笔 8635 分、1 份回执。追加页面路径和保留数据升级检查后暂缓合入。
+
+- **丢应答后的页面误报**。完整脚本 EC07 的 `after_commit_drop_reply_reopen` 同屏实读“消费 1 笔（合计 ¥86.35）”与“本机待发送（未入账／未同步）”，状态仍为 `pending_not_found`。前一次查询的缺失不能代表本次提交结果。返修应在尝试提交前持久记录待核实状态，页面区分未发送、结果待核实和已确认；在该断点断言页面语义及恢复后的唯一回执。
+- **手动查询覆盖能力阻断**。全新安装，在 EC10 初始化、填付款日 2026-11-23、提交 → 仅核实新增回执 → 查询并恢复。实测 `blocked_unsupported_capability` 被改为 `pending_not_found`，随后再次提交原输入并报 `Retry create failed: {"accepted":false,"error":"unsupported_capability"}`。原日期保留，账本仍为 0。查询缺失应保留阻断原因；补测查询后冷启、恢复，以及无再次提交。
+- **旧版待核实记录升级后无法确认**。从 `131b848` 构建并安装旧 APK，在 `create-after-commit` 初始化，以 `after_commit_drop_reply` 提交；在该隔离安装上用 `adb -s emulator-5580 install -r -t "$candidate_apk"` 保留应用数据升级。重开同场景，页面状态和基线为 `undefined`，点击恢复报 `Invalid lookupCreateReceipt arguments`。账本 1 笔 8635 分、回执 1、本机确认空。旧记录仅含 operationId、rawCommandJson、canonicalIntentJson。返修应从原始记录校验并还原恢复所需字段；兼测旧版提交前／后中断，分别用原请求重试或确认已有版本，保留两个版本的构建及升级复跑方式。
+
+返修沿用移动执行分支，保持已有 16 项回归。上述结果来自隔离应用与模拟器，未涉及生产账本、真机或网络传输。
