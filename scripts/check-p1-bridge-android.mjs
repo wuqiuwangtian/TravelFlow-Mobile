@@ -1288,6 +1288,312 @@ async function runScenarios(adb, cdpPort) {
         },
       };
     }
+
+    // 15. EC10: 付款日 2026-11-23 能力不匹配，提交后强停重开仍保留完整待发送输入，不入账、不显示已同步、不自动删日期
+    for (const scenario of ["create-pending-ec10", "create-pending-ec10-saved"]) {
+      const expectedEc10Command = {
+        ...createFixture.command,
+        payload: { ...createFixture.command.payload, paid_on: "2026-11-23" },
+      };
+      await session.client.setSelect("create-scenario", scenario);
+      const seeded = await session.client.tapAndWaitCreateAction("create-seed");
+      assert.equal(seeded.state.expenseCount, 0);
+      assert.equal(seeded.state.headRevisionId, "fixture-r0");
+
+      await session.client.setSelect("create-fault-mode", "none");
+      await session.client.setInput("create-paid-on", "2026-11-23");
+      const savedBeforeSend = scenario === "create-pending-ec10-saved";
+      if (savedBeforeSend) {
+        const prepared = await session.client.tapAndWaitCreateAction("create-prepare-pending");
+        assert.equal(prepared.pending.recoveryState, "pending_unsent");
+        const oldPid = session.pid;
+        session.client.close();
+        adb("shell", "am", "force-stop", PACKAGE);
+        await waitForPid(adb, (p) => p === null, "cold start before first send");
+        session = await launchAndAttach(adb, cdpPort, oldPid);
+        await session.client.setSelect("create-scenario", scenario);
+      }
+      const submitted = await session.client.tapAndWaitCreateAction(savedBeforeSend ? "create-recover" : "create-submit");
+      assert.equal(submitted.status, "unsupported_capability");
+      assert.deepEqual(submitted.result, { accepted: false, error: "unsupported_capability" });
+      assert.equal(submitted.state.expenseCount, 0);
+      assert.equal(submitted.state.totalCents, 0);
+      assert.equal(submitted.state.revisionCount, 1);
+      assert.equal(submitted.state.receiptCount, 0);
+      assert.equal(submitted.state.outboxCount, 0);
+      assert.equal(submitted.state.confirmedOp, null);
+      assert.ok(submitted.state.pending);
+      const savedSha256 = submitted.state.pending.intentSha256;
+      assert.equal(
+        savedSha256,
+        createHash("sha256").update(submitted.state.pending.canonicalIntentJson, "utf8").digest("hex"),
+      );
+
+      // Manual lookup on a blocked_unsupported_capability record must NOT overwrite the block reason.
+      const manualLookup = await session.client.tapAndWaitCreateAction("create-lookup-only");
+      assert.equal(manualLookup.status, "not_found_at_settled_read");
+      assert.equal(manualLookup.lookup.state, "not_found_at_settled_read");
+      assert.equal(manualLookup.state.pending?.recoveryState, "blocked_unsupported_capability");
+      assert.equal(manualLookup.state.pending?.lastError, "unsupported_capability");
+      assert.equal(manualLookup.state.expenseCount, 0);
+
+      // Mark JS-only memory before force-stop; cold restart must wipe JS memory while preserving native pending storage.
+      await session.client.evaluate(`window.__tfJsMemoryOnlySentinel = "ec10-before-stop";`);
+      const pidBeforeStop = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario}`);
+
+      session = await launchAndAttach(adb, cdpPort, pidBeforeStop);
+      const jsMemorySurvived = await session.client.evaluate(`window.__tfJsMemoryOnlySentinel !== undefined`);
+      assert.equal(jsMemorySurvived, false, "Cold restart must wipe JS memory; recovery cannot rely on JS heap");
+
+      await session.client.setSelect("create-scenario", scenario);
+      const reopened = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      const pageLedgerAfterStop = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const pagePendingAfterStop = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
+
+      assert.ok(reopened.pending, "Persisted pending command missing after cold restart");
+      assert.equal(reopened.pending.operationId, "fixture-op-lunch");
+      assert.equal(reopened.pending.datasetId, "fixture-dataset");
+      assert.equal(reopened.pending.sourceDeviceId, "fixture-device");
+      assert.equal(reopened.pending.expectedRevisionId, "fixture-r0");
+      assert.equal(reopened.pending.recoveryState, "blocked_unsupported_capability");
+      assert.equal(reopened.pending.lastError, "unsupported_capability");
+      assert.equal(reopened.pending.intentSha256, savedSha256);
+      assert.deepEqual(JSON.parse(reopened.pending.rawCommandJson), expectedEc10Command);
+      assert.deepEqual(JSON.parse(reopened.pending.canonicalIntentJson).intent, expectedEc10Command);
+      assert.equal(reopened.confirmedOp, null);
+      assert.equal(reopened.headRevisionId, "fixture-r0");
+      assert.equal(reopened.expenseCount, 0);
+      assert.equal(reopened.totalCents, 0);
+      assert.equal(reopened.revisionCount, 1);
+      assert.equal(reopened.receiptCount, 0);
+      assert.equal(reopened.outboxCount, 0);
+      assert.ok(pagePendingAfterStop.includes("本机待发送（未发送／未入账）"), pagePendingAfterStop);
+      assert.ok(pagePendingAfterStop.includes("2026-11-23"), pagePendingAfterStop);
+      assert.ok(pagePendingAfterStop.includes("blocked_unsupported_capability"), pagePendingAfterStop);
+      assert.ok(!pagePendingAfterStop.includes("已确认入账"), pagePendingAfterStop);
+
+      // Triggering recover must NOT strip paid_on or auto-resend.
+      const recoverAttempt = await session.client.tapAndWaitCreateAction("create-recover");
+      assert.equal(recoverAttempt.status, "blocked_unsupported_capability");
+      assert.equal(recoverAttempt.state.expenseCount, 0);
+      assert.equal(recoverAttempt.state.receiptCount, 0);
+      assert.equal(recoverAttempt.state.outboxCount, 0);
+      assert.deepEqual(JSON.parse(recoverAttempt.state.pending.rawCommandJson), expectedEc10Command);
+
+      report.scenarios[scenario] = {
+        pidBeforeStop,
+        pidAfterReopen: session.pid,
+        jsMemoryWipedOnColdStart: !jsMemorySurvived,
+        manualLookupPreservedBlock: true,
+        operationId: reopened.pending.operationId,
+        intentSha256: savedSha256,
+        restoredPaidOn: JSON.parse(reopened.pending.rawCommandJson).payload.paid_on,
+        restoredAmountCents: JSON.parse(reopened.pending.rawCommandJson).payload.amount_cents,
+        restoredBaseline: reopened.pending.expectedRevisionId,
+        recoverAttemptStatus: recoverAttempt.status,
+        pageLedgerText: pageLedgerAfterStop,
+        pagePendingText: pagePendingAfterStop,
+        final: {
+          headRevisionId: recoverAttempt.state.headRevisionId,
+          expenseCount: recoverAttempt.state.expenseCount,
+          totalCents: recoverAttempt.state.totalCents,
+          revisionCount: recoverAttempt.state.revisionCount,
+          receiptCount: recoverAttempt.state.receiptCount,
+          outboxCount: recoverAttempt.state.outboxCount,
+        },
+      };
+    }
+
+    // 16. EC07: 8635 分可交换午餐，依次在写锁忙、稳定缺失、提交后丢应答三处强停重开并按状态恢复确认
+    {
+      const scenario = "create-pending-ec07";
+      const expectedLunchSha256 = "e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd";
+      const steps = [];
+
+      await session.client.setSelect("create-scenario", scenario);
+      const seeded = await session.client.tapAndWaitCreateAction("create-seed");
+      assert.equal(seeded.state.expenseCount, 0);
+      await session.client.setInput("create-paid-on", "");
+      await session.client.setSelect("create-fault-mode", "none");
+
+      const prepared = await session.client.tapAndWaitCreateAction("create-prepare-pending");
+      assert.equal(prepared.pending.operationId, "fixture-op-lunch");
+      assert.equal(prepared.pending.intentSha256, expectedLunchSha256);
+
+      // Step 1: Write lock held by separate :writer process -> pending_busy -> force-stop -> cold reopen.
+      const lockInfo = await session.client.evaluate(`window.__tfP1Bridge.holdCreateWriterLock(${JSON.stringify(scenario)})`);
+      assert.notEqual(lockInfo.writerPid, lockInfo.callerPid);
+      let busyOutcome;
+      try {
+        busyOutcome = await session.client.tapAndWaitCreateAction("create-recover");
+      } finally {
+        await session.client.evaluate(`window.__tfP1Bridge.releaseCreateWriterLock(${JSON.stringify(scenario)})`);
+      }
+      assert.equal(busyOutcome.status, "pending_busy");
+      assert.equal(busyOutcome.lookup.state, "pending_busy");
+      assert.equal(busyOutcome.state.expenseCount, 0);
+      assert.equal(busyOutcome.state.pending?.recoveryState, "pending_busy");
+
+      await session.client.evaluate(`window.__tfJsMemoryOnlySentinel = "ec07-after-busy";`);
+      const pidAfterBusy = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario} busy`);
+      session = await launchAndAttach(adb, cdpPort, pidAfterBusy);
+      assert.equal(await session.client.evaluate(`window.__tfJsMemoryOnlySentinel !== undefined`), false);
+      await session.client.setSelect("create-scenario", scenario);
+      const stateAfterBusyReopen = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      const ledgerBusy = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const pendingBusy = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
+      assert.equal(stateAfterBusyReopen.pending?.operationId, "fixture-op-lunch");
+      assert.equal(stateAfterBusyReopen.pending?.intentSha256, expectedLunchSha256);
+      assert.equal(stateAfterBusyReopen.pending?.recoveryState, "pending_busy");
+      assert.equal(stateAfterBusyReopen.expenseCount, 0);
+      assert.equal(stateAfterBusyReopen.totalCents, 0);
+      assert.equal(stateAfterBusyReopen.receiptCount, 0);
+      assert.equal(stateAfterBusyReopen.outboxCount, 0);
+      assert.ok(pendingBusy.includes("提交结果待核实（未确认）"), pendingBusy);
+      assert.ok(pendingBusy.includes("pending_busy"), pendingBusy);
+      steps.push({
+        step: "after_write_lock_busy_reopen",
+        callerPid: session.pid,
+        writerPid: lockInfo.writerPid,
+        operationId: stateAfterBusyReopen.pending.operationId,
+        intentSha256: stateAfterBusyReopen.pending.intentSha256,
+        receiverTotalCents: stateAfterBusyReopen.totalCents,
+        receiptCount: stateAfterBusyReopen.receiptCount,
+        outboxCount: stateAfterBusyReopen.outboxCount,
+        pageLedgerText: ledgerBusy,
+        pagePendingText: pendingBusy,
+      });
+
+      // Step 2: Settled lookup returns not_found_at_settled_read -> force-stop -> cold reopen.
+      const settledLookup = await session.client.tapAndWaitCreateAction("create-lookup-only");
+      assert.equal(settledLookup.status, "not_found_at_settled_read");
+      assert.equal(settledLookup.lookup.state, "not_found_at_settled_read");
+      assert.equal(settledLookup.state.pending?.recoveryState, "pending_not_found");
+      assert.equal(settledLookup.state.expenseCount, 0);
+
+      await session.client.evaluate(`window.__tfJsMemoryOnlySentinel = "ec07-after-not-found";`);
+      const pidAfterNotFound = session.pid;
+      session.client.close();
+      adb("shell", "am", "force-stop", PACKAGE);
+      await waitForPid(adb, (p) => p === null, `force-stop ${scenario} not-found`);
+      session = await launchAndAttach(adb, cdpPort, pidAfterNotFound);
+      assert.equal(await session.client.evaluate(`window.__tfJsMemoryOnlySentinel !== undefined`), false);
+      await session.client.setSelect("create-scenario", scenario);
+      const stateAfterNotFoundReopen = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      const ledgerNotFound = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const pendingNotFound = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
+      assert.equal(stateAfterNotFoundReopen.pending?.operationId, "fixture-op-lunch");
+      assert.equal(stateAfterNotFoundReopen.pending?.intentSha256, expectedLunchSha256);
+      assert.equal(stateAfterNotFoundReopen.pending?.recoveryState, "pending_not_found");
+      assert.equal(stateAfterNotFoundReopen.expenseCount, 0);
+      assert.equal(stateAfterNotFoundReopen.totalCents, 0);
+      assert.ok(pendingNotFound.includes("本机待发送（未发送／未入账）"), pendingNotFound);
+      assert.ok(pendingNotFound.includes("pending_not_found"), pendingNotFound);
+      steps.push({
+        step: "after_settled_not_found_reopen",
+        callerPid: session.pid,
+        operationId: stateAfterNotFoundReopen.pending.operationId,
+        intentSha256: stateAfterNotFoundReopen.pending.intentSha256,
+        receiverTotalCents: stateAfterNotFoundReopen.totalCents,
+        receiptCount: stateAfterNotFoundReopen.receiptCount,
+        outboxCount: stateAfterNotFoundReopen.outboxCount,
+        pageLedgerText: ledgerNotFound,
+        pagePendingText: pendingNotFound,
+      });
+
+      // Step 3: Retry with original intent under after_commit_drop_reply -> process dies -> cold reopen -> recover & confirm.
+      await session.client.setSelect("create-fault-mode", "after_commit_drop_reply");
+      await session.client.evaluate(`window.__tfJsMemoryOnlySentinel = "ec07-before-drop-reply";`);
+      const pidBeforeDrop = session.pid;
+      await session.client.tap("create-recover", { expectDeath: true });
+      await waitForPid(adb, (p) => p === null || p !== pidBeforeDrop, `${scenario} drop-reply crash`);
+      session.client.close();
+
+      session = await launchAndAttach(adb, cdpPort, pidBeforeDrop);
+      assert.equal(await session.client.evaluate(`window.__tfJsMemoryOnlySentinel !== undefined`), false);
+      await session.client.setSelect("create-scenario", scenario);
+      const stateAfterDropReopen = await session.client.evaluate(`window.__tfP1Bridge.inspectCreateState(${JSON.stringify(scenario)})`);
+      const ledgerDrop = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const pendingDrop = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
+      assert.equal(stateAfterDropReopen.pending?.operationId, "fixture-op-lunch");
+      assert.equal(stateAfterDropReopen.pending?.intentSha256, expectedLunchSha256);
+      assert.equal(stateAfterDropReopen.pending?.recoveryState, "pending_verification");
+      assert.equal(stateAfterDropReopen.confirmedOp, null);
+      assert.equal(stateAfterDropReopen.expenseCount, 1);
+      assert.equal(stateAfterDropReopen.totalCents, 8635);
+      assert.equal(stateAfterDropReopen.revisionCount, 2);
+      assert.equal(stateAfterDropReopen.receiptCount, 1);
+      assert.equal(stateAfterDropReopen.outboxCount, 1);
+      assert.ok(pendingDrop.includes("提交结果待核实（未确认）"), pendingDrop);
+      assert.ok(pendingDrop.includes("pending_verification"), pendingDrop);
+      assert.ok(!pendingDrop.includes("pending_not_found"), pendingDrop);
+      assert.ok(!pendingDrop.includes("已确认入账"), pendingDrop);
+      steps.push({
+        step: "after_commit_drop_reply_reopen",
+        callerPid: session.pid,
+        operationId: stateAfterDropReopen.pending.operationId,
+        intentSha256: stateAfterDropReopen.pending.intentSha256,
+        receiverTotalCents: stateAfterDropReopen.totalCents,
+        receiptCount: stateAfterDropReopen.receiptCount,
+        outboxCount: stateAfterDropReopen.outboxCount,
+        pageLedgerText: ledgerDrop,
+        pagePendingText: pendingDrop,
+      });
+
+      await session.client.setSelect("create-fault-mode", "none");
+      const confirmed = await session.client.tapAndWaitCreateAction("create-recover");
+      const committedRev = confirmed.state.headRevisionId;
+      assert.equal(confirmed.status, "confirmed_existing");
+      assert.deepEqual(confirmed.lookup, {
+        accepted: true,
+        state: "committed",
+        receipt: { effect: "changed", result_revision_id: committedRev },
+      });
+      assert.equal(confirmed.state.pending, null);
+      assert.equal(confirmed.state.confirmedOp, "fixture-op-lunch");
+      assert.equal(confirmed.state.confirmedRevisionId, committedRev);
+      assert.equal(confirmed.state.expenseCount, 1);
+      assert.equal(confirmed.state.totalCents, 8635);
+      assert.equal(confirmed.state.revisionCount, 2);
+      assert.equal(confirmed.state.receiptCount, 1);
+      assert.equal(confirmed.state.outboxCount, 1);
+      assertCreateRevisions(confirmed.state.revisions, committedRev, null);
+      const ledgerConfirmed = await session.client.evaluate(`document.getElementById('create-ledger').textContent`);
+      const pendingConfirmed = await session.client.evaluate(`document.getElementById('create-pending-state').textContent`);
+      assert.ok(pendingConfirmed.includes("已确认入账"), pendingConfirmed);
+      steps.push({
+        step: "confirmed_after_matching_intent_and_revision",
+        callerPid: session.pid,
+        operationId: confirmed.state.confirmedOp,
+        intentSha256: expectedLunchSha256,
+        committedRevisionId: committedRev,
+        receiverTotalCents: confirmed.state.totalCents,
+        receiptCount: confirmed.state.receiptCount,
+        outboxCount: confirmed.state.outboxCount,
+        pageLedgerText: ledgerConfirmed,
+        pagePendingText: pendingConfirmed,
+      });
+
+      report.scenarios[scenario] = {
+        committedRevisionId: committedRev,
+        steps,
+        final: {
+          headRevisionId: committedRev,
+          expenseCount: confirmed.state.expenseCount,
+          totalCents: confirmed.state.totalCents,
+          revisionCount: confirmed.state.revisionCount,
+          receiptCount: confirmed.state.receiptCount,
+          outboxCount: confirmed.state.outboxCount,
+          confirmedOp: confirmed.state.confirmedOp,
+        },
+      };
+    }
   } finally {
     session.client.close();
   }

@@ -721,3 +721,39 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 - **旧版待核实记录升级后无法确认**。从 `131b848` 构建并安装旧 APK，在 `create-after-commit` 初始化，以 `after_commit_drop_reply` 提交；在该隔离安装上用 `adb -s emulator-5580 install -r -t "$candidate_apk"` 保留应用数据升级。重开同场景，页面状态和基线为 `undefined`，点击恢复报 `Invalid lookupCreateReceipt arguments`。账本 1 笔 8635 分、回执 1、本机确认空。旧记录仅含 operationId、rawCommandJson、canonicalIntentJson。返修应从原始记录校验并还原恢复所需字段；兼测旧版提交前／后中断，分别用原请求重试或确认已有版本，保留两个版本的构建及升级复跑方式。
 
 返修沿用移动执行分支，保持已有 16 项回归。上述结果来自隔离应用与模拟器，未涉及生产账本、真机或网络传输。
+
+## 2026-11-24 Android 重开后保留原待发送消费实测（EC10 与 EC07）
+
+在执行分支 `antigravity/android-pending-recovery`（起点 `131b848`）复用 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，固定 Capacitor 8.6.0），扩展待发送持久记录以保存操作身份、基线、完整原始命令、规范化意图、SHA-256 摘要及区分恢复行为的 `recoveryState`／`lastError`，在隔离 TS 页面增加本机待发送状态与接收端入账事实的明确区分，并扩展 `:writer` 锁竞争提供方以覆盖 EC07 空账本写锁。
+
+在隔离 API 35 模拟器 `travelflow_p0_api35`（`emulator-5580`，x86_64，`-read-only`，SQLite `3.44.3`）运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 **16 组**通过（`passed: true`，保留原有 14 组含同键异金额与仅改共享票据许可回归，新增 EC10 与 EC07 两组）：
+
+- `create-pending-ec10`：付款日 `2026-11-23`、8635 分午餐从应用入口提交被拒（`unsupported_capability`）后 `am force-stop` 冷重开（PID `3385 -> 3481`），JS 内存哨兵已清空而原生持久记录完整还原；逐字段核对 `paid_on: "2026-11-23"`、金额 `8635`、基线 `fixture-r0`、操作键 `fixture-op-lunch` 与意图摘要 `d00945b3b59509b07e60c422dfb4cbba73dba17d5e77cd084be7eb7e4b7e064b` 保持原值；接收账本仍空（消费 0、金额 0、修订 1、回执 0、待发送 0）；页面明确显示 `本机待发送（未入账／未同步）` 而非已同步，触发恢复也不会自动删日期重发。
+- `create-pending-ec07`：可交换 8635 分午餐（意图摘要 `e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd`）依次在独立 `:writer` 进程（PID `3562`）持锁查询返回 `pending_busy` 后强停冷重开（PID `3592`）、释放锁后稳定查询返回 `not_found_at_settled_read` 后强停冷重开（PID `3691`）、以原意图重试提交在应答前终止后冷重开（PID `3781`），每步均核对 JS 内存清空、原操作键／摘要还原、接收端实际金额与回执／待发计数及页面状态；最终仅在匹配完整原意图及持久提交版本 `fixture-c26252d9-3ac9-46c0-88d3-a501fed9e1f6` 后确认，账本 1 笔 8635 分、修订 2、回执 1、待发送 1。
+
+未验证项：本次仅覆盖隔离 API 35 模拟器与可控隔离接收端，未覆盖跨设备真实网络传输、多笔待发送队列并发、真机或共享契约版本分配。
+
+## 2026-11-24 Android 待发送恢复按评审（4f5c32e）返修实测
+
+在执行分支 `antigravity/android-pending-recovery` 上针对主线评审 `4f5c32e` 的三项问题完成返修并独立复跑：
+
+1. **丢应答后页面状态与未发送区分**：TS 页面在发起提交与稳定缺失后重试提交前均持久化 `recoveryState: "pending_verification"`，页面按状态明确区分 `本机待发送（未发送／未入账）`（`pending_unsent`／`pending_not_found`／`blocked_unsupported_capability`）、`提交结果待核实（未确认）`（`pending_verification`／`pending_busy`／`intent_conflict`）与 `已确认入账`。在 `create-pending-ec07` 的 `after_commit_drop_reply_reopen` 阶段实测页面显示 `提交结果待核实（未确认）：操作 fixture-op-lunch · 状态 pending_verification · 金额 8635 分 · 付款日 null · 基线 fixture-r0`（不再残留 `pending_not_found`），随后按匹配完整意图确认至唯一版本 `fixture-76be5947-3a1c-4f74-b790-977d9254b83d`。
+2. **手动查询不覆盖能力阻断**：`#create-lookup-only` 遇 `not_found_at_settled_read` 或 `pending_busy` 时不再覆盖已有的 `blocked_unsupported_capability` 与 `lastError`。`create-pending-ec10` 增补回归断言：提交 `paid_on: "2026-11-23"` 遭 `unsupported_capability` 阻断后先点击「仅核实新增回执」，再 `am force-stop` 冷重开（PID `3376 -> 3474`）并点击恢复，全程保持 `blocked_unsupported_capability`、`manualLookupPreservedBlock: true`、接收账本零写入。
+3. **`131b848` 保留数据原地升级兼容**：`P1BridgeReceiptPlugin.java` 新增 `normalizeCreatePending`，读取与更新旧版仅含 `{ operationId, rawCommandJson, canonicalIntentJson }` 的持久化待发送记录时，从原命令与规范化意图补全 `datasetId`、`sourceDeviceId`、`expectedRevisionId`、`intentSha256` 及 `recoveryState: "pending_verification"`，并校验 `operationId` 与原命令一致。新增可复现双版本升级脚本 `scripts/check-p1-bridge-upgrade.mjs`。
+
+实测结果（宿主 `pnpm typecheck`、`pnpm check:p1-bridge-command`、`pnpm check:p1-desktop-create`、`pnpm check:p1-create-boundaries` 与脚本语法检查全通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`）：
+
+- `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`：全部 **16 组**通过（`passed: true`），含上述 EC10 手动查询后冷重开阻断保持与 EC07 三阶段页面状态精确断言。
+- `node scripts/check-p1-bridge-upgrade.mjs --serial emulator-5580 --cdp-port 19240 --base-ref 131b848`：通过（`passed: true`）。从 `131b848` 覆盖安装当前构建后，页面均正确显示 `提交结果待核实（未确认）：操作 fixture-op-lunch · 状态 pending_verification · 金额 8635 分 · 付款日 null · 基线 fixture-r0`（无 `undefined`）；`create-after-commit` 经查回执直接确认原版本 `fixture-18afdf53-a99e-47eb-b92e-d1ce951c5675`（`confirmed_existing`），`create-before-commit` 经查回执缺失后原意图重试一次提交至 `fixture-9719f7f5-bb6b-40e8-b060-39c2a493aa50`（`recovered_by_retry`），两组最终均 1 笔 8635 分、修订 2、回执 1、待发送 1。
+
+未验证项：本次仍仅覆盖隔离 API 35 模拟器与单笔虚构消费升级恢复，未覆盖真机、跨设备网络同步、多笔并发队列或共享契约版本定版。复跑入口见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。
+
+## Android 单笔待发送恢复集成回执
+
+移动执行提交 `f7039f1` 独立构建后在隔离 API 35 模拟器完成 16/16 项回归，另从 `131b848` 的 APK 保留应用数据升级，提交前、提交后两个断点分别通过原意图重试和既有回执确认。上轮评审的三项返修通过。
+
+集成补测发现，先保存带付款日的午餐、再从恢复入口发送时，连续两次点击均收到 `unsupported_capability`，发送方却仍保存 `pending_verification`。集成修正使直接提交和恢复入口都持久保留能力阻断。新增 `create-pending-ec10-saved` 从仅保存原命令开始强停，重开后发送、手动查询、再强停重开并恢复。两条入口均保留 `fixture-op-lunch`、8635 分、付款日 2026-11-23 与基线 `fixture-r0`，查询缺失后仍保持阻断，消费／回执／待发均为 0。
+
+最终构建在 `emulator-5580` 重跑 17/17 项通过，保留数据升级的两种中断另行通过，各自最终一笔 8635 分、两版历史、一份回执和一条待发送记录。宿主类型、桥命令、固定消费和边界检查通过。复跑命令见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。范围限于单笔虚构消费和隔离执行器，未验证真机、跨设备传输或并发待发送队列。
+
+同一最终 APK 全新安装后，额外从应用私有 SharedPreferences XML 和 SQLite 只读查询核对两侧。EC07 丢应答后确认的操作为 `fixture-op-lunch`，本机确认版本与库中分支头同为 `fixture-df271ee2-9224-4d74-8a3a-2d2cb74ba773`，实际 1 笔／8635 分／1 回执／1 待发。EC10 仅保存后从恢复入口发送，私有记录保留原日期和金额、状态 `blocked_unsupported_capability`、错误 `unsupported_capability`；接收库仍是 `fixture-r0`，四项计数／金额均为零。

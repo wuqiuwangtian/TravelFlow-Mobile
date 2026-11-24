@@ -29,7 +29,10 @@ type CreateScenarioName =
   | "create-conflict-share"
   | "create-boundary-fields-scope"
   | "create-boundary-over-20"
-  | "create-boundary-cap-2000";
+  | "create-boundary-cap-2000"
+  | "create-pending-ec10"
+  | "create-pending-ec10-saved"
+  | "create-pending-ec07";
 
 type FaultMode = "none" | "before_commit" | "after_commit_drop_reply";
 
@@ -48,8 +51,14 @@ interface SyntheticPrincipal {
 
 interface CreatePendingRecord {
   operationId: string;
+  datasetId: string;
+  sourceDeviceId: string;
+  expectedRevisionId: string;
   rawCommandJson: string;
   canonicalIntentJson: string;
+  intentSha256: string;
+  recoveryState: string;
+  lastError: string | null;
 }
 
 interface CreatePendingStateResult {
@@ -244,7 +253,16 @@ interface P1BridgeReceiptPlugin {
     operationId: string;
     rawCommandJson: string;
     canonicalIntentJson: string;
+    recoveryState?: string;
   }): Promise<CreatePendingStateResult>;
+  updateCreatePendingStatus(options: {
+    scenario: CreateScenarioName;
+    operationId: string;
+    recoveryState: string;
+    lastError: string | null;
+  }): Promise<CreatePendingStateResult>;
+  holdCreateWriterLock(options: { scenario: CreateScenarioName }): Promise<{ writerPid: number; callerPid: number }>;
+  releaseCreateWriterLock(options: { scenario: CreateScenarioName }): Promise<{ writerPid: number; callerPid: number }>;
   loadCreatePendingIntent(options: { scenario: CreateScenarioName }): Promise<CreatePendingStateResult>;
   confirmCreatePendingIntent(options: {
     scenario: CreateScenarioName;
@@ -315,8 +333,10 @@ const actionStatusEl = byId<HTMLParagraphElement>("action-status");
 const errorEl = byId<HTMLParagraphElement>("error");
 const snapshotEl = byId<HTMLPreElement>("snapshot-json");
 const createScenarioEl = byId<HTMLSelectElement>("create-scenario");
+const createPaidOnEl = byId<HTMLInputElement>("create-paid-on");
 const createFaultModeEl = byId<HTMLSelectElement>("create-fault-mode");
 const createLedgerEl = byId<HTMLParagraphElement>("create-ledger");
+const createPendingStateEl = byId<HTMLParagraphElement>("create-pending-state");
 const createPageInfoEl = byId<HTMLParagraphElement>("create-page-info");
 const createStatusEl = byId<HTMLParagraphElement>("create-status");
 
@@ -332,7 +352,9 @@ const buttonIds = [
 
 const createButtonIds = [
   "create-seed",
+  "create-prepare-pending",
   "create-submit",
+  "create-lookup-only",
   "create-recover",
   "create-advance-head",
   "create-replay",
@@ -389,6 +411,7 @@ function setControlsEnabled(enabled: boolean): void {
   faultModeEl.disabled = !enabled;
   amountEl.disabled = !enabled;
   createScenarioEl.disabled = !enabled;
+  createPaidOnEl.disabled = !enabled;
   createFaultModeEl.disabled = !enabled;
   for (const id of buttonIds) {
     byId<HTMLButtonElement>(id).disabled = !enabled;
@@ -398,9 +421,31 @@ function setControlsEnabled(enabled: boolean): void {
   }
 }
 
+function buildCurrentCreateCommand(): ExpenseCreateIntent {
+  const fixture = requireCreateFixture();
+  const paidOnRaw = createPaidOnEl.value.trim();
+  return {
+    ...fixture.command,
+    payload: {
+      ...fixture.command.payload,
+      paid_on: paidOnRaw.length > 0 ? paidOnRaw : null,
+    },
+  };
+}
+
+async function recordUnsupportedCreate(scenario: CreateScenarioName, operationId: string): Promise<void> {
+  await bridge.updateCreatePendingStatus({
+    scenario,
+    operationId,
+    recoveryState: "blocked_unsupported_capability",
+    lastError: "unsupported_capability",
+  });
+}
+
 function renderCreateState(state: CreateInspectStateResult): void {
   if (!state.seeded) {
     createLedgerEl.textContent = `新增场景 ${currentCreateScenario()} 尚未初始化`;
+    createPendingStateEl.textContent = "本机待发送：无";
     createPageInfoEl.textContent = "明细分页：无数据";
     return;
   }
@@ -415,6 +460,27 @@ function renderCreateState(state: CreateInspectStateResult): void {
   createLedgerEl.textContent =
     `空账本场景 ${currentCreateScenario()} · 头版本 ${state.headRevisionId} · 消费 ${state.expenseCount} 笔` +
     `（合计 ¥${(state.totalCents / 100).toFixed(2)}）· 修订 ${state.revisionCount} · 回执 ${state.receiptCount} · 待发送 ${state.outboxCount}`;
+  if (state.pending) {
+    const parsedCmd = JSON.parse(state.pending.rawCommandJson) as ExpenseCreateIntent;
+    const isVerificationState =
+      state.pending.recoveryState === "pending_verification" ||
+      state.pending.recoveryState === "pending_busy" ||
+      state.pending.recoveryState === "intent_conflict";
+    const statusLabel = isVerificationState
+      ? "提交结果待核实（未确认）"
+      : "本机待发送（未发送／未入账）";
+    createPendingStateEl.textContent =
+      `${statusLabel}：操作 ${state.pending.operationId}` +
+      ` · 状态 ${state.pending.recoveryState}` +
+      ` · 金额 ${parsedCmd.payload.amount_cents} 分` +
+      ` · 付款日 ${parsedCmd.payload.paid_on ?? "null"}` +
+      ` · 基线 ${state.pending.expectedRevisionId}`;
+  } else if (state.confirmedOp) {
+    createPendingStateEl.textContent =
+      `已确认入账：操作 ${state.confirmedOp} · 版本 ${state.confirmedRevisionId}`;
+  } else {
+    createPendingStateEl.textContent = "本机待发送：无";
+  }
   const start = state.expenseCount === 0 ? 0 : state.pageOffset + 1;
   const end = state.pageOffset + state.expenses.length;
   createPageInfoEl.textContent =
@@ -730,18 +796,37 @@ byId<HTMLButtonElement>("create-seed").onclick = () =>
     return { status: "seeded", state };
   });
 
+byId<HTMLButtonElement>("create-prepare-pending").onclick = () =>
+  void runCreateAction("仅保存待发送新增意图", async () => {
+    const scenario = currentCreateScenario();
+    const cmd = buildCurrentCreateCommand();
+    const rawCommandJson = JSON.stringify(cmd);
+    const canonicalIntentJson = canonicalizeControlDocument(cmd);
+    const saved = await bridge.saveCreatePendingIntent({
+      scenario,
+      operationId: cmd.operation.operation_id,
+      rawCommandJson,
+      canonicalIntentJson,
+      recoveryState: "pending_unsent",
+    });
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: "prepared", pending: saved.pending, state };
+  });
+
 byId<HTMLButtonElement>("create-submit").onclick = () =>
   void runCreateAction("提交固定新增午餐", async () => {
     const scenario = currentCreateScenario();
     const faultMode = currentCreateFaultMode();
-    const fixture = requireCreateFixture();
-    const rawCommandJson = JSON.stringify(fixture.command);
-    const canonicalIntentJson = canonicalizeControlDocument(fixture.command);
+    const cmd = buildCurrentCreateCommand();
+    const rawCommandJson = JSON.stringify(cmd);
+    const canonicalIntentJson = canonicalizeControlDocument(cmd);
     await bridge.saveCreatePendingIntent({
       scenario,
-      operationId: fixture.command.operation.operation_id,
+      operationId: cmd.operation.operation_id,
       rawCommandJson,
       canonicalIntentJson,
+      recoveryState: "pending_verification",
     });
     const result = await bridge.submitExpenseCreate({
       scenario,
@@ -753,19 +838,20 @@ byId<HTMLButtonElement>("create-submit").onclick = () =>
     if (result.accepted && result.result_revision_id) {
       await bridge.confirmCreatePendingIntent({
         scenario,
-        operationId: fixture.command.operation.operation_id,
+        operationId: cmd.operation.operation_id,
         revisionId: result.result_revision_id,
       });
+    } else if (result.error === "unsupported_capability") {
+      await recordUnsupportedCreate(scenario, cmd.operation.operation_id);
     }
     const state = await bridge.inspectCreateState({ scenario });
     renderCreateState(state);
     return { status: result.accepted ? "committed" : (result.error ?? "rejected"), result, state };
   });
 
-byId<HTMLButtonElement>("create-recover").onclick = () =>
-  void runCreateAction("查询并恢复新增消费", async () => {
+byId<HTMLButtonElement>("create-lookup-only").onclick = () =>
+  void runCreateAction("仅核实新增回执", async () => {
     const scenario = currentCreateScenario();
-    const fixture = requireCreateFixture();
     const callerState = await bridge.loadCreatePendingIntent({ scenario });
     const pending = callerState.pending;
     if (!pending) {
@@ -775,20 +861,93 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
     }
     const lookup = await bridge.lookupCreateReceipt({
       scenario,
-      datasetId: fixture.receipt_query.operation.dataset_id,
-      sourceDeviceId: fixture.receipt_query.operation.source_device_id,
+      datasetId: pending.datasetId,
+      sourceDeviceId: pending.sourceDeviceId,
+      operationId: pending.operationId,
+      canonicalIntentJson: pending.canonicalIntentJson,
+      principal: SYNTHETIC_PRINCIPAL,
+    });
+    if (!lookup.accepted && lookup.error === "intent_conflict") {
+      await bridge.updateCreatePendingStatus({
+        scenario,
+        operationId: pending.operationId,
+        recoveryState: "intent_conflict",
+        lastError: lookup.error,
+      });
+    } else if (lookup.state === "pending_busy") {
+      if (pending.recoveryState !== "blocked_unsupported_capability") {
+        await bridge.updateCreatePendingStatus({
+          scenario,
+          operationId: pending.operationId,
+          recoveryState: "pending_busy",
+          lastError: "pending_busy",
+        });
+      }
+    } else if (lookup.state === "not_found_at_settled_read") {
+      // 能力阻断记录在手动查询缺失时必须保留原阻断原因，不得改写为可重试状态。
+      if (pending.recoveryState !== "blocked_unsupported_capability") {
+        await bridge.updateCreatePendingStatus({
+          scenario,
+          operationId: pending.operationId,
+          recoveryState: "pending_not_found",
+          lastError: null,
+        });
+      }
+    }
+    const state = await bridge.inspectCreateState({ scenario });
+    renderCreateState(state);
+    return { status: lookup.accepted ? (lookup.state ?? "ok") : (lookup.error ?? "rejected"), lookup, state };
+  });
+
+byId<HTMLButtonElement>("create-recover").onclick = () =>
+  void runCreateAction("查询并恢复新增消费", async () => {
+    const scenario = currentCreateScenario();
+    const faultMode = currentCreateFaultMode();
+    const callerState = await bridge.loadCreatePendingIntent({ scenario });
+    const pending = callerState.pending;
+    if (!pending) {
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: callerState.confirmedOp ? "already_confirmed" : "idle", state };
+    }
+    if (pending.recoveryState === "blocked_unsupported_capability") {
+      // 能力不匹配阻断的输入不得自动裁剪字段重发，保持本机待发送状态。
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: "blocked_unsupported_capability", pending, state };
+    }
+    const lookup = await bridge.lookupCreateReceipt({
+      scenario,
+      datasetId: pending.datasetId,
+      sourceDeviceId: pending.sourceDeviceId,
       operationId: pending.operationId,
       canonicalIntentJson: pending.canonicalIntentJson,
       principal: SYNTHETIC_PRINCIPAL,
     });
     if (!lookup.accepted) {
       if (lookup.error === "intent_conflict") {
-        // 冲突时保留待核实记录，不确认也不清除。
+        await bridge.updateCreatePendingStatus({
+          scenario,
+          operationId: pending.operationId,
+          recoveryState: "intent_conflict",
+          lastError: lookup.error,
+        });
         const state = await bridge.inspectCreateState({ scenario });
         renderCreateState(state);
         return { status: "intent_conflict", lookup, state };
       }
       throw new Error(`Receipt lookup rejected: ${lookup.error}`);
+    }
+    if (lookup.state === "pending_busy") {
+      await bridge.updateCreatePendingStatus({
+        scenario,
+        operationId: pending.operationId,
+        recoveryState: "pending_busy",
+        lastError: "pending_busy",
+      });
+      const state = await bridge.inspectCreateState({ scenario });
+      renderCreateState(state);
+      return { status: "pending_busy", lookup, state };
     }
     if (lookup.state === "committed" && lookup.receipt?.result_revision_id) {
       await bridge.confirmCreatePendingIntent({
@@ -801,13 +960,26 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
       return { status: "confirmed_existing", lookup, state };
     }
     if (lookup.state === "not_found_at_settled_read") {
+      // 重试提交前先持久标记为结果待核实，避免丢应答重开后仍显示旧的未查到状态。
+      await bridge.updateCreatePendingStatus({
+        scenario,
+        operationId: pending.operationId,
+        recoveryState: "pending_verification",
+        lastError: null,
+      });
       const retry = await bridge.submitExpenseCreate({
         scenario,
         principal: SYNTHETIC_PRINCIPAL,
         rawCommandJson: pending.rawCommandJson,
         canonicalIntentJson: pending.canonicalIntentJson,
-        faultMode: "none",
+        faultMode,
       });
+      if (retry.error === "unsupported_capability") {
+        await recordUnsupportedCreate(scenario, pending.operationId);
+        const state = await bridge.inspectCreateState({ scenario });
+        renderCreateState(state);
+        return { status: retry.error, result: retry, lookup, state };
+      }
       if (!retry.accepted || !retry.result_revision_id) {
         throw new Error(`Retry create failed: ${JSON.stringify(retry)}`);
       }
@@ -818,8 +990,8 @@ byId<HTMLButtonElement>("create-recover").onclick = () =>
       });
       const verifiedLookup = await bridge.lookupCreateReceipt({
         scenario,
-        datasetId: fixture.receipt_query.operation.dataset_id,
-        sourceDeviceId: fixture.receipt_query.operation.source_device_id,
+        datasetId: pending.datasetId,
+        sourceDeviceId: pending.sourceDeviceId,
         operationId: pending.operationId,
         canonicalIntentJson: pending.canonicalIntentJson,
         principal: SYNTHETIC_PRINCIPAL,
@@ -1361,6 +1533,8 @@ byId<HTMLButtonElement>("create-check-auth").onclick = () =>
     commitOnRelease: boolean;
   }) => bridge.holdWriterLock(options),
   releaseWriterLock: (scenario: ScenarioName) => bridge.releaseWriterLock({ scenario }),
+  holdCreateWriterLock: (scenario: CreateScenarioName) => bridge.holdCreateWriterLock({ scenario }),
+  releaseCreateWriterLock: (scenario: CreateScenarioName) => bridge.releaseCreateWriterLock({ scenario }),
 };
 
 async function init(): Promise<void> {

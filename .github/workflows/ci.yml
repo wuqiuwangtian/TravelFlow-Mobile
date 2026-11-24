@@ -56,6 +56,7 @@ jobs:
           node --check prototypes/android-runtime/bootstrap.js
           node --check scripts/prepare-p1-bridge-receipt.mjs
           node --check scripts/check-p1-bridge-android.mjs
+          node --check scripts/check-p1-bridge-upgrade.mjs
           node --check scripts/check-android-stream.mjs
           node --check scripts/check-android-tls.mjs
           node --check scripts/check-android-compat.mjs

@@ -475,11 +475,58 @@ public class P1BridgeReceiptPlugin extends Plugin {
         return getContext().getSharedPreferences("p1-bridge-create-caller-" + scenario, Context.MODE_PRIVATE);
     }
 
+    private static JSObject normalizeCreatePending(String pendingRaw) throws Exception {
+        JSONObject stored = new JSONObject(pendingRaw);
+        String operationId = stored.getString("operationId");
+        String rawCommandJson = stored.getString("rawCommandJson");
+        String canonicalIntentJson = stored.getString("canonicalIntentJson");
+        JSONObject rawCmd = new JSONObject(rawCommandJson);
+        JSONObject op = rawCmd.getJSONObject("operation");
+        String cmdOpId = op.getString("operation_id");
+        if (!operationId.equals(cmdOpId)) {
+            throw new IllegalStateException("Persisted pending operationId does not match rawCommandJson");
+        }
+        String datasetId = stored.optString("datasetId", "");
+        if (datasetId.isEmpty()) {
+            datasetId = op.getString("dataset_id");
+        }
+        String sourceDeviceId = stored.optString("sourceDeviceId", "");
+        if (sourceDeviceId.isEmpty()) {
+            sourceDeviceId = op.getString("source_device_id");
+        }
+        String expectedRevisionId = stored.optString("expectedRevisionId", "");
+        if (expectedRevisionId.isEmpty()) {
+            expectedRevisionId = rawCmd.getString("expected_revision_id");
+        }
+        String intentSha256 = stored.optString("intentSha256", "");
+        if (intentSha256.isEmpty()) {
+            intentSha256 = BridgeCreateLedgerStore.sha256Hex(canonicalIntentJson);
+        }
+        String recoveryState = stored.optString("recoveryState", "");
+        if (recoveryState.isEmpty()) {
+            // Legacy 131b848 records were persisted immediately before submission without recoveryState.
+            recoveryState = "pending_verification";
+        }
+        Object lastError = stored.has("lastError") ? stored.get("lastError") : JSONObject.NULL;
+
+        JSObject normalized = new JSObject();
+        normalized.put("operationId", operationId);
+        normalized.put("datasetId", datasetId);
+        normalized.put("sourceDeviceId", sourceDeviceId);
+        normalized.put("expectedRevisionId", expectedRevisionId);
+        normalized.put("rawCommandJson", rawCommandJson);
+        normalized.put("canonicalIntentJson", canonicalIntentJson);
+        normalized.put("intentSha256", intentSha256);
+        normalized.put("recoveryState", recoveryState);
+        normalized.put("lastError", lastError);
+        return normalized;
+    }
+
     private JSObject buildCreatePendingState(String scenario) throws Exception {
         SharedPreferences prefs = createCallerPrefs(scenario);
         JSObject result = new JSObject();
         String pendingRaw = prefs.getString("pending", null);
-        result.put("pending", pendingRaw != null ? new JSObject(pendingRaw) : JSONObject.NULL);
+        result.put("pending", pendingRaw != null ? normalizeCreatePending(pendingRaw) : JSONObject.NULL);
         String confirmedOp = prefs.getString("confirmed_op", null);
         result.put("confirmedOp", confirmedOp != null ? confirmedOp : JSONObject.NULL);
         String confirmedRev = prefs.getString("confirmed_rev_id", null);
@@ -526,6 +573,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String operationId = call.getString("operationId", "");
         String rawCommandJson = call.getString("rawCommandJson", "");
         String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        String recoveryState = call.getString("recoveryState", "pending_submission");
         executor.execute(() -> {
             try {
                 if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
@@ -538,10 +586,18 @@ public class P1BridgeReceiptPlugin extends Plugin {
                     call.reject("An operation already exists for this create scenario", "OPERATION_EXISTS");
                     return;
                 }
+                JSONObject rawCmd = new JSONObject(rawCommandJson);
+                JSONObject op = rawCmd.getJSONObject("operation");
                 JSONObject pending = new JSONObject()
                         .put("operationId", operationId)
+                        .put("datasetId", op.getString("dataset_id"))
+                        .put("sourceDeviceId", op.getString("source_device_id"))
+                        .put("expectedRevisionId", rawCmd.getString("expected_revision_id"))
                         .put("rawCommandJson", rawCommandJson)
-                        .put("canonicalIntentJson", canonicalIntentJson);
+                        .put("canonicalIntentJson", canonicalIntentJson)
+                        .put("intentSha256", BridgeCreateLedgerStore.sha256Hex(canonicalIntentJson))
+                        .put("recoveryState", recoveryState)
+                        .put("lastError", JSONObject.NULL);
                 if (!prefs.edit().putString("pending", pending.toString()).commit()) {
                     call.reject("Failed to persist create pending intent", "PENDING_SAVE_FAILED");
                     return;
@@ -549,6 +605,85 @@ public class P1BridgeReceiptPlugin extends Plugin {
                 call.resolve(buildCreatePendingState(scenario));
             } catch (Exception error) {
                 call.reject(error.getMessage(), "PENDING_SAVE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void updateCreatePendingStatus(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        String operationId = call.getString("operationId", "");
+        String recoveryState = call.getString("recoveryState", "");
+        String lastError = call.getString("lastError", null);
+        executor.execute(() -> {
+            try {
+                if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
+                        || operationId.isEmpty() || recoveryState.isEmpty()) {
+                    call.reject("Invalid updateCreatePendingStatus arguments", "INVALID_ARGUMENTS");
+                    return;
+                }
+                SharedPreferences prefs = createCallerPrefs(scenario);
+                String pendingRaw = prefs.getString("pending", null);
+                if (pendingRaw == null) {
+                    call.reject("No pending create operation to update", "NO_PENDING");
+                    return;
+                }
+                JSONObject pending = normalizeCreatePending(pendingRaw);
+                if (!operationId.equals(pending.getString("operationId"))) {
+                    call.reject("Pending create operation ID mismatch", "OPERATION_MISMATCH");
+                    return;
+                }
+                pending.put("recoveryState", recoveryState);
+                pending.put("lastError", lastError != null ? lastError : JSONObject.NULL);
+                if (!prefs.edit().putString("pending", pending.toString()).commit()) {
+                    call.reject("Failed to update create pending status", "PENDING_UPDATE_FAILED");
+                    return;
+                }
+                call.resolve(buildCreatePendingState(scenario));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "PENDING_UPDATE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void holdCreateWriterLock(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        executor.execute(() -> {
+            try {
+                if (!"create-pending-ec07".equals(scenario)) {
+                    call.reject("Unsupported create lock scenario", "INVALID_ARGUMENTS");
+                    return;
+                }
+                Bundle reply = getContext().getContentResolver().call(
+                        BridgeLockHolderProvider.AUTHORITY_URI, "hold_create", scenario, null);
+                JSObject result = new JSObject();
+                result.put("writerPid", reply != null ? reply.getInt("writer_pid", -1) : -1);
+                result.put("callerPid", Process.myPid());
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "HOLD_CREATE_LOCK_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
+    public void releaseCreateWriterLock(PluginCall call) {
+        String scenario = call.getString("scenario", "");
+        executor.execute(() -> {
+            try {
+                if (!"create-pending-ec07".equals(scenario)) {
+                    call.reject("Unsupported create lock scenario", "INVALID_ARGUMENTS");
+                    return;
+                }
+                Bundle reply = getContext().getContentResolver().call(
+                        BridgeLockHolderProvider.AUTHORITY_URI, "release", scenario, null);
+                JSObject result = new JSObject();
+                result.put("writerPid", reply != null ? reply.getInt("writer_pid", -1) : -1);
+                result.put("callerPid", Process.myPid());
+                call.resolve(result);
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "RELEASE_CREATE_LOCK_FAILED");
             }
         });
     }
