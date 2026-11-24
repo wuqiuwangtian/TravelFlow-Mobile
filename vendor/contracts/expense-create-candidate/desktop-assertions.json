@@ -1,7 +1,7 @@
 {
   "format": "travelflow-expense-desktop-assertions/0-draft",
   "contract_id": "travelflow.expense-create-candidate",
-  "contract_version": "0.1.0-candidate.1",
+  "contract_version": "0.1.0-candidate.2",
   "status": "candidate",
   "desktop_baseline_commit": "a589448",
   "scenarios": {

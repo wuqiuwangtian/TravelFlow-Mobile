@@ -1,4 +1,4 @@
-# 新增消费交换契约候选 0.1.0-candidate.1（候选，未冻结）
+# 新增消费交换契约候选 0.1.0-candidate.2（候选，未冻结）
 
 权威仓库：TravelFlow-AI。本目录是阶段二评审用自包含候选包（`status: "candidate"`，`shared_contract_version: null`），供桌面复核与移动仓库按固定 Git 提交显式导入核对；**不是**已冻结的正式写入契约，也不影响既有 [ledger-v1 0.1.0](../ledger-v1/SPEC.md)。
 
@@ -39,6 +39,8 @@
 
 **能力阻断与原意图留存**：遇到合法但对端当前不支持的字段（非空 `paid_on`、`day`、`activity_id`、`receipt_ids`、`budget_item_id` 或非 CNY 币种）时，接收端零写入；调用方必须在本地持久保留完整原操作键、原 `expected_revision_id` 与原意图，不得剥离字段、改基线、换 `operation_id` 或标记已同步。
 
+移动宿主对未知 category 返回 `category`，对无预算关联的 settles_budget=true 返回 `budget_link`；两者均映射为非法输入且零写入。
+
 ## 4. 执行顺序、原子提交与回执确认规则
 
 1. **鉴权与目标作用域检查**：先验调用者身份、权限及目标 `(dataset_id, travel_id, branch_id)`；失败直接拒绝且不泄露回执。
@@ -46,7 +48,7 @@
    - 命中且完整规范化意图完全一致（含 `target`、`expected_revision_id`、`allow_shared_receipts` 及全部业务字段）：直接返回原 `effect` 与原 `result_revision_id`（即使分支头已推进或分支已满 2000 笔），零新增写入。
    - 命中但意图不一致（如金额 `8635→8636` 或 `allow_shared_receipts` `false→true`）：返回 `intent_conflict`，保留原账与原回执。
 3. **新操作校验**：校验声明能力、字段合法性、`expected_revision_id == current_head`（不符返 `baseline_conflict`）、`entity_id` 未存在（已存在返 `entity_exists`）及单分支 `< 2000`。
-4. **单事务原子提交**：在同一事务内原子写入新版本、更新分支头、写入消费、写入含完整规范化意图与摘要的持久回执，以及本地待发记录（outbox）。提交前中断零写入；提交后丢回包可通过原键查询或原键重试恢复，最终仅入账一次。
+4. **单事务原子提交**：在同一事务内原子写入新版本、更新分支头、写入消费、写入绑定操作键、完整意图、规范化配置、执行效果和结果版本的持久回执（配置可由已固定的格式版本确定；摘要可随回执保存，也可从持久意图按该配置无损复算），以及本地待发记录（outbox）。提交前中断零写入；提交后丢回包可通过原键查询或原键重试恢复，最终仅入账一次。
 5. **最小成功回执确认规则**：若对端 `receipt.lookup` 的最小投影仅返回 `{effect, result_revision_id}` 而不含 `intent_sha256` 或完整原意图，**仅凭同操作键查到已提交不足以确认原意图**。发送方必须满足以下之一才可标记 `confirmed`：
    - 对端回执携带与本地一致的 `canonical_profile`、`operation` 及 `intent_sha256`（或等价完整原意图证据）；或
    - 以原操作键与完整原意图重放 `expense.create`，由对端核对完整意图一致后返回原结果版本（若对端已提交同键异意图，重放会返回 `intent_conflict`，避免误确认）。

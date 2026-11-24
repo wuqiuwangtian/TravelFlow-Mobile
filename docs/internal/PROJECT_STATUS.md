@@ -759,3 +759,5 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 同一最终 APK 全新安装后，额外从应用私有 SharedPreferences XML 和 SQLite 只读查询核对两侧。EC07 丢应答后确认的操作为 `fixture-op-lunch`，本机确认版本与库中分支头同为 `fixture-df271ee2-9224-4d74-8a3a-2d2cb74ba773`，实际 1 笔／8635 分／1 回执／1 待发。EC10 仅保存后从恢复入口发送，私有记录保留原日期和金额、状态 `blocked_unsupported_capability`、错误 `unsupported_capability`；接收库仍是 `fixture-r0`，四项计数／金额均为零。
 
 已独立导入桌面 `d193d31` 新增消费候选。四组摘要相符，宿主和 Android 成功重放与最小回执负例均通过。待桌面复核宿主非法字段原码及接收回执摘要存储差异，再评审共享版本。[固定包、逐项证据与复跑](P1_EXPENSE_VECTOR_REVIEW.md#独立导入-010-candidate1)
+
+第二候选包 `94ec1fb` 增量复核通过。宿主两项非法输入原码已收录；宿主与 Android 从持久回执复算原意图及共享票据许可翻转样例的摘要均匹配。移动侧在本候选范围内无定版阻碍，等桌面仓分配共享版本。[复跑与实读结果](P1_EXPENSE_VECTOR_REVIEW.md#第二候选包增量复核)

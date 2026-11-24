@@ -1,7 +1,7 @@
 {
   "format": "travelflow-expense-result-mapping/0-draft",
   "contract_id": "travelflow.expense-create-candidate",
-  "contract_version": "0.1.0-candidate.1",
+  "contract_version": "0.1.0-candidate.2",
   "status": "candidate",
   "shared_contract_version": null,
   "evidence_commits": {
@@ -208,7 +208,9 @@
         "errors": [
           "integer_range",
           "type",
-          "invalid_field"
+          "invalid_field",
+          "category",
+          "budget_link"
         ]
       },
       "mobile_android": {

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import path from "node:path";
+import { fingerprintIntent } from "../prototypes/p1-canonical/intent.mjs";
 import { SyntheticStore } from "../prototypes/p1-store/sqlite.mjs";
 import { emptyFixtureState } from "../prototypes/p1-store/legacy.mjs";
 
@@ -46,6 +47,13 @@ function hostStore(defaults, count) {
     execute: doc => store.execute(encode(doc), principal),
     query: doc => store.query(encode(doc), principal),
     reopen() { store.close(); store = new SyntheticStore(dir); },
+    readReceipt() {
+      const rows = store.inspectFixture().tables.fixture_receipts;
+      assert.equal(rows.length, 1);
+      const { dataset, source, operation, intent, effect, result_revision } = rows[0];
+      return { key: [dataset, source, operation], artifact: fingerprintIntent(Buffer.from(intent), "control"),
+        effect, revision: result_revision };
+    },
     busy(doc) {
       const lock = new DatabaseSync(path.join(dir, "synthetic.sqlite"));
       try { lock.exec("BEGIN IMMEDIATE"); return store.query(encode(doc), principal); }
@@ -88,6 +96,17 @@ async function androidStore(context, defaults, count, scenario) {
       })()`);
     },
     query,
+    async readReceipt() {
+      const { receipts } = await call("inspectCreateState", {});
+      assert.equal(receipts.length, 1);
+      const row = receipts[0];
+      const wrapper = JSON.parse(row.intent_json);
+      const artifact = fingerprintIntent(encode(wrapper.intent), wrapper.channel);
+      assert.equal(artifact.canonical_profile, wrapper.canonical_profile);
+      assert.equal(artifact.canonical_json, row.intent_json);
+      return { key: [row.dataset_id, row.source_device_id, row.operation_id], artifact,
+        effect: row.effect, revision: row.result_revision_id };
+    },
     async busy(doc) {
       const child = spawn(path.join(process.env.ANDROID_HOME, "platform-tools/adb"), ["-s", adb.serial,
         "shell","-T","run-as","org.travelflow.p1bridge","sqlite3",`files/p1-bridge-${scenario}/store.db`],
@@ -123,8 +142,57 @@ async function androidStore(context, defaults, count, scenario) {
   };
 }
 
+// Only the invalid-input mapping and persistent receipt representation changed in candidate 2.
+async function checkSecondCandidate(filename, defaults, android) {
+  const read = name => JSON.parse(readFileSync(path.join(path.dirname(filename), name)));
+  const { cases } = read("canonical-digests.json");
+  const invalidInput = read("result-mapping.json").outcomes.rejected_invalid_input;
+  const report = [];
+  for (const [caseId, scenario] of [
+    ["control_lunch_base", "create-before-commit"],
+    ["control_lunch_allow_shared_receipts_true", "create-after-commit"],
+  ]) {
+    const expected = cases.find(item => item.id === caseId);
+    const command = JSON.parse(expected.raw_json);
+    const store = android ? await androidStore(android, defaults, 0, scenario) : hostStore(defaults, 0);
+    try {
+      const errors = {};
+      if (!android && caseId === "control_lunch_base") {
+        const before = await store.inspect();
+        for (const [field, value, code] of [
+          ["category", "unknown", "category"], ["settles_budget", true, "budget_link"],
+        ]) {
+          const invalid = structuredClone(command);
+          invalid.payload[field] = value;
+          const result = await store.execute(invalid);
+          assert.deepEqual(result, { accepted: false, error: code });
+          assert.ok(invalidInput.mobile_host.errors.includes(result.error));
+          assert.deepEqual(await store.inspect(), before);
+          errors[field] = result.error;
+        }
+      }
+      const saved = await store.execute(command);
+      assert.equal(saved.accepted, true);
+      assert.equal(saved.replayed, false);
+      store.reopen();
+      const row = await store.readReceipt();
+      const { dataset_id, source_device_id, operation_id } = command.operation;
+      assert.deepEqual(row.key, [dataset_id, source_device_id, operation_id]);
+      assert.equal(row.effect, "changed");
+      assert.equal(row.revision, saved.result_revision_id);
+      assert.equal(row.artifact.canonical_json, expected.canonical_json);
+      assert.equal(row.artifact.sha256, expected.sha256);
+      report.push({ caseId, revision: row.revision, sha256: row.artifact.sha256, errors });
+    } finally { store.close(); }
+  }
+  return report;
+}
+
 export async function checkVectorGaps(filename, android) {
   const bytes = readFileSync(filename);
+  if (digest(bytes) === "6a37e2a612fa21a439cfafaf1442a920b05168504c93dd9cd5b305e81316d754") {
+    return checkSecondCandidate(filename, JSON.parse(bytes).defaults, android);
+  }
   const candidate = digest(bytes) === "0c0f869ea650f5ea0e01b2e966cc3bb780ad9c10ce0618329a83bb12d309bba7";
   if (!candidate) assert.equal(digest(bytes), "2679ab4a3461be7b039a0686d6436640db32e4bbc1af700bd9f565a3a7e76bcb");
   const mapping = candidate ? JSON.parse(readFileSync(path.join(path.dirname(filename), "result-mapping.json"))) : null;

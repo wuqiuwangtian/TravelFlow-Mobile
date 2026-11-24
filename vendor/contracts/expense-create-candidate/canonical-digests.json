@@ -1,7 +1,7 @@
 {
   "format": "travelflow-expense-canonical-digests/0-draft",
   "contract_id": "travelflow.expense-create-candidate",
-  "contract_version": "0.1.0-candidate.1",
+  "contract_version": "0.1.0-candidate.2",
   "status": "candidate",
   "shared_contract_version": null,
   "canonical_profile": "p1-host-intent-c14n-1",

@@ -1,6 +1,6 @@
 {
   "contract_id": "travelflow.expense-create-candidate",
-  "contract_version": "0.1.0-candidate.1",
+  "contract_version": "0.1.0-candidate.2",
   "status": "candidate",
   "shared_contract_version": null,
   "scope": "single-cny-expense-create-and-receipt-lookup",
@@ -8,10 +8,10 @@
   "control_profile": "p1-host-control-1",
   "query_profile": "p1-host-query-1",
   "files": {
-    "SPEC.md": "ee7d2575104922e434477cc99fd13ba26de78524c377495bdd0caf9e784090bc",
-    "canonical-digests.json": "9ef4a1f0598b869a47ca4a50a01aa714f7a6b671b6f275ea9539652af706f63d",
-    "normative-vectors.json": "0c0f869ea650f5ea0e01b2e966cc3bb780ad9c10ce0618329a83bb12d309bba7",
-    "desktop-assertions.json": "1d1133062162d3db9e3b363656c5db85fbd19d64a107df5742b112cbcfca2103",
-    "result-mapping.json": "0ffb471a77be9cfd7cde75ad0e3e003b8c81aa7cd773aa160b174da1df82a29d"
+    "SPEC.md": "cea21f5dbd9d795773dc3b5d6db4ebc7a6bcc7f875fa455e4d9cdfbf35be68ac",
+    "canonical-digests.json": "c949a545cf2ecc7fcf26b6dedc942671b2f654dcc2b9e20687e242e98065f5cb",
+    "normative-vectors.json": "6a37e2a612fa21a439cfafaf1442a920b05168504c93dd9cd5b305e81316d754",
+    "desktop-assertions.json": "417b0a5b6f2ce555a6e00ac9c84c238303cefaba29aa02cc56dcf0b3f57fb201",
+    "result-mapping.json": "9c943760234c8c2800fbaaa8ce077e900f545dd836b9b3cbdc3ce1162383f40c"
   }
 }

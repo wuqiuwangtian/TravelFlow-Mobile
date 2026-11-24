@@ -7,9 +7,9 @@ const bundle = new URL("../vendor/contracts/expense-create-candidate/", import.m
 const read = name => readFileSync(new URL(name, bundle));
 const hash = bytes => createHash("sha256").update(bytes).digest("hex");
 const manifestBytes = read("manifest.json");
-assert.equal(hash(manifestBytes), "dea1f762a283456227a72438a139674c8b033e31e46874449333c3da7a865d46");
+assert.equal(hash(manifestBytes), "99722538b7c006cc7caaa31612f83d0d831b925bd21296dc5737a0448c1b8642");
 const manifest = JSON.parse(manifestBytes);
-assert.equal(manifest.contract_version, "0.1.0-candidate.1");
+assert.equal(manifest.contract_version, "0.1.0-candidate.2");
 assert.equal(manifest.shared_contract_version, null);
 const entries = readdirSync(bundle, { withFileTypes: true });
 assert.ok(entries.every(entry => entry.isFile()));

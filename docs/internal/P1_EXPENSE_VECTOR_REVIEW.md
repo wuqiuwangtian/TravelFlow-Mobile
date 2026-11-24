@@ -113,3 +113,25 @@ for scenario in old["scenarios"]:
 assert old["defaults"] == new["defaults"] and old["scenarios"] == new["scenarios"]
 PY
 ```
+
+## 第二候选包增量复核
+
+桌面固定提交 `94ec1fb8965e788e7d068677d9c864d755bd1379`，导入位置仍为 `vendor/contracts/expense-create-candidate`。清单 SHA-256 为 `99722538b7c006cc7caaa31612f83d0d831b925bd21296dc5737a0448c1b8642`，五个登记文件的原字节摘要均匹配。对比移动 `fb10950`，规范向量、桌面断言和规范化摘要样例仅变更版本标签。沿用该提交的 10 场景、36 步对照和最小回执确认负例。
+
+| 本轮实测 | 观察结果 |
+|---|---|
+| 宿主提交未知 category | 返回 `category`。第二候选已列入 `rejected_invalid_input.mobile_host.errors`，拒绝前后分支头、消费、版本、回执及待发记录相同。 |
+| 宿主提交 settles_budget=true 且 budget_item_id=null | 返回 `budget_link`，同样映射为非法输入，零写入。 |
+| 宿主重开 SQLite 后读 fixture_receipts.intent | 读取持久化的完整命令，按当前固定格式使用 `p1-host-intent-c14n-1` 和 control 通道重建封装。普通午餐及仅翻转共享票据许可的两条独立样例均逐字节还原包内规范 JSON。 |
+| Android API 35 重新打开 SQLite 读取 receipts.intent_json | 原生桥实读持久封装，含规范化配置、通道和完整命令。用移动规范化实现从读回的意图重新编码，与已存封装逐字节相同。 |
+
+两端均用独立空库分别保存原命令和仅改变许可的命令，使用相同操作键。读回的三段操作键、changed 效果与实际提交版本均匹配；两端从回执行复算的 SHA-256 分别为 `e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd` 和 `ea638c25c573ac450eb02faffae24a18cf8b5a30d0efa69ad76f9ff89e0e02e2`。Android 取数来自指定模拟器，独立摘要校验在宿主完成。由此关闭第一候选的两个差异；在本次单笔 CNY 新增与回执查询的候选范围内，移动侧未发现阻碍定版的剩余差异。共享版本仍由权威仓分配。
+
+从移动仓根目录复跑（Android 环境同上），第一候选的历史命令在 `fb10950` 运行：
+
+```bash
+node scripts/check-p1-expense-candidate.mjs
+v=vendor/contracts/expense-create-candidate/normative-vectors.json
+node scripts/check-p1-vector-gaps.mjs "$v"
+node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240 --desktop-vectors "$v"
+```
