@@ -788,3 +788,16 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 3. **原生写事务前严格冻结命令字段集合校验**：`OfflineTripLedgerStore.java` 新增顶层、`operation`、`target` 与 `payload` 12 字段精确键集合检查，并以 `payload.opt(...) != JSONObject.NULL` 严格区分显式 `null` 与缺键。实测删除 `payload.paid_on`、追加未知 `payload.extra_field` 或顶层 `extra_top` 均在事务前返回 `shape` 且零写入；合法显式 `paid_on: null` 继续可保存。
 
 实测结果：宿主 `pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command` 均通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`（`-read-only`，SQLite `3.44.3`）运行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`（全程飞行模式）与 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`（17/17 场景）均通过（`passed: true`）。
+
+## 2026-11-25 Android 离线记账按评审（3c7f1d4）返修实测
+
+针对评审 `3c7f1d4` 的原生原始字节解析、规范化封装摘要／重放及真实触摸稳定性三项要求完成返修：
+
+1. **原生严格 RFC 8259 原始命令解析（拒绝重复键）**：`OfflineTripLedgerStore.java` 新增 `StrictJsonParser`，在写事务与业务字段校验之前直接解析 `rawCommandJson` 原始字节，重复键立即返回 `duplicate_key`、无效语法返回 `invalid_json`、孤立代理项返回 `unicode`，零写入。
+2. **原生唯一规范化字节作为存储、摘要与重放依据**：`OfflineTripLedgerStore.java` 从校验通过的命令对象直接按 `p1-host-intent-c14n-1`（UTF-16 码元键序、紧凑 UTF-8、精确整数）生成 `canonicalVerified`，若调用方传入带空白的非规范封装则直接返回 `non_canonical_intent` 且零写入；合法规范封装落库、计算 `intent_sha256` 与同键重放（`replayed: true`）均以该唯一规范字节为准。
+3. **真实触摸逐次命中确认与当次结果断言**：`bridge-app.ts` 新增递增保存尝试序号 `saveAttemptSeq` 与当次结果 `lastAttempt`；`check-p1-offline-entry-android.mjs` 在 `tap` 与 `doubleTapElement` 中等待软键盘收起与布局稳定（`elementFromPoint` 命中目标且连续两次坐标与 `visualViewport.height` 不变），通过捕获阶段 `click` 监听逐次断言 `trusted && expected`，每次负例与正例均等待 `saveAttemptSeq > prevSeq` 并核对对应错误文案或数据库增量；新增原生原始字符串桥接回归，覆盖重复键（`duplicate_key`）、带空白封装（`non_canonical_intent`）与同键规范重放（`replayed: true`）。
+
+实测结果（宿主 `pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command` 均通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`）：
+
+- 连续两次全新安装复跑 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`（全程飞行模式）均一次通过（`passed: true`，PID `2682 -> 2798 -> 2900` 与 `3202 -> 3312 -> 3414`），`duplicateKey: "duplicate_key"`、`nonCanonicalWhitespaceEnvelope: "non_canonical_intent"`、`sameKeyCanonicalReplayVerified: true`、`zeroWritesVerified: true`，全部触摸逐次命中确认无误。
+- `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240` **17/17 场景全部通过**（`passed: true`）。

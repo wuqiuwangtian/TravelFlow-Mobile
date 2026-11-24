@@ -469,6 +469,20 @@ let currentTripState: OfflineTripLedgerState | null = null;
 let tripSaveInFlight = false;
 let tripDraftOperationId: string | null = null;
 let tripDraftEntityId: string | null = null;
+let tripSaveAttemptSeq = 0;
+let tripLastAttempt: {
+  seq: number;
+  outcome: "idle" | "in_flight" | "validation_error" | "save_error" | "saved";
+  error: string | null;
+  operationId: string | null;
+  resultRevisionId: string | null;
+} = {
+  seq: 0,
+  outcome: "idle",
+  error: null,
+  operationId: null,
+  resultRevisionId: null,
+};
 
 const buttonIds = [
   "seed-scenario",
@@ -1793,6 +1807,14 @@ tripEntrySaveBtn.addEventListener("click", () => {
   if (tripSaveInFlight) {
     return;
   }
+  const attemptSeq = ++tripSaveAttemptSeq;
+  tripLastAttempt = {
+    seq: attemptSeq,
+    outcome: "in_flight",
+    error: null,
+    operationId: tripDraftOperationId,
+    resultRevisionId: null,
+  };
   tripSaveInFlight = true;
   tripEntrySaveBtn.disabled = true;
   tripEntrySaveBtn.setAttribute("aria-busy", "true");
@@ -1835,7 +1857,15 @@ tripEntrySaveBtn.addEventListener("click", () => {
         canonicalIntentJson,
       });
       if (!saveResult.accepted) {
-        setTripEntryError(`保存失败：${saveResult.error ?? "unknown_error"}`);
+        const msg = `保存失败：${saveResult.error ?? "unknown_error"}`;
+        setTripEntryError(msg);
+        tripLastAttempt = {
+          seq: attemptSeq,
+          outcome: "save_error",
+          error: msg,
+          operationId,
+          resultRevisionId: null,
+        };
         return;
       }
 
@@ -1844,8 +1874,23 @@ tripEntrySaveBtn.addEventListener("click", () => {
       tripDraftOperationId = null;
       tripDraftEntityId = null;
       showTripLedgerView();
+      tripLastAttempt = {
+        seq: attemptSeq,
+        outcome: "saved",
+        error: null,
+        operationId,
+        resultRevisionId: saveResult.result_revision_id ?? null,
+      };
     } catch (error) {
-      setTripEntryError(error instanceof Error ? error.message : String(error));
+      const msg = error instanceof Error ? error.message : String(error);
+      setTripEntryError(msg);
+      tripLastAttempt = {
+        seq: attemptSeq,
+        outcome: "validation_error",
+        error: msg,
+        operationId: tripDraftOperationId,
+        resultRevisionId: null,
+      };
     } finally {
       tripSaveInFlight = false;
       tripEntrySaveBtn.removeAttribute("aria-busy");
@@ -1866,6 +1911,8 @@ tripEntrySaveBtn.addEventListener("click", () => {
       rawCommandJson: JSON.stringify(rawCommand),
       canonicalIntentJson: canonicalizeControlDocument(rawCommand as unknown as ExpenseCreateIntent),
     }),
+  submitRawStrings: (rawCommandJson: string, canonicalIntentJson: string) =>
+    bridge.saveOfflineTripExpense({ rawCommandJson, canonicalIntentJson }),
   getUiState: () => ({
     ledgerViewVisible: !tripLedgerViewEl.classList.contains("hidden"),
     entryViewVisible: !tripEntryViewEl.classList.contains("hidden"),
@@ -1875,6 +1922,8 @@ tripEntrySaveBtn.addEventListener("click", () => {
     errorText: tripEntryErrorEl.classList.contains("hidden") ? "" : (tripEntryErrorEl.textContent ?? ""),
     titleValue: tripEntryTitleEl.value,
     notesValue: tripEntryNotesEl.value,
+    saveAttemptSeq: tripSaveAttemptSeq,
+    lastAttempt: tripLastAttempt,
     renderedItems: Array.from(tripExpenseListEl.querySelectorAll("li")).map((li) => ({
       entityId: li.dataset.entityId ?? "",
       operationId: li.dataset.operationId ?? "",

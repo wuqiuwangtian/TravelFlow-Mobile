@@ -7,11 +7,17 @@ import android.os.Process;
 import com.getcapacitor.JSArray;
 import com.getcapacitor.JSObject;
 import java.io.File;
+import java.math.BigInteger;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -185,21 +191,307 @@ final class OfflineTripLedgerStore {
         }
     }
 
-    private static boolean hasExactKeys(JSONObject obj, Set<String> expected) {
-        if (obj == null || obj.length() != expected.size()) {
-            return false;
+    private static final class StrictJsonError extends Exception {
+        final String code;
+
+        StrictJsonError(String code) {
+            super(code);
+            this.code = code;
         }
-        Iterator<String> keys = obj.keys();
-        while (keys.hasNext()) {
-            if (!expected.contains(keys.next())) {
-                return false;
-            }
-        }
-        return true;
     }
 
-    private static String validateIdentifier(JSONObject obj, String key) {
-        Object raw = obj.opt(key);
+    private static final class StrictJsonParser {
+        private static final int MAX_DEPTH = 16;
+        private final String src;
+        private int pos = 0;
+
+        StrictJsonParser(String src) {
+            this.src = src;
+        }
+
+        Object parseDocument() throws StrictJsonError {
+            skipWs();
+            Object val = parseValue(0);
+            skipWs();
+            if (pos != src.length()) {
+                throw new StrictJsonError("invalid_json");
+            }
+            return val;
+        }
+
+        private void skipWs() {
+            while (pos < src.length()) {
+                char c = src.charAt(pos);
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                    pos++;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        private Object parseValue(int depth) throws StrictJsonError {
+            if (depth > MAX_DEPTH) {
+                throw new StrictJsonError("invalid_json");
+            }
+            if (pos >= src.length()) {
+                throw new StrictJsonError("invalid_json");
+            }
+            char c = src.charAt(pos);
+            if (c == '{') return parseObject(depth + 1);
+            if (c == '[') return parseArray(depth + 1);
+            if (c == '"') return parseString();
+            if (c == 't') return parseLiteral("true", Boolean.TRUE);
+            if (c == 'f') return parseLiteral("false", Boolean.FALSE);
+            if (c == 'n') return parseLiteral("null", null);
+            if (c == '-' || (c >= '0' && c <= '9')) return parseNumber();
+            throw new StrictJsonError("invalid_json");
+        }
+
+        private Map<String, Object> parseObject(int depth) throws StrictJsonError {
+            pos++; // '{'
+            skipWs();
+            TreeMap<String, Object> map = new TreeMap<>();
+            if (pos < src.length() && src.charAt(pos) == '}') {
+                pos++;
+                return map;
+            }
+            while (true) {
+                skipWs();
+                if (pos >= src.length() || src.charAt(pos) != '"') {
+                    throw new StrictJsonError("invalid_json");
+                }
+                String key = parseString();
+                if (map.containsKey(key)) {
+                    throw new StrictJsonError("duplicate_key");
+                }
+                skipWs();
+                if (pos >= src.length() || src.charAt(pos) != ':') {
+                    throw new StrictJsonError("invalid_json");
+                }
+                pos++;
+                skipWs();
+                Object value = parseValue(depth);
+                map.put(key, value);
+                skipWs();
+                if (pos >= src.length()) {
+                    throw new StrictJsonError("invalid_json");
+                }
+                char next = src.charAt(pos++);
+                if (next == '}') {
+                    return map;
+                }
+                if (next != ',') {
+                    throw new StrictJsonError("invalid_json");
+                }
+            }
+        }
+
+        private List<Object> parseArray(int depth) throws StrictJsonError {
+            pos++; // '['
+            skipWs();
+            List<Object> list = new ArrayList<>();
+            if (pos < src.length() && src.charAt(pos) == ']') {
+                pos++;
+                return list;
+            }
+            while (true) {
+                skipWs();
+                list.add(parseValue(depth));
+                skipWs();
+                if (pos >= src.length()) {
+                    throw new StrictJsonError("invalid_json");
+                }
+                char next = src.charAt(pos++);
+                if (next == ']') {
+                    return list;
+                }
+                if (next != ',') {
+                    throw new StrictJsonError("invalid_json");
+                }
+            }
+        }
+
+        private String parseString() throws StrictJsonError {
+            pos++; // '"'
+            StringBuilder sb = new StringBuilder();
+            while (pos < src.length()) {
+                char c = src.charAt(pos++);
+                if (c == '"') {
+                    String result = sb.toString();
+                    for (int i = 0; i < result.length(); ) {
+                        int cp = result.codePointAt(i);
+                        if (cp >= 0xD800 && cp <= 0xDFFF) {
+                            throw new StrictJsonError("unicode");
+                        }
+                        i += Character.charCount(cp);
+                    }
+                    return result;
+                }
+                if (c < 0x20) {
+                    throw new StrictJsonError("invalid_json");
+                }
+                if (c == '\\') {
+                    if (pos >= src.length()) {
+                        throw new StrictJsonError("invalid_json");
+                    }
+                    char esc = src.charAt(pos++);
+                    switch (esc) {
+                        case '"': sb.append('"'); break;
+                        case '\\': sb.append('\\'); break;
+                        case '/': sb.append('/'); break;
+                        case 'b': sb.append('\b'); break;
+                        case 'f': sb.append('\f'); break;
+                        case 'n': sb.append('\n'); break;
+                        case 'r': sb.append('\r'); break;
+                        case 't': sb.append('\t'); break;
+                        case 'u': {
+                            if (pos + 4 > src.length()) {
+                                throw new StrictJsonError("invalid_json");
+                            }
+                            int code = 0;
+                            for (int i = 0; i < 4; i++) {
+                                int digit = Character.digit(src.charAt(pos++), 16);
+                                if (digit < 0) {
+                                    throw new StrictJsonError("invalid_json");
+                                }
+                                code = (code << 4) | digit;
+                            }
+                            sb.append((char) code);
+                            break;
+                        }
+                        default:
+                            throw new StrictJsonError("invalid_json");
+                    }
+                } else {
+                    sb.append(c);
+                }
+            }
+            throw new StrictJsonError("invalid_json");
+        }
+
+        private Object parseLiteral(String literal, Object value) throws StrictJsonError {
+            if (!src.startsWith(literal, pos)) {
+                throw new StrictJsonError("invalid_json");
+            }
+            pos += literal.length();
+            return value;
+        }
+
+        private Number parseNumber() throws StrictJsonError {
+            int start = pos;
+            if (src.charAt(pos) == '-') {
+                pos++;
+                if (pos >= src.length()) {
+                    throw new StrictJsonError("invalid_json");
+                }
+            }
+            if (src.charAt(pos) == '0') {
+                pos++;
+                if (pos < src.length() && src.charAt(pos) >= '0' && src.charAt(pos) <= '9') {
+                    throw new StrictJsonError("invalid_json");
+                }
+            } else if (src.charAt(pos) >= '1' && src.charAt(pos) <= '9') {
+                while (pos < src.length() && src.charAt(pos) >= '0' && src.charAt(pos) <= '9') {
+                    pos++;
+                }
+            } else {
+                throw new StrictJsonError("invalid_json");
+            }
+            boolean isFloat = false;
+            if (pos < src.length() && src.charAt(pos) == '.') {
+                isFloat = true;
+                pos++;
+                if (pos >= src.length() || src.charAt(pos) < '0' || src.charAt(pos) > '9') {
+                    throw new StrictJsonError("invalid_json");
+                }
+                while (pos < src.length() && src.charAt(pos) >= '0' && src.charAt(pos) <= '9') {
+                    pos++;
+                }
+            }
+            if (pos < src.length() && (src.charAt(pos) == 'e' || src.charAt(pos) == 'E')) {
+                isFloat = true;
+                pos++;
+                if (pos < src.length() && (src.charAt(pos) == '+' || src.charAt(pos) == '-')) {
+                    pos++;
+                }
+                if (pos >= src.length() || src.charAt(pos) < '0' || src.charAt(pos) > '9') {
+                    throw new StrictJsonError("invalid_json");
+                }
+                while (pos < src.length() && src.charAt(pos) >= '0' && src.charAt(pos) <= '9') {
+                    pos++;
+                }
+            }
+            String token = src.substring(start, pos);
+            if (isFloat) {
+                return Double.valueOf(token);
+            }
+            BigInteger bi = new BigInteger(token);
+            if (bi.compareTo(BigInteger.valueOf(Long.MIN_VALUE)) >= 0
+                    && bi.compareTo(BigInteger.valueOf(Long.MAX_VALUE)) <= 0) {
+                return Long.valueOf(bi.longValue());
+            }
+            return bi;
+        }
+    }
+
+    private static void appendCanonicalValue(StringBuilder sb, Object value) {
+        if (value == null) {
+            sb.append("null");
+        } else if (value instanceof Boolean) {
+            sb.append(((Boolean) value) ? "true" : "false");
+        } else if (value instanceof Long) {
+            sb.append(((Long) value).longValue());
+        } else if (value instanceof String) {
+            appendJsonString(sb, (String) value);
+        } else if (value instanceof List<?>) {
+            sb.append('[');
+            List<?> list = (List<?>) value;
+            for (int i = 0; i < list.size(); i++) {
+                if (i > 0) sb.append(',');
+                appendCanonicalValue(sb, list.get(i));
+            }
+            sb.append(']');
+        } else if (value instanceof Map<?, ?>) {
+            sb.append('{');
+            @SuppressWarnings("unchecked")
+            Map<String, Object> map = (Map<String, Object>) value;
+            TreeMap<String, Object> sorted = new TreeMap<>(map);
+            boolean first = true;
+            for (Map.Entry<String, Object> entry : sorted.entrySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                appendJsonString(sb, entry.getKey());
+                sb.append(':');
+                appendCanonicalValue(sb, entry.getValue());
+            }
+            sb.append('}');
+        } else {
+            throw new IllegalArgumentException("Unsupported canonical value");
+        }
+    }
+
+    private static String canonicalizeControlDocument(Map<String, Object> command) {
+        TreeMap<String, Object> doc = new TreeMap<>();
+        doc.put("canonical_profile", "p1-host-intent-c14n-1");
+        doc.put("channel", "control");
+        doc.put("intent", command);
+        StringBuilder sb = new StringBuilder();
+        appendCanonicalValue(sb, doc);
+        return sb.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> asObject(Object raw) {
+        return raw instanceof Map<?, ?> ? (Map<String, Object>) raw : null;
+    }
+
+    private static boolean hasExactKeys(Map<String, Object> obj, Set<String> expected) {
+        return obj != null && obj.size() == expected.size() && expected.containsAll(obj.keySet());
+    }
+
+    private static String validateIdentifier(Map<String, Object> obj, String key) {
+        Object raw = obj.get(key);
         if (!(raw instanceof String)) {
             return null;
         }
@@ -217,7 +509,7 @@ final class OfflineTripLedgerStore {
             i += Character.charCount(cp);
         }
         if (scalars == 0 || scalars > 128
-                || value.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 128) {
+                || value.getBytes(StandardCharsets.UTF_8).length > 128) {
             return null;
         }
         return value;
@@ -259,21 +551,27 @@ final class OfflineTripLedgerStore {
             String rawCommandJson,
             String canonicalIntentJson
     ) throws Exception {
-        if (rawCommandJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES
-                || canonicalIntentJson.getBytes(java.nio.charset.StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) {
+        if (rawCommandJson.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES
+                || canonicalIntentJson.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) {
             return rejected("canonical_bytes");
         }
-        JSONObject command = new JSONObject(rawCommandJson);
+        final Object parsedDoc;
+        try {
+            parsedDoc = new StrictJsonParser(rawCommandJson).parseDocument();
+        } catch (StrictJsonError error) {
+            return rejected(error.code);
+        }
+        Map<String, Object> command = asObject(parsedDoc);
         if (!hasExactKeys(command, COMMAND_KEYS)) {
             return rejected("shape");
         }
-        if (!"p1-host-control-1".equals(command.opt("profile"))
-                || !"expense.create".equals(command.opt("kind"))) {
+        if (!"p1-host-control-1".equals(command.get("profile"))
+                || !"expense.create".equals(command.get("kind"))) {
             return rejected("unsupported_command");
         }
-        JSONObject op = command.optJSONObject("operation");
-        JSONObject target = command.optJSONObject("target");
-        JSONObject payload = command.optJSONObject("payload");
+        Map<String, Object> op = asObject(command.get("operation"));
+        Map<String, Object> target = asObject(command.get("target"));
+        Map<String, Object> payload = asObject(command.get("payload"));
         if (!hasExactKeys(op, OPERATION_KEYS)
                 || !hasExactKeys(target, TARGET_KEYS)
                 || !hasExactKeys(payload, PAYLOAD_KEYS)) {
@@ -294,49 +592,55 @@ final class OfflineTripLedgerStore {
             return rejected("invalid_identity");
         }
 
-        long[] parsedCents = new long[1];
-        String amountError = BridgeCreateLedgerStore.validateAmountCents(payload, parsedCents);
-        if (amountError != null) {
-            return rejected(amountError);
+        Object rawAmount = payload.get("amount_cents");
+        if (!(rawAmount instanceof Number)) {
+            return rejected("type");
         }
-        if (!canonicalMatchesCommand(command, canonicalIntentJson)) {
-            return rejected("intent_mismatch");
+        if (!(rawAmount instanceof Long)) {
+            return rejected("integer_range");
+        }
+        long amountCents = ((Long) rawAmount).longValue();
+        if (!BridgeLedgerStore.isValidAmountCents(amountCents)) {
+            return rejected("integer_range");
         }
 
-        String titleError = validateTextField(payload.opt("title"), 100, true);
+        String titleError = validateTextField(payload.get("title"), 100, true);
         if (titleError != null) {
             return rejected(titleError);
         }
-        String title = payload.getString("title");
+        String title = (String) payload.get("title");
 
-        String notesError = validateTextField(payload.opt("notes"), 1000, false);
+        String notesError = validateTextField(payload.get("notes"), 1000, false);
         if (notesError != null) {
             return rejected(notesError);
         }
-        String notes = payload.getString("notes");
+        String notes = (String) payload.get("notes");
 
-        Object rawCurrency = payload.opt("currency");
+        Object rawCurrency = payload.get("currency");
         if (!"CNY".equals(rawCurrency)) {
             return rejected("unsupported_capability");
         }
         String currency = "CNY";
-        if (payload.opt("paid_on") != JSONObject.NULL
-                || payload.opt("day") != JSONObject.NULL
-                || payload.opt("activity_id") != JSONObject.NULL
-                || payload.opt("budget_item_id") != JSONObject.NULL) {
+        if (payload.get("paid_on") != null
+                || payload.get("day") != null
+                || payload.get("activity_id") != null
+                || payload.get("budget_item_id") != null) {
             return rejected("unsupported_capability");
         }
-        Object rawCategory = payload.opt("category");
+        Object rawCategory = payload.get("category");
         if (!(rawCategory instanceof String) || !VALID_CATEGORIES.contains(rawCategory)) {
             return rejected("invalid_field");
         }
         String category = (String) rawCategory;
-        Object rawReceipts = payload.opt("receipt_ids");
-        if (!(rawReceipts instanceof JSONArray) || ((JSONArray) rawReceipts).length() != 0) {
+        Object rawReceipts = payload.get("receipt_ids");
+        if (!(rawReceipts instanceof List<?>)) {
+            return rejected("type");
+        }
+        if (!((List<?>) rawReceipts).isEmpty()) {
             return rejected("unsupported_capability");
         }
-        Object rawAllowShared = payload.opt("allow_shared_receipts");
-        Object rawSettles = payload.opt("settles_budget");
+        Object rawAllowShared = payload.get("allow_shared_receipts");
+        Object rawSettles = payload.get("settles_budget");
         if (!(rawAllowShared instanceof Boolean) || !(rawSettles instanceof Boolean)) {
             return rejected("type");
         }
@@ -344,9 +648,16 @@ final class OfflineTripLedgerStore {
             return rejected("invalid_field");
         }
 
-        long amountCents = parsedCents[0];
+        String canonicalVerified = canonicalizeControlDocument(command);
+        if (canonicalVerified.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) {
+            return rejected("canonical_bytes");
+        }
+        if (!canonicalVerified.equals(canonicalIntentJson)) {
+            return rejected("non_canonical_intent");
+        }
+
         boolean allowSharedReceipts = (Boolean) rawAllowShared;
-        String intentSha256 = BridgeCreateLedgerStore.sha256Hex(canonicalIntentJson);
+        String intentSha256 = BridgeCreateLedgerStore.sha256Hex(canonicalVerified);
 
         String resultRevisionId = null;
         boolean replayed = false;
@@ -366,7 +677,7 @@ final class OfflineTripLedgerStore {
                                     + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?",
                             new String[]{datasetId, sourceDeviceId, operationId})) {
                         if (row.moveToFirst()) {
-                            if (!canonicalIntentJson.equals(row.getString(0))) {
+                            if (!canonicalVerified.equals(row.getString(0))) {
                                 rejectError = "intent_conflict";
                             } else {
                                 replayed = true;
@@ -418,7 +729,7 @@ final class OfflineTripLedgerStore {
                         db.execSQL(
                                 "INSERT INTO receipts(dataset_id, source_device_id, operation_id, intent_json, effect, result_revision_id) "
                                         + "VALUES(?,?,?,?,?,?)",
-                                new Object[]{datasetId, sourceDeviceId, operationId, canonicalIntentJson, "changed", resultRevisionId});
+                                new Object[]{datasetId, sourceDeviceId, operationId, canonicalVerified, "changed", resultRevisionId});
                         db.execSQL(
                                 "INSERT INTO outbox(dataset_id, source_device_id, operation_id, entity_id, "
                                         + "expected_revision_id, result_revision_id, raw_command_json, "
@@ -432,7 +743,7 @@ final class OfflineTripLedgerStore {
                                         expectedRevisionId,
                                         resultRevisionId,
                                         rawCommandJson,
-                                        canonicalIntentJson,
+                                        canonicalVerified,
                                         intentSha256,
                                         DELIVERY_STATE_PENDING_SEND,
                                 });

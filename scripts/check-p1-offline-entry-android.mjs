@@ -148,24 +148,83 @@ async function connectWebView(cdpPort) {
   }
   async function tap(id) {
     const cleanId = id.startsWith("#") ? id.slice(1) : id;
-    const pos = await evaluate(`(async () => {
-      const el = document.getElementById(${JSON.stringify(cleanId)});
-      if (!el) throw new Error("Missing element #" + ${JSON.stringify(cleanId)});
-      if (el.disabled) throw new Error("Disabled element #" + ${JSON.stringify(cleanId)});
-      el.scrollIntoView({ block: "center", inline: "center" });
-      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-      const rect = el.getBoundingClientRect();
-      const vv = window.visualViewport;
-      return {
-        x: Math.round(rect.left - (vv ? vv.offsetLeft : 0) + rect.width / 2),
-        y: Math.round(rect.top - (vv ? vv.offsetTop : 0) + rect.height / 2),
-      };
-    })()`);
-    await send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
-    });
-    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    const receiptKey = `__tfOfflineTap_${crypto.randomUUID()}`;
+    try {
+      const pos = await evaluate(`(async () => {
+        if (document.activeElement && typeof document.activeElement.blur === "function") {
+          document.activeElement.blur();
+        }
+        const el = document.getElementById(${JSON.stringify(cleanId)});
+        if (!el) throw new Error("Missing element #" + ${JSON.stringify(cleanId)});
+        if (el.disabled) throw new Error("Disabled element #" + ${JSON.stringify(cleanId)});
+        const deadline = Date.now() + 3000;
+        let point = null;
+        let prevKey = null;
+        while (Date.now() < deadline) {
+          el.scrollIntoView({ block: "center", inline: "center" });
+          await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+          const rect = el.getBoundingClientRect();
+          const vv = window.visualViewport;
+          const candidate = {
+            x: Math.round(rect.left - (vv ? vv.offsetLeft : 0) + rect.width / 2),
+            y: Math.round(rect.top - (vv ? vv.offsetTop : 0) + rect.height / 2),
+          };
+          const vw = vv ? vv.width : window.innerWidth;
+          const vh = vv ? vv.height : window.innerHeight;
+          const hit = document.elementFromPoint(candidate.x, candidate.y);
+          const onTarget = Boolean(hit && (hit === el || el.contains(hit)));
+          const key = candidate.x + "," + candidate.y + "," + Math.round(vh);
+          if (candidate.x >= 0 && candidate.y >= 0 && candidate.x < vw && candidate.y < vh && onTarget) {
+            if (key === prevKey) {
+              point = candidate;
+              break;
+            }
+            prevKey = key;
+          } else {
+            prevKey = null;
+          }
+          await new Promise((r) => setTimeout(r, 120));
+        }
+        if (!point) {
+          const rect = el.getBoundingClientRect();
+          const vv = window.visualViewport;
+          throw new Error("Button center outside viewport for #" + ${JSON.stringify(cleanId)} + ": " + JSON.stringify({
+            rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+            vv: vv ? { width: vv.width, height: vv.height, offsetTop: vv.offsetTop } : null,
+          }));
+        }
+        const listener = (event) => {
+          window[${JSON.stringify(receiptKey)}].clicked = {
+            trusted: event.isTrusted,
+            expected: event.target === el || el.contains(event.target),
+            target: event.target?.id ?? "",
+          };
+        };
+        window[${JSON.stringify(receiptKey)}] = { listener, clicked: null };
+        document.addEventListener("click", listener, { capture: true, once: true });
+        return point;
+      })()`);
+      await send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: 1 }],
+      });
+      await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      const deadline = Date.now() + 4000;
+      let clicked = null;
+      while (Date.now() < deadline) {
+        clicked = await evaluate(`window[${JSON.stringify(receiptKey)}]?.clicked ?? null`);
+        if (clicked) break;
+        await sleep(40);
+      }
+      assert.ok(clicked?.trusted && clicked?.expected, `Touch missed #${cleanId}: ${JSON.stringify(clicked)}`);
+    } finally {
+      await evaluate(`(() => {
+        const rec = window[${JSON.stringify(receiptKey)}];
+        if (!rec) return;
+        document.removeEventListener("click", rec.listener, true);
+        delete window[${JSON.stringify(receiptKey)}];
+      })()`).catch(() => {});
+    }
   }
   return { send, evaluate, tap, close: () => ws.close() };
 }
@@ -248,30 +307,89 @@ async function waitForCondition(cdp, expression, label, timeoutMs = 15000) {
 }
 
 async function doubleTapElement(cdp, id) {
-  const pos = await cdp.evaluate(`(async () => {
-    const el = document.getElementById(${JSON.stringify(id)});
-    if (!el) return null;
-    el.scrollIntoView({ block: "center", inline: "center" });
-    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
-    const rect = el.getBoundingClientRect();
-    const vv = window.visualViewport;
-    const ox = vv ? vv.offsetLeft : 0;
-    const oy = vv ? vv.offsetTop : 0;
-    return { x: Math.round(rect.left - ox + rect.width / 2), y: Math.round(rect.top - oy + rect.height / 2) };
-  })()`);
-  assert.ok(pos, `Missing element #${id} for double tap`);
-  await sleep(80);
-  // Dispatch two rapid touch taps back-to-back to verify double-tap idempotency.
-  for (let i = 0; i < 2; i += 1) {
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchStart",
-      touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: i + 1 }],
-    });
-    await cdp.send("Input.dispatchTouchEvent", {
-      type: "touchEnd",
-      touchPoints: [],
-    });
-    await sleep(15);
+  const receiptKey = `__tfOfflineDblTap_${crypto.randomUUID()}`;
+  try {
+    const pos = await cdp.evaluate(`(async () => {
+      if (document.activeElement && typeof document.activeElement.blur === "function") {
+        document.activeElement.blur();
+      }
+      const el = document.getElementById(${JSON.stringify(id)});
+      if (!el) return null;
+      if (el.disabled) throw new Error("Disabled element #" + ${JSON.stringify(id)});
+      const deadline = Date.now() + 3000;
+      let point = null;
+      let prevKey = null;
+      while (Date.now() < deadline) {
+        el.scrollIntoView({ block: "center", inline: "center" });
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        const rect = el.getBoundingClientRect();
+        const vv = window.visualViewport;
+        const ox = vv ? vv.offsetLeft : 0;
+        const oy = vv ? vv.offsetTop : 0;
+        const candidate = { x: Math.round(rect.left - ox + rect.width / 2), y: Math.round(rect.top - oy + rect.height / 2) };
+        const vw = vv ? vv.width : window.innerWidth;
+        const vh = vv ? vv.height : window.innerHeight;
+        const hit = document.elementFromPoint(candidate.x, candidate.y);
+        const onTarget = Boolean(hit && (hit === el || el.contains(hit)));
+        const key = candidate.x + "," + candidate.y + "," + Math.round(vh);
+        if (candidate.x >= 0 && candidate.y >= 0 && candidate.x < vw && candidate.y < vh && onTarget) {
+          if (key === prevKey) {
+            point = candidate;
+            break;
+          }
+          prevKey = key;
+        } else {
+          prevKey = null;
+        }
+        await new Promise((r) => setTimeout(r, 120));
+      }
+      if (!point) {
+        const rect = el.getBoundingClientRect();
+        const vv = window.visualViewport;
+        throw new Error("Button center outside viewport for #" + ${JSON.stringify(id)} + ": " + JSON.stringify({
+          rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+          vv: vv ? { width: vv.width, height: vv.height, offsetTop: vv.offsetTop } : null,
+        }));
+      }
+      const listener = (event) => {
+        window[${JSON.stringify(receiptKey)}].hits.push({
+          trusted: event.isTrusted,
+          expected: event.target === el || el.contains(event.target),
+          target: event.target?.id ?? "",
+        });
+      };
+      window[${JSON.stringify(receiptKey)}] = { listener, hits: [] };
+      document.addEventListener("click", listener, { capture: true });
+      return point;
+    })()`);
+    assert.ok(pos, `Missing element #${id} for double tap`);
+    // Dispatch two rapid touch taps back-to-back to verify double-tap idempotency.
+    for (let i = 0; i < 2; i += 1) {
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchStart",
+        touchPoints: [{ x: pos.x, y: pos.y, radiusX: 2, radiusY: 2, force: 1, id: i + 1 }],
+      });
+      await cdp.send("Input.dispatchTouchEvent", {
+        type: "touchEnd",
+        touchPoints: [],
+      });
+      await sleep(15);
+    }
+    const deadline = Date.now() + 4000;
+    let hits = [];
+    while (Date.now() < deadline) {
+      hits = await cdp.evaluate(`window[${JSON.stringify(receiptKey)}]?.hits ?? []`);
+      if (hits.length > 0) break;
+      await sleep(40);
+    }
+    assert.ok(hits.some((h) => h.trusted && h.expected), `Double tap missed #${id}: ${JSON.stringify(hits)}`);
+  } finally {
+    await cdp.evaluate(`(() => {
+      const rec = window[${JSON.stringify(receiptKey)}];
+      if (!rec) return;
+      document.removeEventListener("click", rec.listener, true);
+      delete window[${JSON.stringify(receiptKey)}];
+    })()`).catch(() => {});
   }
 }
 
@@ -323,20 +441,31 @@ async function main() {
     await cdp.tap("#trip-open-entry-btn");
     await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "entry view");
 
-    const invalidAmounts = ["", "0", "0.00", "-12.50", "86.355", "1e2", "abc", "100000000.00"];
+    const invalidAmountCases = [
+      ["", /金额须为正数且最多两位小数/],
+      ["0", /金额超出允许范围/],
+      ["0.00", /金额超出允许范围/],
+      ["-12.50", /金额须为正数且最多两位小数/],
+      ["86.355", /金额须为正数且最多两位小数/],
+      ["1e2", /金额须为正数且最多两位小数/],
+      ["abc", /金额须为正数且最多两位小数/],
+      ["100000000.00", /金额超出允许范围/],
+    ];
     const rejectedInputs = [];
-    for (const rawAmount of invalidAmounts) {
+    for (const [rawAmount, expectedErrPattern] of invalidAmountCases) {
+      const prevSeq = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState().saveAttemptSeq`);
       await setInputValue(cdp, "trip-entry-title", "无效金额测试");
       await setInputValue(cdp, "trip-entry-amount-yuan", rawAmount);
       await setInputValue(cdp, "trip-entry-category", "transport");
       await cdp.tap("#trip-entry-save-btn");
       await waitForCondition(
         cdp,
-        `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`,
-        `error for invalid amount ${rawAmount}`,
+        `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeq} && u.lastAttempt.outcome === "validation_error"; })()`,
+        `validation_error for invalid amount ${rawAmount}`,
       );
       const uiErr = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
       assert.equal(uiErr.entryViewVisible, true, `Should stay on entry view for invalid amount ${rawAmount}`);
+      assert.match(uiErr.errorText, expectedErrPattern, `Unexpected error text for ${rawAmount}: ${uiErr.errorText}`);
       const st = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
       assert.equal(st.expenseCount, 0, `Zero writes expected for invalid amount ${rawAmount}`);
       assert.equal(st.revisionCount, 1);
@@ -351,42 +480,65 @@ async function main() {
     const nonBmp1000 = "𠮷".repeat(1000);
     const nonBmp1001 = "𠮷".repeat(1001);
 
+    let prevSeq = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState().saveAttemptSeq`);
     await insertTextViaCdp(cdp, "trip-entry-title", nonBmp101);
     await setInputValue(cdp, "trip-entry-amount-yuan", "86.35");
     await setInputValue(cdp, "trip-entry-category", "meal");
     await setInputValue(cdp, "trip-entry-notes", "");
     await cdp.tap("#trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for 101-scalar title");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeq} && u.lastAttempt.outcome === "validation_error"; })()`,
+      "validation_error for 101-scalar title",
+    );
     const uiOverTitle = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
     assert.equal(uiOverTitle.entryViewVisible, true);
+    assert.match(uiOverTitle.errorText, /标题须为 1 至 100 个字符/);
     assert.equal(uiOverTitle.titleValue, nonBmp101, "Over-limit title draft must be preserved without silent truncation");
     assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
 
+    prevSeq = uiOverTitle.saveAttemptSeq;
     await insertTextViaCdp(cdp, "trip-entry-title", nonBmp100);
     await insertTextViaCdp(cdp, "trip-entry-notes", nonBmp1001);
     await cdp.tap("#trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for 1001-scalar notes");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeq} && u.lastAttempt.outcome === "validation_error"; })()`,
+      "validation_error for 1001-scalar notes",
+    );
     const uiOverNotes = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
     assert.equal(uiOverNotes.entryViewVisible, true);
+    assert.match(uiOverNotes.errorText, /备注长度不能超过 1000 个字符/);
     assert.equal(uiOverNotes.notesValue, nonBmp1001, "Over-limit notes draft must be preserved without silent truncation");
     assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
 
+    prevSeq = uiOverNotes.saveAttemptSeq;
     await setInputValue(cdp, "trip-entry-title", "FEFF检查");
     await setInputValue(cdp, "trip-entry-notes", "A\uFEFFB");
     await cdp.tap("#trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().errorText.length > 0`, "error for U+FEFF notes");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeq} && u.lastAttempt.outcome === "validation_error"; })()`,
+      "validation_error for U+FEFF notes",
+    );
     const uiFeff = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
     assert.equal(uiFeff.entryViewVisible, true);
+    assert.match(uiFeff.errorText, /U\+FEFF/);
     assert.equal(uiFeff.notesValue, "A\uFEFFB", "U+FEFF must be rejected without silent stripping");
     assert.equal((await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`)).expenseCount, 0);
 
     // 3. Enter first expense (non-fixed-lunch sample: 42.80 yuan -> 4280 cents) and rapid double-tap Save!
+    prevSeq = uiFeff.saveAttemptSeq;
     await setInputValue(cdp, "trip-entry-title", "机场快线车票");
     await setInputValue(cdp, "trip-entry-amount-yuan", "42.80");
     await setInputValue(cdp, "trip-entry-category", "transport");
     await setInputValue(cdp, "trip-entry-notes", "首都机场线");
     await doubleTapElement(cdp, "trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after first save");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeq} && u.lastAttempt.outcome === "saved" && u.ledgerViewVisible === true; })()`,
+      "saved and returned to ledger after first save",
+    );
 
     const afterFirstState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
     const afterFirstUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
@@ -430,12 +582,17 @@ async function main() {
     // 5. Enter second expense (86.35 yuan -> 8635 cents, matching desktop fixed lunch comparison).
     await cdp.tap("#trip-open-entry-btn");
     await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "second entry view");
+    const prevSeqSecond = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState().saveAttemptSeq`);
     await setInputValue(cdp, "trip-entry-title", "午餐");
     await setInputValue(cdp, "trip-entry-amount-yuan", "86.35");
     await setInputValue(cdp, "trip-entry-category", "meal");
     await setInputValue(cdp, "trip-entry-notes", "");
     await cdp.tap("#trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after second save");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeqSecond} && u.lastAttempt.outcome === "saved" && u.ledgerViewVisible === true; })()`,
+      "saved and returned to ledger after second save",
+    );
 
     const afterSecondState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
     const afterSecondUi = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState()`);
@@ -595,15 +752,59 @@ async function main() {
     assert.equal(afterShapeRejects.outboxCount, 2);
     assert.equal(afterShapeRejects.headRevisionId, rev2);
 
-    // 8. Positive non-BMP exact-limit test via real CDP Input.insertText: 100 "𠮷" title + 1000 "𠮷" notes saves intact & passes fingerprintIntent.
+    // 7b. Native raw-string bridge validation: duplicate key, non-canonical whitespace envelope, and normal canonical commit + replay.
+    const rawValidCmd = structuredClone(baseCommand);
+    rawValidCmd.operation.operation_id = "op-raw-dup-key";
+    rawValidCmd.target.entity_id = "exp-raw-dup-key";
+    rawValidCmd.payload.title = "重复键检查";
+    rawValidCmd.payload.amount_cents = 8635;
+    const rawValidJson = JSON.stringify(rawValidCmd);
+    const rawValidCanon = fingerprintIntent(Buffer.from(rawValidJson, "utf8"), "control");
+    assert.equal(rawValidCanon.accepted, true);
+    const dupKeyRawJson = rawValidJson.replace('"amount_cents":8635', '"amount_cents":100,"amount_cents":8635');
+    assert.notEqual(dupKeyRawJson, rawValidJson);
+    const resDupKey = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawStrings(${JSON.stringify(dupKeyRawJson)}, ${JSON.stringify(rawValidCanon.canonical_json)})`,
+    );
+    assert.equal(resDupKey.accepted, false);
+    assert.equal(resDupKey.error, "duplicate_key");
+
+    const wsCmd = structuredClone(baseCommand);
+    wsCmd.operation.operation_id = "op-raw-whitespace-envelope";
+    wsCmd.target.entity_id = "exp-raw-whitespace-envelope";
+    wsCmd.payload.title = "非规范封装检查";
+    wsCmd.payload.amount_cents = 8635;
+    const wsRawJson = JSON.stringify(wsCmd);
+    const wsCanon = fingerprintIntent(Buffer.from(wsRawJson, "utf8"), "control");
+    assert.equal(wsCanon.accepted, true);
+    const prettyEnvelope = JSON.stringify(JSON.parse(wsCanon.canonical_json), null, 2);
+    const resPrettyEnvelope = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawStrings(${JSON.stringify(wsRawJson)}, ${JSON.stringify(prettyEnvelope)})`,
+    );
+    assert.equal(resPrettyEnvelope.accepted, false);
+    assert.equal(resPrettyEnvelope.error, "non_canonical_intent");
+
+    const afterRawRejects = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    assert.equal(afterRawRejects.expenseCount, 2, "Duplicate key & non-canonical rejections must cause zero writes");
+    assert.equal(afterRawRejects.totalCents, 12915);
+    assert.equal(afterRawRejects.revisionCount, 3);
+    assert.equal(afterRawRejects.receiptCount, 2);
+    assert.equal(afterRawRejects.outboxCount, 2);
+
+    // 8. Positive non-BMP exact-limit test via real CDP Input.insertText: 100 "𠮷" title + 1000 "𠮷" notes saves intact & passes fingerprintIntent + same-key replay.
     await cdp.tap("#trip-open-entry-btn");
     await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().entryViewVisible === true`, "third entry view");
+    const prevSeqNonBmp = await cdp.evaluate(`window.__travelflowOfflineEntry.getUiState().saveAttemptSeq`);
     await insertTextViaCdp(cdp, "trip-entry-title", nonBmp100);
     await setInputValue(cdp, "trip-entry-amount-yuan", "12.34");
     await setInputValue(cdp, "trip-entry-category", "other");
     await insertTextViaCdp(cdp, "trip-entry-notes", nonBmp1000);
     await cdp.tap("#trip-entry-save-btn");
-    await waitForCondition(cdp, `window.__travelflowOfflineEntry.getUiState().ledgerViewVisible === true`, "return to ledger after non-BMP save");
+    await waitForCondition(
+      cdp,
+      `(() => { const u = window.__travelflowOfflineEntry.getUiState(); return u.saveAttemptSeq > ${prevSeqNonBmp} && u.lastAttempt.outcome === "saved" && u.ledgerViewVisible === true; })()`,
+      "saved and returned to ledger after non-BMP save",
+    );
 
     const afterNonBmpState = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
     const exportedAfterNonBmp = await cdp.evaluate(`window.__travelflowOfflineEntry.exportOutboxCommands()`);
@@ -622,6 +823,21 @@ async function main() {
     assert.equal(p1Canon3.accepted, true);
     assert.equal(item3.canonical_intent_json, p1Canon3.canonical_json);
     assert.equal(item3.intent_sha256, p1Canon3.sha256);
+
+    // Same-key canonical replay on the 3rd expense must return replayed=true & original revision with zero extra rows.
+    const replayItem3 = await cdp.evaluate(
+      `window.__travelflowOfflineEntry.submitRawStrings(${JSON.stringify(item3.raw_command_json)}, ${JSON.stringify(item3.canonical_intent_json)})`,
+    );
+    assert.equal(replayItem3.accepted, true);
+    assert.equal(replayItem3.replayed, true);
+    assert.equal(replayItem3.result_revision_id, item3.result_revision_id);
+    assert.equal(replayItem3.intent_sha256, item3.intent_sha256);
+    const afterReplay3 = await cdp.evaluate(`window.__travelflowOfflineEntry.inspect()`);
+    assert.equal(afterReplay3.expenseCount, 3);
+    assert.equal(afterReplay3.totalCents, 14149);
+    assert.equal(afterReplay3.revisionCount, 4);
+    assert.equal(afterReplay3.receiptCount, 3);
+    assert.equal(afterReplay3.outboxCount, 3);
 
     console.log(JSON.stringify({
       passed: true,
@@ -646,6 +862,9 @@ async function main() {
         missingPaidOn: resMissingPaidOn.error,
         unknownPayloadField: resUnknownPayload.error,
         unknownTopField: resUnknownTop.error,
+        duplicateKey: resDupKey.error,
+        nonCanonicalWhitespaceEnvelope: resPrettyEnvelope.error,
+        sameKeyCanonicalReplayVerified: replayItem3.replayed === true,
         zeroWritesVerified: true,
       },
       doubleTapSingleWriteVerified: true,
