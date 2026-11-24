@@ -19,6 +19,7 @@
     "check:p1-families": "node scripts/check-p1-families.mjs",
     "check:p1-zones": "node scripts/check-p1-zones.mjs",
     "check:p1-desktop-create": "node scripts/check-p1-desktop-expense-create.mjs",
+    "check:p1-create-boundaries": "node scripts/check-p1-create-boundaries.mjs",
     "check:p1-store": "node scripts/check-p1-store.mjs",
     "check:p1-history": "node scripts/check-p1-history.mjs",
     "check:p1-desktop-source": "node scripts/check-p1-desktop-source.mjs",

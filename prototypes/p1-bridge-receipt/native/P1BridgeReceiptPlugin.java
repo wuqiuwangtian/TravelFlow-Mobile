@@ -494,16 +494,19 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String travelId = call.getString("travelId", "");
         String branchId = call.getString("branchId", "");
         String initialRevisionId = call.getString("initialRevisionId", "");
+        int initialCount = call.getInt("initialCount", 0);
         executor.execute(() -> {
             try {
                 if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
                         || datasetId.isEmpty() || travelId.isEmpty()
-                        || branchId.isEmpty() || initialRevisionId.isEmpty()) {
+                        || branchId.isEmpty() || initialRevisionId.isEmpty()
+                        || initialCount < 0 || initialCount > BridgeCreateLedgerStore.MAX_BRANCH_EXPENSES) {
                     call.reject("Invalid seedCreateScenario arguments", "INVALID_ARGUMENTS");
                     return;
                 }
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
-                BridgeCreateLedgerStore.seedEmpty(dir, datasetId, travelId, branchId, initialRevisionId);
+                BridgeCreateLedgerStore.seedWithExpenseCount(
+                        dir, datasetId, travelId, branchId, initialRevisionId, initialCount);
                 JSObject state = BridgeCreateLedgerStore.inspectState(dir, createReceiptReadCount.get());
                 JSObject pending = buildCreatePendingState(scenario);
                 state.put("pending", pending.get("pending"));
@@ -613,6 +616,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String rawCommandJson = call.getString("rawCommandJson", "");
         String canonicalIntentJson = call.getString("canonicalIntentJson", "");
         String faultMode = call.getString("faultMode", "none");
+        JSObject principal = call.getObject("principal");
         executor.execute(() -> {
             try {
                 if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
@@ -623,7 +627,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
                     return;
                 }
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
-                call.resolve(BridgeCreateLedgerStore.executeCreate(dir, rawCommandJson, canonicalIntentJson, faultMode));
+                call.resolve(BridgeCreateLedgerStore.executeCreate(
+                        dir, principal, rawCommandJson, canonicalIntentJson, faultMode));
             } catch (Exception error) {
                 call.reject(error.getMessage(), "CREATE_SUBMIT_FAILED");
             }
@@ -635,6 +640,7 @@ public class P1BridgeReceiptPlugin extends Plugin {
         String scenario = call.getString("scenario", "");
         String rawCommandJson = call.getString("rawCommandJson", "");
         String canonicalIntentJson = call.getString("canonicalIntentJson", "");
+        JSObject principal = call.getObject("principal");
         executor.execute(() -> {
             try {
                 if (!BridgeCreateLedgerStore.isCreateScenario(scenario)
@@ -643,7 +649,8 @@ public class P1BridgeReceiptPlugin extends Plugin {
                     return;
                 }
                 File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
-                call.resolve(BridgeCreateLedgerStore.executeNotesPatch(dir, rawCommandJson, canonicalIntentJson));
+                call.resolve(BridgeCreateLedgerStore.executeNotesPatch(
+                        dir, principal, rawCommandJson, canonicalIntentJson));
             } catch (Exception error) {
                 call.reject(error.getMessage(), "CREATE_PATCH_FAILED");
             }

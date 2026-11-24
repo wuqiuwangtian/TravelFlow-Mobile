@@ -18,11 +18,16 @@ import org.json.JSONObject;
  * matching the host desktop-create contract (revisions, expenses, receipts, outbox in one tx).
  */
 final class BridgeCreateLedgerStore {
+    static final int MAX_BRANCH_EXPENSES = 2000;
+    private static final java.util.Set<String> VALID_CATEGORIES = new java.util.HashSet<>(
+            java.util.Arrays.asList("transport", "lodging", "meal", "ticket", "shopping", "other"));
+
     private BridgeCreateLedgerStore() {}
 
     static boolean isCreateScenario(String scenario) {
         return scenario != null && scenario.matches(
-                "create-before-commit|create-after-commit|create-conflict-amount|create-conflict-share");
+                "create-before-commit|create-after-commit|create-conflict-amount|create-conflict-share"
+                        + "|create-boundary-fields-scope|create-boundary-cap-2000");
     }
 
     static File scenarioDir(File filesDir, String scenario) {
@@ -89,6 +94,41 @@ final class BridgeCreateLedgerStore {
                         new Object[]{initialRevisionId, null, "{\"expenses\":[]}"});
                 db.execSQL("INSERT INTO branch_head VALUES(1,?,?,?,?)",
                         new Object[]{datasetId, travelId, branchId, initialRevisionId});
+                db.setTransactionSuccessful();
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
+    static void seedWithExpenseCount(
+            File dir,
+            String datasetId,
+            String travelId,
+            String branchId,
+            String initialRevisionId,
+            int initialCount
+    ) throws Exception {
+        if (initialCount < 0 || initialCount > MAX_BRANCH_EXPENSES) {
+            throw new IllegalArgumentException("Invalid initialCount: " + initialCount);
+        }
+        seedEmpty(dir, datasetId, travelId, branchId, initialRevisionId);
+        if (initialCount == 0) {
+            return;
+        }
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            db.beginTransaction();
+            try {
+                for (int i = 1; i <= initialCount; i++) {
+                    String entityId = String.format(java.util.Locale.US, "fixture-seed-%04d", i);
+                    db.execSQL(
+                            "INSERT INTO expenses(entity_id, title, amount_cents, currency, paid_on, category, "
+                                    + "day, activity_id, notes, receipt_ids_json, allow_shared_receipts, "
+                                    + "budget_item_id, settles_budget) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            new Object[]{entityId, "seed", 100L, "CNY", null, "other", null, null, "", "[]", 0, null, 0});
+                }
+                db.execSQL("UPDATE revisions SET snapshot_json=? WHERE revision_id=?",
+                        new Object[]{"{\"seeded_count\":" + initialCount + "}", initialRevisionId});
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
@@ -182,8 +222,67 @@ final class BridgeCreateLedgerStore {
         }
     }
 
+    private static boolean isAuthorizedWriter(JSObject principal, String datasetId, String sourceDeviceId) {
+        if (principal == null) {
+            return false;
+        }
+        boolean authenticated = Boolean.TRUE.equals(principal.getBool("authenticated"));
+        boolean canWrite = Boolean.TRUE.equals(principal.getBool("can_write"));
+        String principalDataset = principal.getString("dataset_id", "");
+        String principalDevice = principal.getString("source_device_id", "");
+        return authenticated && canWrite
+                && datasetId.equals(principalDataset)
+                && sourceDeviceId.equals(principalDevice);
+    }
+
+    private static String validateExchangeableCapabilities(JSONObject payload) throws Exception {
+        String currency = payload.isNull("currency") ? null : payload.optString("currency", null);
+        if (!"CNY".equals(currency)) {
+            return "unsupported_capability";
+        }
+        if (!payload.isNull("paid_on")) {
+            return "unsupported_capability";
+        }
+        Object rawCategory = payload.opt("category");
+        if (!(rawCategory instanceof String)) {
+            return "type";
+        }
+        if (!VALID_CATEGORIES.contains(rawCategory)) {
+            return "invalid_field";
+        }
+        if (!payload.isNull("day")) {
+            return "unsupported_capability";
+        }
+        if (!payload.isNull("activity_id")) {
+            return "unsupported_capability";
+        }
+        Object rawReceipts = payload.opt("receipt_ids");
+        if (!(rawReceipts instanceof JSONArray)) {
+            return "type";
+        }
+        if (((JSONArray) rawReceipts).length() != 0) {
+            return "unsupported_capability";
+        }
+        Object rawAllowShared = payload.opt("allow_shared_receipts");
+        if (!(rawAllowShared instanceof Boolean)) {
+            return "type";
+        }
+        if (!payload.isNull("budget_item_id")) {
+            return "unsupported_capability";
+        }
+        Object rawSettles = payload.opt("settles_budget");
+        if (!(rawSettles instanceof Boolean)) {
+            return "type";
+        }
+        if (Boolean.TRUE.equals(rawSettles)) {
+            return "invalid_field";
+        }
+        return null;
+    }
+
     static JSObject executeCreate(
             File dir,
+            JSObject principal,
             String rawCommandJson,
             String canonicalIntentJson,
             String faultMode
@@ -205,6 +304,10 @@ final class BridgeCreateLedgerStore {
         String entityId = target.getString("entity_id");
         String expectedRevisionId = command.getString("expected_revision_id");
 
+        if (!isAuthorizedWriter(principal, datasetId, sourceDeviceId)) {
+            return rejected("denied");
+        }
+
         long[] parsedCents = new long[1];
         String amountError = validateAmountCents(payload, parsedCents);
         if (amountError != null) {
@@ -214,20 +317,8 @@ final class BridgeCreateLedgerStore {
             return rejected("intent_mismatch");
         }
         long amountCents = parsedCents[0];
-        String currency = payload.isNull("currency") ? null : payload.optString("currency", null);
-        if (!"CNY".equals(currency)) {
-            return rejected("currency");
-        }
         String title = payload.getString("title");
-        String paidOn = payload.isNull("paid_on") ? null : payload.getString("paid_on");
-        String category = payload.getString("category");
-        Integer day = payload.isNull("day") ? null : payload.getInt("day");
-        String activityId = payload.isNull("activity_id") ? null : payload.getString("activity_id");
         String notes = payload.getString("notes");
-        JSONArray receiptIds = payload.getJSONArray("receipt_ids");
-        boolean allowSharedReceipts = payload.getBoolean("allow_shared_receipts");
-        String budgetItemId = payload.isNull("budget_item_id") ? null : payload.getString("budget_item_id");
-        boolean settlesBudget = payload.getBoolean("settles_budget");
 
         String resultRevisionId = null;
         boolean replayed = false;
@@ -236,7 +327,7 @@ final class BridgeCreateLedgerStore {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
             db.beginTransactionNonExclusive();
             try {
-                // Always check durable receipt first: replays must return the original revision even after head advances.
+                // Always check durable receipt first: replays must return the original revision even after head advances or cap is full.
                 try (Cursor row = db.rawQuery(
                         "SELECT intent_json, effect, result_revision_id FROM receipts "
                                 + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?",
@@ -250,6 +341,10 @@ final class BridgeCreateLedgerStore {
                             resultRevisionId = row.getString(2);
                         }
                     }
+                }
+
+                if (rejectError == null && !replayed) {
+                    rejectError = validateExchangeableCapabilities(payload);
                 }
 
                 if (rejectError == null && !replayed) {
@@ -276,7 +371,20 @@ final class BridgeCreateLedgerStore {
                         } else if (BridgeLedgerStore.queryLong(
                                 db, "SELECT count(*) FROM expenses WHERE entity_id=?", new String[]{entityId}) > 0) {
                             rejectError = "entity_exists";
+                        } else if (BridgeLedgerStore.queryLong(
+                                db, "SELECT count(*) FROM expenses", null) >= MAX_BRANCH_EXPENSES) {
+                            rejectError = "expense_count";
                         } else {
+                            String currency = payload.getString("currency");
+                            String paidOn = payload.isNull("paid_on") ? null : payload.getString("paid_on");
+                            String category = payload.getString("category");
+                            Integer day = payload.isNull("day") ? null : payload.getInt("day");
+                            String activityId = payload.isNull("activity_id") ? null : payload.getString("activity_id");
+                            JSONArray receiptIds = payload.getJSONArray("receipt_ids");
+                            boolean allowSharedReceipts = payload.getBoolean("allow_shared_receipts");
+                            String budgetItemId = payload.isNull("budget_item_id") ? null : payload.getString("budget_item_id");
+                            boolean settlesBudget = payload.getBoolean("settles_budget");
+
                             resultRevisionId = "fixture-" + UUID.randomUUID().toString();
                             db.execSQL(
                                     "INSERT INTO expenses(entity_id, title, amount_cents, currency, paid_on, category, "
@@ -297,7 +405,10 @@ final class BridgeCreateLedgerStore {
                                             budgetItemId,
                                             settlesBudget ? 1 : 0,
                                     });
-                            String snapshotJson = buildSnapshotJson(db);
+                            long currentCount = BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM expenses", null);
+                            String snapshotJson = currentCount <= 20
+                                    ? buildSnapshotJson(db)
+                                    : new JSONObject().put("expense_count", currentCount).toString();
                             db.execSQL(
                                     "INSERT INTO revisions(revision_id, parent_revision_id, snapshot_json) VALUES(?,?,?)",
                                     new Object[]{resultRevisionId, currentHead, snapshotJson});
@@ -343,6 +454,7 @@ final class BridgeCreateLedgerStore {
 
     static JSObject executeNotesPatch(
             File dir,
+            JSObject principal,
             String rawCommandJson,
             String canonicalIntentJson
     ) throws Exception {
@@ -351,15 +463,18 @@ final class BridgeCreateLedgerStore {
                 || !"expense.patch".equals(command.optString("kind"))) {
             return rejected("unsupported_command");
         }
-        if (!canonicalMatchesCommand(command, canonicalIntentJson)) {
-            return rejected("intent_mismatch");
-        }
         JSONObject op = command.getJSONObject("operation");
         JSONObject target = command.getJSONObject("target");
         JSONObject payload = command.getJSONObject("payload");
 
         String datasetId = op.getString("dataset_id");
         String sourceDeviceId = op.getString("source_device_id");
+        if (!isAuthorizedWriter(principal, datasetId, sourceDeviceId)) {
+            return rejected("denied");
+        }
+        if (!canonicalMatchesCommand(command, canonicalIntentJson)) {
+            return rejected("intent_mismatch");
+        }
         String operationId = op.getString("operation_id");
         String entityId = target.getString("entity_id");
         String expectedRevisionId = command.getString("expected_revision_id");
@@ -493,6 +608,7 @@ final class BridgeCreateLedgerStore {
         if (!dir.isDirectory() || !new File(dir, "store.db").isFile()) {
             data.put("seeded", false);
             data.put("headRevisionId", JSONObject.NULL);
+            data.put("expenseCount", 0);
             data.put("expenses", new JSArray());
             data.put("revisions", new JSArray());
             data.put("revisionCount", 0);
@@ -507,11 +623,13 @@ final class BridgeCreateLedgerStore {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
             data.put("seeded", true);
             data.put("headRevisionId", DatabaseUtils.stringForQuery(db, "SELECT head_revision_id FROM branch_head WHERE id=1", null));
+            long expenseCount = BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM expenses", null);
+            data.put("expenseCount", expenseCount);
             data.put("revisionCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM revisions", null));
             data.put("receiptCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM receipts", null));
             data.put("outboxCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM outbox", null));
 
-            data.put("expenses", readExpenses(db));
+            data.put("expenses", expenseCount <= 20 ? readExpenses(db) : new JSArray());
 
             JSArray receipts = new JSArray();
             try (Cursor rows = db.rawQuery(

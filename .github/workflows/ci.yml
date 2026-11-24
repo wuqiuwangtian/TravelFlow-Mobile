@@ -43,6 +43,7 @@ jobs:
       - run: pnpm check:p1-families
       - run: pnpm check:p1-zones
       - run: pnpm check:p1-desktop-create
+      - run: pnpm check:p1-create-boundaries
       - run: pnpm check:p1-store
       - run: pnpm check:p1-history
       - run: pnpm check:p1-desktop-source

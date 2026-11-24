@@ -1034,6 +1034,118 @@ async function runScenarios(adb, cdpPort) {
         },
       };
     }
+
+    // 12. create-boundary-fields-scope: 核对当前可交换字段范围、写入前虚构身份及目标旅行／分支作用域
+    {
+      const scenario = "create-boundary-fields-scope";
+      await session.client.setSelect("create-scenario", scenario);
+      const res = await session.client.evaluate(`window.__tfP1Bridge.runCreateBoundaryFieldsAndScope()`);
+
+      const expectedFieldErrors = {
+        paid_on: "unsupported_capability",
+        day: "unsupported_capability",
+        activity_id: "unsupported_capability",
+        receipt_ids: "unsupported_capability",
+        budget_item_id: "unsupported_capability",
+        settles_budget: "invalid_field",
+        category: "invalid_field",
+        currency: "unsupported_capability",
+      };
+      for (const item of res.fieldCases) {
+        assert.deepEqual(item.result, { accepted: false, error: expectedFieldErrors[item.label] }, `Field ${item.label}`);
+      }
+      for (const item of res.identityCases) {
+        assert.deepEqual(item.result, { accepted: false, error: "denied" }, `Identity ${item.label}`);
+      }
+      for (const item of res.scopeCases) {
+        assert.deepEqual(item.result, { accepted: false, error: "scope_mismatch" }, `Scope ${item.label}`);
+      }
+      assert.equal(res.stateAfterRejections.headRevisionId, "fixture-r0");
+      assert.equal(res.stateAfterRejections.expenseCount, 0);
+      assert.equal(res.stateAfterRejections.revisionCount, 1);
+      assert.equal(res.stateAfterRejections.receiptCount, 0);
+      assert.equal(res.stateAfterRejections.outboxCount, 0);
+
+      assert.equal(res.validCommit.accepted, true);
+      assert.equal(res.stateAfterValid.expenseCount, 1);
+      assert.equal(res.stateAfterValid.revisionCount, 2);
+      assert.equal(res.stateAfterValid.receiptCount, 1);
+      assert.equal(res.stateAfterValid.outboxCount, 1);
+      assertCreateRevisions(res.stateAfterValid.revisions, res.validCommit.result_revision_id, null);
+
+      report.scenarios[scenario] = {
+        fieldRejections: Object.fromEntries(res.fieldCases.map((item) => [item.label, item.result.error])),
+        identityRejections: Object.fromEntries(res.identityCases.map((item) => [item.label, item.result.error])),
+        scopeRejections: Object.fromEntries(res.scopeCases.map((item) => [item.label, item.result.error])),
+        zeroWritesAfterAllRejections: true,
+        validCommitRevisionId: res.validCommit.result_revision_id,
+        final: {
+          expenseCount: res.stateAfterValid.expenseCount,
+          revisionCount: res.stateAfterValid.revisionCount,
+          receiptCount: res.stateAfterValid.receiptCount,
+          outboxCount: res.stateAfterValid.outboxCount,
+        },
+      };
+    }
+
+    // 13. create-boundary-cap-2000: 1999→2000、满额 2000 拒绝新操作且零写入、满额重放原操作仍返回原结果
+    {
+      const scenario = "create-boundary-cap-2000";
+      await session.client.setSelect("create-scenario", scenario);
+      const res = await session.client.evaluate(`window.__tfP1Bridge.runCreateBoundaryCap2000()`);
+
+      assert.equal(res.seeded.expenseCount, 1999);
+      assert.equal(res.seeded.revisionCount, 1);
+      assert.equal(res.seeded.receiptCount, 0);
+      assert.equal(res.seeded.outboxCount, 0);
+
+      assert.equal(res.commit2000.accepted, true);
+      assert.equal(res.commit2000.replayed, false);
+      const rev2000 = res.commit2000.result_revision_id;
+      assert.equal(res.stateAt2000.expenseCount, 2000);
+      assert.equal(res.stateAt2000.revisionCount, 2);
+      assert.equal(res.stateAt2000.receiptCount, 1);
+      assert.equal(res.stateAt2000.outboxCount, 1);
+
+      assert.deepEqual(res.reject2001, { accepted: false, error: "expense_count" });
+      assert.equal(res.stateAfterReject2001.headRevisionId, rev2000);
+      assert.equal(res.stateAfterReject2001.expenseCount, 2000);
+      assert.equal(res.stateAfterReject2001.revisionCount, 2);
+      assert.equal(res.stateAfterReject2001.receiptCount, 1);
+      assert.equal(res.stateAfterReject2001.outboxCount, 1);
+
+      for (const replay of [res.replay2000Original, res.replay2000Reordered]) {
+        assert.deepEqual(replay, {
+          accepted: true,
+          kind: "committed",
+          replayed: true,
+          effect: "changed",
+          result_revision_id: rev2000,
+        });
+      }
+      assert.deepEqual(res.conflict2000, { accepted: false, error: "intent_conflict" });
+      assert.equal(res.stateFinal.headRevisionId, rev2000);
+      assert.equal(res.stateFinal.expenseCount, 2000);
+      assert.equal(res.stateFinal.revisionCount, 2);
+      assert.equal(res.stateFinal.receiptCount, 1);
+      assert.equal(res.stateFinal.outboxCount, 1);
+
+      report.scenarios[scenario] = {
+        seededCount: res.seeded.expenseCount,
+        rev2000,
+        reject2001Error: res.reject2001.error,
+        replayAt2000OriginalReplayed: res.replay2000Original.replayed,
+        replayAt2000ReorderedReplayed: res.replay2000Reordered.replayed,
+        conflictAt2000Error: res.conflict2000.error,
+        final: {
+          headRevisionId: res.stateFinal.headRevisionId,
+          expenseCount: res.stateFinal.expenseCount,
+          revisionCount: res.stateFinal.revisionCount,
+          receiptCount: res.stateFinal.receiptCount,
+          outboxCount: res.stateFinal.outboxCount,
+        },
+      };
+    }
   } finally {
     session.client.close();
   }
