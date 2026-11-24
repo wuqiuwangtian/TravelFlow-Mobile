@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -33,3 +33,35 @@ for (const [name, expected] of Object.entries(design.files)) {
   assert.equal(sha256(readFileSync(path.join(root, "vendor/design", name))), expected, `Design snapshot drift: ${name}`);
 }
 console.log("Pinned contract provenance and shared design snapshot checks passed.");
+
+// Frozen desktop release d916697828ad3d2f0e87a3a231b996c7873d421b;
+// the candidate was independently reviewed by mobile at 8ba3365.
+function verifyExpenseSnapshot(directory, manifestDigest) {
+  const read = name => readFileSync(path.join(root, "vendor/contracts", directory, name));
+  const bytes = read("manifest.json");
+  assert.equal(sha256(bytes), manifestDigest, directory);
+  const manifest = JSON.parse(bytes);
+  const entries = readdirSync(path.join(root, "vendor/contracts", directory), { withFileTypes: true });
+  assert.ok(entries.every(entry => entry.isFile()), directory);
+  assert.deepEqual(entries.map(entry => entry.name).sort(), ["manifest.json", ...Object.keys(manifest.files)].sort());
+  for (const [name, digest] of Object.entries(manifest.files)) assert.equal(sha256(read(name)), digest, name);
+  return { manifest, json: name => JSON.parse(read(name)) };
+}
+
+const candidate = verifyExpenseSnapshot("expense-create-candidate", "99722538b7c006cc7caaa31612f83d0d831b925bd21296dc5737a0448c1b8642");
+const frozen = verifyExpenseSnapshot("expense-create-v0.1.0", "759145bea1b98f086af4c70938ae33932b6cc0ba0527e12dc62faaf90733b8b1");
+assert.deepEqual(Object.keys(frozen.manifest.files).sort(), Object.keys(candidate.manifest.files).sort());
+for (const name of Object.keys(frozen.manifest.files).filter(name => name.endsWith(".json"))) {
+  const expected = candidate.json(name);
+  expected.contract_id = "travelflow.expense-create";
+  expected.contract_version = "0.1.0";
+  expected.status = "frozen";
+  if (Object.hasOwn(expected, "shared_contract_version")) expected.shared_contract_version = "0.1.0";
+  if (name === "desktop-assertions.json") expected.desktop_baseline_commit = "d7cd845";
+  if (name === "result-mapping.json") {
+    expected.evidence_commits.source_candidate_commit = "94ec1fb";
+    expected.evidence_commits.mobile_candidate_2_receipt = "8ba3365";
+  }
+  assert.deepEqual(frozen.json(name), expected, name);
+}
+console.log("Frozen expense-create 0.1.0 snapshot and candidate equivalence checks passed.");
