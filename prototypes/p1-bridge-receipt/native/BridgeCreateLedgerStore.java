@@ -30,7 +30,8 @@ final class BridgeCreateLedgerStore {
     static boolean isCreateScenario(String scenario) {
         return scenario != null && scenario.matches(
                 "create-before-commit|create-after-commit|create-conflict-amount|create-conflict-share"
-                        + "|create-boundary-fields-scope|create-boundary-over-20|create-boundary-cap-2000");
+                        + "|create-boundary-fields-scope|create-boundary-over-20|create-boundary-cap-2000"
+                        + "|create-pending-ec10|create-pending-ec07");
     }
 
     static File scenarioDir(File filesDir, String scenario) {
@@ -826,7 +827,7 @@ final class BridgeCreateLedgerStore {
         sb.append('"');
     }
 
-    private static String sha256Hex(String text) throws Exception {
+    static String sha256Hex(String text) throws Exception {
         MessageDigest md = MessageDigest.getInstance("SHA-256");
         byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
         StringBuilder hex = new StringBuilder(digest.length * 2);

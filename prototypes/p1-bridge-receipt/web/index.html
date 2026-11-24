@@ -71,7 +71,12 @@
       <option value="create-boundary-fields-scope">create-boundary-fields-scope（字段支持范围、身份与作用域）</option>
       <option value="create-boundary-over-20">create-boundary-over-20（20→21 跨分页与完整历史快照）</option>
       <option value="create-boundary-cap-2000">create-boundary-cap-2000（1999→2000 与满额重放）</option>
+      <option value="create-pending-ec10">create-pending-ec10（EC10 付款日能力不匹配重开保留）</option>
+      <option value="create-pending-ec07">create-pending-ec07（EC07 写锁忙／稳定缺失／丢应答重开恢复）</option>
     </select>
+
+    <label for="create-paid-on">新增付款日（留空表示 null 未知）</label>
+    <input id="create-paid-on" type="text" value="" placeholder="留空或输入 YYYY-MM-DD" disabled>
 
     <label for="create-fault-mode">新增故障模式</label>
     <select id="create-fault-mode" disabled>
@@ -82,7 +87,9 @@
 
     <div>
       <button class="tf-button" id="create-seed" disabled>初始化空账本</button>
+      <button class="tf-button" id="create-prepare-pending" disabled>仅保存待发送新增意图</button>
       <button class="tf-button" id="create-submit" disabled>提交固定新增午餐</button>
+      <button class="tf-button" id="create-lookup-only" disabled>仅核实新增回执</button>
       <button class="tf-button" id="create-recover" disabled>查询并恢复新增消费</button>
       <button class="tf-button" id="create-advance-head" disabled>推进分支头备注更正</button>
       <button class="tf-button" id="create-replay" disabled>重放原请求与键重排请求</button>
@@ -92,6 +99,7 @@
       <button class="tf-button" id="create-page-next" disabled>下一页明细</button>
     </div>
     <p id="create-ledger" role="status">空账本状态尚未读取</p>
+    <p id="create-pending-state" role="status">本机待发送状态尚未读取</p>
     <p id="create-page-info" role="status">明细分页尚未读取</p>
     <p id="create-status" role="status">等待新增操作</p>
   </main>

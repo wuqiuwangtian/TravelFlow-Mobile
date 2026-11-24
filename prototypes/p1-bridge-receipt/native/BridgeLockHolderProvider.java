@@ -30,9 +30,11 @@ public final class BridgeLockHolderProvider extends ContentProvider {
 
     @Override
     public synchronized Bundle call(String method, String scenario, Bundle input) {
-        if (!"lock-busy-commit".equals(scenario)
-                && !"lock-busy-rollback".equals(scenario)
-                && !"bound-int32-over".equals(scenario)) {
+        boolean patchScenario = "lock-busy-commit".equals(scenario)
+                || "lock-busy-rollback".equals(scenario)
+                || "bound-int32-over".equals(scenario);
+        boolean createScenario = "create-pending-ec07".equals(scenario);
+        if (!patchScenario && !createScenario) {
             throw new IllegalArgumentException("Unsupported lock-holder scenario: " + scenario);
         }
         Bundle result = new Bundle();
@@ -49,7 +51,22 @@ public final class BridgeLockHolderProvider extends ContentProvider {
                 // Barrier only: never returns a receipt to the caller process.
                 return result;
             }
-            if ("hold".equals(method)) {
+            if ("hold_create".equals(method) && createScenario) {
+                if (writerTask != null) {
+                    throw new IllegalStateException("Writer lock already held");
+                }
+                final File dir = BridgeCreateLedgerStore.scenarioDir(getContext().getFilesDir(), scenario);
+                final CountDownLatch heldLatch = new CountDownLatch(1);
+                releaseLatch = new CountDownLatch(1);
+                final CountDownLatch activeRelease = releaseLatch;
+                writerTask = new FutureTask<>(() -> holdCreateWriteLock(dir, heldLatch, activeRelease));
+                new Thread(writerTask, "p1-bridge-create-lock-holder").start();
+                if (!heldLatch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Writer process did not acquire create SQLite write lock in time");
+                }
+                return result;
+            }
+            if ("hold".equals(method) && patchScenario) {
                 if (writerTask != null) {
                     throw new IllegalStateException("Writer lock already held");
                 }
@@ -116,6 +133,25 @@ public final class BridgeLockHolderProvider extends ContentProvider {
             }
         }
         return commitOnRelease ? "committed" : "rolled_back";
+    }
+
+    private static String holdCreateWriteLock(
+            File dir,
+            CountDownLatch heldLatch,
+            CountDownLatch releaseLatch
+    ) throws Exception {
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            db.beginTransactionNonExclusive();
+            try {
+                heldLatch.countDown();
+                if (!releaseLatch.await(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Create writer release barrier expired");
+                }
+            } finally {
+                db.endTransaction();
+            }
+        }
+        return "released";
     }
 
     @Override

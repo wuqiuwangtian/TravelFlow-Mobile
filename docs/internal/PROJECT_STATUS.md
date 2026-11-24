@@ -711,3 +711,14 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 ## 2026-11-24 Android 待发送输入恢复任务已准备
 
 电脑 `fef2651` 已接收共同样例回执，桌面发送方实现和 Android 进程恢复可并行。移动基线 `9dec892` 的宿主检查再次确认带付款日的午餐可以在宿主本地提交，写锁期间查询返回 unknown / storage_busy。Android 既有完整意图恢复已覆盖提交应答丢失；EC07 写锁与 EC10 能力不匹配时的待发送输入能否跨应用重开保持，仍待本单实测。交接见[Android 并行任务](PRODUCT_ROADMAP.md#android-并行任务重开后保留原待发送消费)。
+
+## 2026-11-24 Android 重开后保留原待发送消费实测（EC10 与 EC07）
+
+在执行分支 `antigravity/android-pending-recovery`（起点 `131b848`）复用 `prototypes/p1-bridge-receipt/`（包名 `org.travelflow.p1bridge`，固定 Capacitor 8.6.0），扩展待发送持久记录以保存操作身份、基线、完整原始命令、规范化意图、SHA-256 摘要及区分恢复行为的 `recoveryState`／`lastError`，在隔离 TS 页面增加本机待发送状态与接收端入账事实的明确区分，并扩展 `:writer` 锁竞争提供方以覆盖 EC07 空账本写锁。
+
+在隔离 API 35 模拟器 `travelflow_p0_api35`（`emulator-5580`，x86_64，`-read-only`，SQLite `3.44.3`）运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 **16 组**通过（`passed: true`，保留原有 14 组含同键异金额与仅改共享票据许可回归，新增 EC10 与 EC07 两组）：
+
+- `create-pending-ec10`：付款日 `2026-11-23`、8635 分午餐从应用入口提交被拒（`unsupported_capability`）后 `am force-stop` 冷重开（PID `3385 -> 3481`），JS 内存哨兵已清空而原生持久记录完整还原；逐字段核对 `paid_on: "2026-11-23"`、金额 `8635`、基线 `fixture-r0`、操作键 `fixture-op-lunch` 与意图摘要 `d00945b3b59509b07e60c422dfb4cbba73dba17d5e77cd084be7eb7e4b7e064b` 保持原值；接收账本仍空（消费 0、金额 0、修订 1、回执 0、待发送 0）；页面明确显示 `本机待发送（未入账／未同步）` 而非已同步，触发恢复也不会自动删日期重发。
+- `create-pending-ec07`：可交换 8635 分午餐（意图摘要 `e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd`）依次在独立 `:writer` 进程（PID `3562`）持锁查询返回 `pending_busy` 后强停冷重开（PID `3592`）、释放锁后稳定查询返回 `not_found_at_settled_read` 后强停冷重开（PID `3691`）、以原意图重试提交在应答前终止后冷重开（PID `3781`），每步均核对 JS 内存清空、原操作键／摘要还原、接收端实际金额与回执／待发计数及页面状态；最终仅在匹配完整原意图及持久提交版本 `fixture-c26252d9-3ac9-46c0-88d3-a501fed9e1f6` 后确认，账本 1 笔 8635 分、修订 2、回执 1、待发送 1。
+
+未验证项：本次仅覆盖隔离 API 35 模拟器与可控隔离接收端，未覆盖跨设备真实网络传输、多笔待发送队列并发、真机或共享契约版本分配。
