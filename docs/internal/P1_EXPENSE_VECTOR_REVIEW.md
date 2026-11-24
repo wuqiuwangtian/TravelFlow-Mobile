@@ -70,3 +70,46 @@ node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240
 ```
 
 既有证据的独立入口为 `pnpm check:p1-desktop-create`、`pnpm check:p1-create-boundaries` 及上面 Android 命令移除 `--desktop-vectors "$v"` 后的 14 场景模式。本次复用其在 `0b43cff` 的验收结果。[原生运行环境及构建方法](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)
+
+## 独立导入 0.1.0-candidate.1
+
+来源桌面仓 `d193d31926fa37b9ec1e3de24a2668a041cfaa7a` 的 `contracts/expense-create-candidate`。移动仓在 `vendor/contracts/expense-create-candidate` 保留全部六个原文件；manifest SHA-256 为 `dea1f762a283456227a72438a139674c8b033e31e46874449333c3da7a865d46`，五项文件摘要逐一相符。状态为 candidate，共享版本为 null。移动宿主从每项 raw_json 和 channel 重新规范化，规范字符串、UTF-8 十六进制和 SHA-256 全部逐字节相符。
+
+| 输入 | 移动复算 SHA-256 |
+|---|---|
+| 午餐原命令 | `e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd` |
+| 同命令键重排 | `e85c6c0d3f9c535a4d07eb8e43e33e3daabfbcaf4f85d325eb3e4270c0e34ddd` |
+| 仅翻转共享票据许可 | `ea638c25c573ac450eb02faffae24a18cf8b5a30d0efa69ad76f9ff89e0e02e2` |
+| 同键查询 | `6eae8c5e2bbda98cd3e7dab4858f6d573f8593698ce3c9ce97ffee3f45ea8315` |
+
+将旧向量每步的 expected.desktop_raw 去除后，defaults 与整个 scenarios 数组和新包结构相等，含所有输入、步骤顺序、业务结果、状态差量与绑定。因此上方 36 行逐项回执适用于新包。本轮从新包在移动宿主临时 SQLite 及 Android API 35 原生桥各执行 EC03、07、08、10 共 17 步，并在查询成功时追加四个负例。EC03 首步仅建立已提交状态；真实中断复用原回执。EC01、02、04、05、06、09 复用 `9dec892`；Android 待发送留存及升级复用 `b870ad5`。桌面专用断言仅校验文件完整性。
+
+- **成功及重放**。两端写入均返回 accepted=true、kind=committed、effect=changed；首次 replayed=false，键重排、分支头推进后的原命令以及满额旧键均为 replayed=true。EC03 重放始终返回原 R1，宿主为 `fixture-e3045724-a382-481b-a70e-5cf68caeb7ed`，Android 为 `fixture-cd75b2f3-7dec-4056-897a-a68148585a1f`。版本、消费、回执、待发均零增量，推进后的分支头仍为 R2。与 d193d31 修订的两端映射一致。
+- **最小回执**。两端只按键查询均得到 accepted=true、state=committed，receipt 仅有 effect=changed 与 result_revision_id=R1。把本地金额改为 8636 或仅翻转共享票据许可，再用同键查询仍得到完全相同的投影；提交这两份不同意图都返回 intent_conflict 且零写入。用完整原命令重放才能以返回的原版本确认。若另有与本机操作键、规范化配置和摘要相符的完整证据，也可据此确认。Android 隔离恢复入口会另传待核实的完整规范化意图，原生端在返回最小投影前核对持久意图；该本地核对不随最小投影传给其他设备。宿主及 Android 接收回执表均保留意图，当前表结构没有独立摘要列，与 SPEC §4 第 4 条的字面存储要求有差异。
+- **映射差异**。忙锁分别为宿主 unknown/storage_busy、Android pending_busy；稳定缺失均为 not_found_at_settled_read。错误目标分别为 denied、scope_mismatch，无查询权限均为 denied。满额均为 expense_count。EC10 宿主依次为 committed、四次 baseline_conflict、currency，Android 六次均为 unsupported_capability。以上均与映射一致。EC09 四个金额用例覆盖 integer_range、type。另以当前基线及全新操作／实体分别发送未知 category 和无预算关联的 settles_budget=true：Android 两次均为 invalid_field；宿主原码分别为 **category**、**budget_link**，两者都未列入 result-mapping.json 的 outcomes.rejected_invalid_input.mobile_host.errors。四个负例均保持账本原状。建议桌面维护者补录宿主两项原码。
+- **覆盖边界**。四个摘要由移动宿主规范化实现复算；Android 另行实跑写入／查询／重放。这里验证的是隔离执行器和确认所需的证据条件。跨设备发送方收到远端最小回执后的实际恢复流程、网络和真机仍未覆盖。
+
+### 复跑导入与新增核对
+
+Bash，从移动仓根目录执行。仅首次提取比对需要能读取固定提交的桌面 Git 副本。Android 使用维护文档指定的只读 API 35 模拟器和 SDK/JDK 环境，默认从本仓构建 APK。
+
+```bash
+set -eo pipefail
+d=$(mktemp -d)
+ref=d193d31926fa37b9ec1e3de24a2668a041cfaa7a
+git -C ../TravelFlow-AI archive "$ref" contracts/expense-create-candidate | tar -x -C "$d"
+diff -r "$d/contracts/expense-create-candidate" vendor/contracts/expense-create-candidate
+node scripts/check-p1-expense-candidate.mjs
+v=vendor/contracts/expense-create-candidate/normative-vectors.json
+node scripts/check-p1-vector-gaps.mjs "$v"
+node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240 --desktop-vectors "$v"
+git -C ../TravelFlow-AI show fb7ecc0c145486e761567ffc11fdce9198cae907:backend/tests/fixtures/p1_expense_create_vectors.json > "$d/previous.json"
+python3 - "$d/previous.json" "$v" <<'PY'
+import json, sys
+old, new = [json.load(open(p, encoding="utf-8")) for p in sys.argv[1:]]
+for scenario in old["scenarios"]:
+    for step in scenario["steps"]:
+        del step["expected"]["desktop_raw"]
+assert old["defaults"] == new["defaults"] and old["scenarios"] == new["scenarios"]
+PY
+```

@@ -125,7 +125,10 @@ async function androidStore(context, defaults, count, scenario) {
 
 export async function checkVectorGaps(filename, android) {
   const bytes = readFileSync(filename);
-  assert.equal(digest(bytes), "2679ab4a3461be7b039a0686d6436640db32e4bbc1af700bd9f565a3a7e76bcb");
+  const candidate = digest(bytes) === "0c0f869ea650f5ea0e01b2e966cc3bb780ad9c10ce0618329a83bb12d309bba7";
+  if (!candidate) assert.equal(digest(bytes), "2679ab4a3461be7b039a0686d6436640db32e4bbc1af700bd9f565a3a7e76bcb");
+  const mapping = candidate ? JSON.parse(readFileSync(path.join(path.dirname(filename), "result-mapping.json"))) : null;
+  const platform = android ? "mobile_android" : "mobile_host";
   const {defaults, scenarios} = JSON.parse(bytes);
   const dirs = {EC03:"create-after-commit",EC07:"create-before-commit",EC08:"create-boundary-cap-2000",EC10:"create-boundary-fields-scope"};
   const report = [];
@@ -158,14 +161,14 @@ export async function checkVectorGaps(filename, android) {
         } else if (isQuery) {
           assert.deepEqual(raw, id === "EC07" ? {accepted:true,state:"not_found_at_settled_read"} :
             {accepted:true,state:"committed",receipt:{effect:"changed",result_revision_id:revisions.R1}});
-        } else if (step.expected.desktop_raw.ok === false && !(id === "EC10" && !android && step.name === "non_null_paid_on")) {
+        } else if (step.expected.business_outcome.startsWith("rejected_") && !(id === "EC10" && !android && step.name === "non_null_paid_on")) {
           const error = id === "EC08" ? "expense_count" : android ? "unsupported_capability" :
             step.name === "unsupported_currency_usd" ? "currency" : "baseline_conflict";
           assert.deepEqual(raw,{accepted:false,error},step.name);
         } else {
-          const replayed = step.expected.desktop_raw.replayed ?? false;
+          const replayed = step.expected.business_outcome === "replayed_committed";
           assert.deepEqual(raw,{accepted:true,kind:"committed",replayed,effect:"changed",
-            result_revision_id:revisions[step.expected.desktop_raw.result_revision_var] ?? after.head});
+            result_revision_id:replayed ? revisions.R1 : after.head});
         }
         if (!isQuery && raw.accepted && !raw.replayed) {
           assert.notEqual(after.head,before.head);
@@ -185,7 +188,47 @@ export async function checkVectorGaps(filename, android) {
         if (!(id === "EC10" && !android && step.name === "non_null_paid_on")) {
           assert.deepEqual(delta,step.expected.state_delta);
         }
-        report.push({id,step:step.name,setup_only:!!step.fault,input_sha256:inputHash,raw,delta});
+        const probes = {};
+        if (candidate) {
+          const outcome = step.expected.business_outcome;
+          const entry = mapping.outcomes[outcome][platform];
+          if (id === "EC10" && !android) {
+            assert.equal(raw.error ?? raw.kind, entry.observed_9dec892[step.name]);
+          } else if (outcome === "lookup_committed") {
+            assert.equal(raw.state, entry.state);
+            assert.deepEqual(Object.keys(raw.receipt).sort(), entry.minimal_receipt_projection.toSorted());
+            assert.equal(raw.receipt.effect, entry.effect);
+            assert.equal(Object.hasOwn(raw.receipt, "intent_sha256"), entry.includes_intent_sha256);
+            assert.equal(mapping.confirmation_rule.minimal_receipt_sufficient_for_intent_confirmation, false);
+            // Same lookup key and projection, two different local intents. Only the original may replay.
+            for (const patch of [{ amount_cents: 8636 }, { allow_shared_receipts: true }]) {
+              const other = structuredClone(defaults.base_command);
+              Object.assign(other.payload, patch);
+              assert.deepEqual(await store.query(defaults.base_receipt_query), raw);
+              const rejected = await store.execute(other);
+              assert.deepEqual(rejected, { accepted: false, error: "intent_conflict" });
+              probes[Object.keys(patch)[0]] = rejected;
+              assert.deepEqual(await store.inspect(), after);
+            }
+            // Check the invalid-field mapping on fresh keys and the current baseline.
+            for (const [field, value, hostError] of [
+              ["category", "unknown", "category"], ["settles_budget", true, "budget_link"],
+            ]) {
+              const invalid = structuredClone(defaults.base_command);
+              invalid.operation.operation_id = "fixture-op-invalid";
+              invalid.target.entity_id = "fixture-invalid";
+              invalid.expected_revision_id = after.head;
+              invalid.payload[field] = value;
+              const rejected = await store.execute(invalid);
+              assert.deepEqual(rejected, { accepted: false, error: android ? "invalid_field" : hostError });
+              probes[field] = rejected;
+              assert.deepEqual(await store.inspect(), after);
+            }
+          } else if (!step.fault) {
+            for (const [key, value] of Object.entries(entry)) assert.deepEqual(raw[key], value, step.name);
+          }
+        }
+        report.push({id,step:step.name,setup_only:!!step.fault,input_sha256:inputHash,raw,delta,...(Object.keys(probes).length ? {probes} : {})});
       }
     } finally { store.close(); }
   }
