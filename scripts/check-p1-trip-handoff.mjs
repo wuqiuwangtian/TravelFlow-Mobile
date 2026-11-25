@@ -12,11 +12,13 @@ import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, 
 
 
 const { values } = parseArgs({ options: {
-  "patch": { type: "boolean" }, "roundtrip": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
+  "confirm-outbound": { type: "boolean" }, "patch": { type: "boolean" }, "roundtrip": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
   serial: { type: "string" }, "cdp-port": { type: "string", default: "19241" },
 } });
 assert.ok(!(values.patch && values.roundtrip), "Select one handoff mode");
-const ref = values.roundtrip ? "5ef28acbbbee10d0bd9527b7c2deb043e1930230" : values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
+const confirmOutbound = values["confirm-outbound"];
+assert.ok(!confirmOutbound || values.roundtrip, "--confirm-outbound requires --roundtrip");
+const ref = confirmOutbound ? "f5f8a982c350b60794439b563f5d8f3af5cd048a" : values.roundtrip ? "5ef28acbbbee10d0bd9527b7c2deb043e1930230" : values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
 const serial = values.serial;
 assert.equal(serial, "emulator-5580");
 const port = Number(values["cdp-port"]);
@@ -69,7 +71,7 @@ try {
   if (values.patch || values.roundtrip) {
     const previous = path.join(work, "mobile-before-upgrade");
     mkdirSync(previous);
-    execFileSync("git", ["archive", "-o", archive, values.roundtrip ? "f944d014362ededc2624f6d49f4ad5c7835a2649" : "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
+    execFileSync("git", ["archive", "-o", archive, confirmOutbound ? "641fd852c54a9dee545bbdeeb86ad6651464e0c7" : values.roundtrip ? "f944d014362ededc2624f6d49f4ad5c7835a2649" : "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
     execFileSync("tar", ["-xf", archive, "-C", previous]);
     symlinkSync(path.resolve("node_modules"), path.join(previous, "node_modules"));
     built = buildApk(contextPath, previous);
@@ -171,7 +173,21 @@ try {
     const queue = desktopCall("queue");
     assert.deepEqual([queue.expected_revision_id, queue.source_revision_id, queue.delivery_state, queue.entity_id, queue.branch_id],
       [revision, editedRevision, "unsent", cmd.target.entity_id, ctx.branch_id]);
-    const patchBytes = Buffer.from(queue.bytes_base64, "base64");
+    const databaseArgs = ["--database", ctx.database];
+    const status = () => cli(["outbound-status", ...databaseArgs]);
+    let patchBytes = Buffer.from(queue.bytes_base64, "base64");
+    let lookupText;
+    if (confirmOutbound) {
+      const commandFile = path.join(work, "outbound-command.json");
+      const queryFile = path.join(work, "outbound-query.json");
+      const prepared = cli(["prepare-outbound", ...databaseArgs, "--operation-id", queue.operation_id,
+        "--command-out", commandFile, "--query-out", queryFile]);
+      assert.equal(prepared.record.delivery_state, "verification_pending");
+      const emitted = readFileSync(commandFile);
+      assert.deepEqual(emitted, patchBytes);
+      patchBytes = emitted;
+      lookupText = readFileSync(queryFile, "utf8");
+    }
     const patchText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(patchBytes);
     assert.deepEqual(Buffer.from(patchText), patchBytes);
     const canonical = fingerprintPatchCandidate(patchBytes, "control");
@@ -186,13 +202,20 @@ try {
     await restart();
     const savedReceipt = JSON.parse(sql("SELECT receipt_json FROM received_patches"));
     const savedDump = sql(".dump");
-    const retryQueue = desktopCall("queue");
-    assert.deepEqual(retryQueue, queue);
-    const retry = await phone(delivery);
-    assert.deepEqual(retry, { ok: true, state: "committed", replayed: true, receipt: savedReceipt });
     const query = { profile: "p1-host-query-1", kind: "receipt.lookup", operation: patch.operation };
-    assert.deepEqual(await phone(`receiveDesktopCommand(${JSON.stringify(JSON.stringify(query))})`),
-      { ok: true, state: "committed", receipt: savedReceipt });
+    if (confirmOutbound) {
+      const pending = status();
+      assert.deepEqual([pending.pending_count, pending.confirmed_count], [1, 0]);
+      const row = pending.pending[0];
+      assert.deepEqual([row.delivery_state, row.operation_id, row.confirmed_mobile_revision_id, row.raw_command_json],
+        ["verification_pending", queue.operation_id, null, patchText]);
+      assert.deepEqual(JSON.parse(lookupText), query);
+    } else {
+      assert.deepEqual(desktopCall("queue"), queue);
+      assert.deepEqual(await phone(delivery), { ok: true, state: "committed", replayed: true, receipt: savedReceipt });
+    }
+    const lookupResponse = await phone(`receiveDesktopCommand(${JSON.stringify(lookupText ?? JSON.stringify(query))})`);
+    assert.deepEqual(lookupResponse, { ok: true, state: "committed", receipt: savedReceipt });
     const end = await phone("inspect()");
     assert.deepEqual(end.expenses, [{ ...local.expenses[0], amount_cents: 2150 }]);
     assert.equal(end.totalCents, 2150);
@@ -214,11 +237,41 @@ try {
     const finalFork = inspectFork();
     assert.deepEqual(finalFork.head_expenses, originalFork.head_expenses);
     assert.equal(finalFork.head_paid_cents, originalFork.head_paid_cents);
-    assert.deepEqual(desktopCall("queue"), queue);
+    let deliveryState = queue.delivery_state;
+    if (confirmOutbound) {
+      const confirm = () => cli(["confirm-outbound", ...databaseArgs, "--operation-id", queue.operation_id,
+        "--input", "-"], Buffer.from(JSON.stringify(lookupResponse)));
+      const first = confirm();
+      assert.deepEqual([first.ok, first.confirmed, first.already_confirmed], [true, true, false]);
+      const confirmed = status(); // cli starts a new desktop process for every read.
+      assert.deepEqual([confirmed.pending_count, confirmed.confirmed_count, confirmed.all.length], [0, 1, 1]);
+      const row = confirmed.confirmed[0];
+      const mobileHead = sql("SELECT head_revision_id FROM branch_head");
+      assert.equal(mobileHead, savedReceipt.result_revision_id);
+      assert.deepEqual([row.operation_id, row.delivery_state, row.confirmed_mobile_revision_id, row.confirmed_effect],
+        [queue.operation_id, "confirmed", mobileHead, "changed"]);
+      assert.deepEqual(JSON.parse(row.last_raw_response_json), lookupResponse);
+      const afterFirst = inspect();
+      assert.deepEqual(afterFirst.version_ids, finalTrip.version_ids);
+      assert.deepEqual(afterFirst.receipts, finalTrip.receipts);
+      assert.deepEqual(afterFirst.head_expenses, finalTrip.head_expenses);
+      assert.equal(afterFirst.head_paid_cents, finalTrip.head_paid_cents);
+      const again = confirm();
+      assert.deepEqual([again.ok, again.confirmed, again.already_confirmed], [true, true, true]);
+      assert.deepEqual(status(), confirmed);
+      assert.deepEqual(inspect(), afterFirst);
+      assert.equal(sql(".dump"), savedDump);
+      deliveryState = row.delivery_state;
+      console.log(JSON.stringify({ pending: confirmed.pending_count, confirmed: confirmed.confirmed_count,
+        mobileHead, alreadyConfirmed: again.already_confirmed, desktopVersions: finalTrip.version_ids.length,
+        desktopReceipts: finalTrip.receipts.length, mobileVersions: end.revisionCount, mobileLocalReceipts: end.receiptCount }));
+    } else {
+      assert.deepEqual(desktopCall("queue"), queue);
+    }
     console.log(JSON.stringify({ originalDesktopRevision: revision, editedRevision, entity: queue.entity_id,
       rawLength: patchBytes.length, rawSha256: createHash("sha256").update(patchBytes).digest("hex"),
       savedReceipt, mobilePaidCents: end.totalCents, desktopPaidCents: finalTrip.head_paid_cents,
-      fork: finalTrip.fork, forkPaidCents: finalFork.head_paid_cents, queueCount: 1, deliveryState: queue.delivery_state,
+      fork: finalTrip.fork, forkPaidCents: finalFork.head_paid_cents, queueCount: 1, deliveryState,
       receivedPatchCount: 1 }, null, 2));
   }
   if (values.patch) {

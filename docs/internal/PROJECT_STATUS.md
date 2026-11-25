@@ -877,3 +877,11 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 | 桌面待发队列 | 全库 1 条，状态 `unsent`，原字节与版本对保持一致。此次直接投递及查回执均未向桌面写入发送确认 |
 
 复跑见 [MAINTAINING](MAINTAINING.md#同一隔离旅行的消费往返)。
+
+### 桌面持久确认实读
+
+移动 `641fd852c54a9dee545bbdeeb86ad6651464e0c7`、桌面 `f5f8a982c350b60794439b563f5d8f3af5cd048a` 在同一隔离旅行实测。桌面 `prepare-outbound` 输出的 414 字节与库中待发原文一致，SHA-256 为 `583af1f8391684d04e1766001c97080e0f2c0258937ac7a51468ea916bb7a9f8`。API 35 Android 提交成功，首次回包丢弃。强停重开手机后，新桌面进程读到该操作仍为 `verification_pending`，待发 1、已确认 0、手机版本为空。
+
+使用 prepare 输出的独立查询取得 Android 完整回执，交给 `confirm-outbound`。新进程运行 `outbound-status` 读得待发 0、已确认 1；操作 `op-desktop-patch-65d8b5ba19bf` 的持久手机版本 `local-rev-3048e998-ffa8-44e3-8052-314f829cbe29` 与 Android SQLite 分支头、接收回执三者一致。桌面持久保存的响应与查询响应完整相等，手机保存的桌面版本为 `fc1dc7f1f5aa`。
+
+用同一查询响应重复确认返回 `already_confirmed=true`。再次读取，桌面主分支实付 10785 分、5 个版本、1 份新增消费接收回执；手机实付 2150 分、3 个版本、1 份本地新增回执、1 份更正接收回执。两次确认后的桌面队列及账本读取结果相同，Android 全库逻辑导出逐字节相同。原分叉仍为 `ce99e5ec7352`、0 笔、0 分。复跑见 [MAINTAINING](MAINTAINING.md#桌面通过-android-查询回执确认待发更正)。

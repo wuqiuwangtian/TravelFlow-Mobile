@@ -620,3 +620,14 @@ node scripts/check-p1-trip-handoff.mjs --roundtrip --serial emulator-5580 \
 ```
 
 脚本从移动 `f944d01` 构建 APK，通过桌面 `5ef28ac` 的实际消费 PUT 路由先原样保存再更正。从重新打开的桌面 SQLite 读取原字节，经本地桥交给 Android，首次回执在桥调用处丢弃。手机冷重开，重投及查询之后再读桌面队列。本模式验证原字节投递和回执读取；桌面队列状态按库中实值记录。
+
+### 桌面通过 Android 查询回执确认待发更正
+
+沿用上一节的隔离 API 35 环境，在移动仓根目录执行：
+
+```sh
+node scripts/check-p1-trip-handoff.mjs --roundtrip --confirm-outbound --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python
+```
+
+此模式固定移动 APK `641fd85` 和桌面 `f5f8a98`。从 `prepare-outbound` 的输出文件取更正原文与独立查询，校验更正字节与 SQLite 原文一致。首次成功回包丢弃，手机强停重开，桌面另起进程读队列。随后只投递查询，把 Android 返回的完整响应经标准输入交给 `confirm-outbound`。每次确认后均以新进程运行 `outbound-status`，核对持久记录与手机版本，最后比较重复确认前后的桌面账本和手机库逻辑导出。
