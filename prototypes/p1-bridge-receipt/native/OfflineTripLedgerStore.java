@@ -742,6 +742,19 @@ final class OfflineTripLedgerStore {
         return ok;
     }
 
+    static byte[] deliveryBytes(File dir, String operationId, boolean lookup) throws Exception {
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false);
+             Cursor row = db.rawQuery("SELECT dataset_id,source_device_id,operation_id,CAST(raw_command_json AS BLOB) "
+                     + "FROM outbox WHERE operation_id=?", new String[]{operationId})) {
+            if (row.getCount() != 1 || !row.moveToFirst()) throw new IllegalArgumentException("Missing or ambiguous operation");
+            if (!lookup) return row.getBlob(3);
+            JSONObject operation = new JSONObject().put("dataset_id", row.getString(0))
+                    .put("source_device_id", row.getString(1)).put("operation_id", row.getString(2));
+            return new JSONObject().put("profile", "p1-host-query-1").put("kind", "receipt.lookup")
+                    .put("operation", operation).toString().getBytes(StandardCharsets.UTF_8);
+        }
+    }
+
     static JSObject confirmDelivery(File dir, String operationId, JSONObject response) throws Exception {
         JSONObject receipt = response.optJSONObject("receipt");
         if (!Boolean.TRUE.equals(response.opt("ok")) || !"committed".equals(response.opt("state"))

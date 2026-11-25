@@ -1794,7 +1794,31 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
     badge.textContent = item.delivery_state === "confirmed" ? "桌面已确认" : "已在本机保存，待发送";
 
     subRow.append(detailSpan, badge);
-    li.append(topRow, subRow);
+    const actions = document.createElement("div");
+    actions.className = "trip-actions";
+    for (const lookup of [false, true]) {
+      const button = document.createElement("button");
+      button.className = "tf-button";
+      button.id = (lookup ? "trip-query-" : "trip-send-") + item.operation_id;
+      button.textContent = lookup ? "查询桌面回执" : item.delivery_state === "confirmed" ? "重投原文" : "发送到桌面";
+      button.onclick = async () => {
+        tripSyncStatusEl.textContent = lookup ? "正在查询桌面回执…" : "正在发送已保存的原文…";
+        for (const control of actions.querySelectorAll("button")) control.disabled = true;
+        try {
+          const result = await pairing.exchangeExpense({ operationId: item.operation_id, lookup });
+          renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+          tripSyncStatusEl.textContent += " · " + (lookup ? "查询确认" : result.replayed ? "原回执重放" : "投递确认") + " " + result.revision;
+        } catch (error) {
+          const code = (error as {code?: string}).code ?? "exchange_failed";
+          tripSyncStatusEl.textContent = code === "delivery_unconfirmed" ? "未收到桌面回包，请查询回执 (delivery_unconfirmed)"
+            : "未取得本次确认 (" + code + ")";
+        } finally {
+          for (const control of actions.querySelectorAll("button")) control.disabled = false;
+        }
+      };
+      actions.append(button);
+    }
+    li.append(topRow, subRow, actions);
     tripExpenseListEl.appendChild(li);
   }
 }
@@ -1987,6 +2011,7 @@ void init();
 const pairing = registerPlugin<{
   begin(data: { display: string }): Promise<{ sas: string }>;
   confirm(): Promise<void>;
+  exchangeExpense(data: { operationId: string; lookup: boolean }): Promise<{ revision: string; replayed: boolean }>;
   readTrip(): Promise<{ trip: { title: string; travel_id: string; sample_expense_amount_cents: number } }>;
 }>("DesktopPairing");
 const displayInfo = document.querySelector<HTMLInputElement>("#pair-display")!;

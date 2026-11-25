@@ -60,6 +60,10 @@ public class DesktopPairingPlugin extends Plugin {
     }
 
     private static JSONObject request(JSONObject peer, String route, JSONObject body, boolean authenticated) throws Exception {
+        return requestBytes(peer, route, body == null ? null : body.toString().getBytes(StandardCharsets.UTF_8), authenticated);
+    }
+
+    private static JSONObject requestBytes(JSONObject peer, String route, byte[] body, boolean authenticated) throws Exception {
         String pin = peer.getString("pin");
         X509TrustManager trust = new X509TrustManager() {
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
@@ -93,7 +97,8 @@ public class DesktopPairingPlugin extends Plugin {
                 conn.setRequestMethod("POST");
                 conn.setDoOutput(true);
                 conn.setRequestProperty("Content-Type", "application/json");
-                try (OutputStream out = conn.getOutputStream()) { out.write(body.toString().getBytes(StandardCharsets.UTF_8)); }
+                conn.setFixedLengthStreamingMode(body.length);
+                try (OutputStream out = conn.getOutputStream()) { out.write(body); }
             }
             int status = conn.getResponseCode();
             try (InputStream stream = status >= 400 ? conn.getErrorStream() : conn.getInputStream()) {
@@ -219,6 +224,33 @@ public class DesktopPairingPlugin extends Plugin {
             return result;
         });
     }
+    @PluginMethod public void exchangeExpense(PluginCall call) {
+        execute(call, () -> {
+            File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+            String op = call.getString("operationId", "");
+            boolean lookup = call.getBoolean("lookup", false);
+            byte[] payload = OfflineTripLedgerStore.deliveryBytes(dir, op, lookup);
+            JSONObject peer = saved();
+            JSONObject reply;
+            try {
+                reply = requestBytes(peer, lookup ? "/exchange/receipt-lookup" : "/exchange/expense-create", payload, true);
+            } catch (javax.net.ssl.SSLException e) {
+                throw e;
+            } catch (IOException e) {
+                throw new Failure("delivery_unconfirmed");
+            }
+            if (lookup && "not_found_at_settled_read".equals(reply.optString("state"))) {
+                throw new Failure("receipt_not_found");
+            }
+            if (!OfflineTripLedgerStore.confirmDelivery(dir, op, reply).getBoolean("accepted"))
+                throw new Failure("receipt_mismatch");
+            JSObject result = new JSObject();
+            result.put("revision", reply.getJSONObject("receipt").getString("result_revision_id"));
+            result.put("replayed", reply.optBoolean("replayed", false));
+            return result;
+        });
+    }
+
     @Override protected void handleOnDestroy() {
         worker.shutdownNow();
         super.handleOnDestroy();
