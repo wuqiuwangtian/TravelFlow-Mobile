@@ -609,3 +609,14 @@ node scripts/check-p1-trip-handoff.mjs --patch --serial emulator-5580 \
 ```
 
 该模式固定桌面 `cfc7a1cfafc02119aaa15242da9dd48458d059aa` 和移动旧版 `5d34b2d`。先用旧 APK 在虚构旅行记账并接收桌面确认，再覆盖安装当前 APK，按第二候选投递更正。脚本读取 SQLite 金额、分支头及回执，强停重开并比较重放结果。失败注入和同实体本地待发编辑样例仅写入此次新建的隔离应用库。末尾 JSON 记录版本、摘要和金额。设备配对及实际网络传输另验。
+
+### 同一隔离旅行的消费往返
+
+在上述 API 35 环境运行：
+
+```sh
+node scripts/check-p1-trip-handoff.mjs --roundtrip --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python
+```
+
+脚本从移动 `f944d01` 构建 APK，通过桌面 `5ef28ac` 的实际消费 PUT 路由先原样保存再更正。从重新打开的桌面 SQLite 读取原字节，经本地桥交给 Android，首次回执在桥调用处丢弃。手机冷重开，重投及查询之后再读桌面队列。本模式验证原字节投递和回执读取；桌面队列状态按库中实值记录。

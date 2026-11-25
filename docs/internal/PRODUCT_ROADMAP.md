@@ -72,4 +72,4 @@ Android 单笔待发送恢复的集成回执见 [PROJECT_STATUS](PROJECT_STATUS.
 
 手机正常记账入口及单笔跨仓隔离投递已验收。以桌面固定提交 `aeb4a3e` 的 init-trip 上下文起步，手机离线保存后使用同一份持久原字节完成丢回包重投，两端重开均可核对桌面确认版本与实付。复跑入口见 [MAINTAINING](MAINTAINING.md#android-离线账本与桌面隔离旅行投递)。跨端连续多笔的基线衔接与实际设备间传输仍待后续验证。
 
-反向单笔 CNY 金额更正已完成 Android SQLite 隔离验收，含旧库恢复桌面基线、冷重启、回执重放和同分支待发冲突保护。详见 [PROJECT_STATUS](PROJECT_STATUS.md#android-sqlite-接收更正实测)。实际桌面编辑生成更正命令并与手机交换仍待跨仓联调。
+反向单笔 CNY 金额更正已完成 Android SQLite 隔离验收，含旧库恢复桌面基线、冷重启、回执重放和同分支待发冲突保护。详见 [PROJECT_STATUS](PROJECT_STATUS.md#android-sqlite-接收更正实测)。桌面正常更正、持久原字节回投 Android、丢回包重投及查询已在同一旅行通过联调，详见 [往返实读](PROJECT_STATUS.md#同一隔离旅行单笔消费往返实读)。桌面按手机回执确认出队仍待接入。

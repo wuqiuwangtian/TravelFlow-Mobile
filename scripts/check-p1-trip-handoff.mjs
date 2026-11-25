@@ -12,10 +12,11 @@ import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, 
 
 
 const { values } = parseArgs({ options: {
-  "patch": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
+  "patch": { type: "boolean" }, "roundtrip": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
   serial: { type: "string" }, "cdp-port": { type: "string", default: "19241" },
 } });
-const ref = values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
+assert.ok(!(values.patch && values.roundtrip), "Select one handoff mode");
+const ref = values.roundtrip ? "5ef28acbbbee10d0bd9527b7c2deb043e1930230" : values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
 const serial = values.serial;
 assert.equal(serial, "emulator-5580");
 const port = Number(values["cdp-port"]);
@@ -63,14 +64,16 @@ try {
     "--fork-branch-id", ctx.fork_branch_id]);
   const before = inspect();
   assert.equal(before.head_revision_id, ctx.current_revision_id);
-  if (values.patch) {
+  const inspectFork = () => cli(["inspect-trip", "--database", ctx.database, "--branch-id", ctx.fork_branch_id]);
+  const originalFork = values.roundtrip ? inspectFork() : null;
+  if (values.patch || values.roundtrip) {
     const previous = path.join(work, "mobile-before-upgrade");
     mkdirSync(previous);
-    execFileSync("git", ["archive", "-o", archive, "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
+    execFileSync("git", ["archive", "-o", archive, values.roundtrip ? "f944d014362ededc2624f6d49f4ad5c7835a2649" : "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
     execFileSync("tar", ["-xf", archive, "-C", previous]);
     symlinkSync(path.resolve("node_modules"), path.join(previous, "node_modules"));
     built = buildApk(contextPath, previous);
-    upgraded = buildApk(contextPath);
+    if (values.patch) upgraded = buildApk(contextPath);
   } else {
     built = buildApk(contextPath);
   }
@@ -159,6 +162,65 @@ try {
     desktopHead: after.head_revision_id, phonePaidCents: local.totalCents, desktopPaidBefore: before.head_paid_cents,
     desktopPaidAfter: after.head_paid_cents, expensesBefore: before.head_expenses.length, expensesAfter: after.head_expenses.length,
     pendingAfter: local.outboxCount, forkUnchanged: true }, null, 2));
+  if (values.roundtrip) {
+    const helper = path.resolve("scripts/p1-roundtrip-desktop.py");
+    const desktopCall = (action, ...args) => JSON.parse(execFileSync(python, [helper, action, ctx.database, ...args],
+      { cwd: desktop, timeout: 120000 }));
+    const editedRevision = desktopCall("edit", revision, cmd.target.entity_id, ctx.branch_id);
+    assert.notEqual(editedRevision, revision);
+    const queue = desktopCall("queue");
+    assert.deepEqual([queue.expected_revision_id, queue.source_revision_id, queue.delivery_state, queue.entity_id, queue.branch_id],
+      [revision, editedRevision, "unsent", cmd.target.entity_id, ctx.branch_id]);
+    const patchBytes = Buffer.from(queue.bytes_base64, "base64");
+    const patchText = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(patchBytes);
+    assert.deepEqual(Buffer.from(patchText), patchBytes);
+    const canonical = fingerprintPatchCandidate(patchBytes, "control");
+    assert.equal(canonical.sha256, queue.intent_sha256);
+    const patch = JSON.parse(patchText);
+    assert.deepEqual(patch.target, cmd.target);
+    assert.deepEqual(patch.patch, { amount_cents: 2150 });
+    assert.equal(patch.operation.operation_id, queue.operation_id);
+    // Pass the persisted string verbatim through the bridge. Drop the first receipt inside the WebView.
+    const delivery = `receiveDesktopCommand(${JSON.stringify(patchText)})`;
+    assert.equal(await phone(delivery + ".then(r => r.ok && !r.replayed && r.state === 'committed')"), true);
+    await restart();
+    const savedReceipt = JSON.parse(sql("SELECT receipt_json FROM received_patches"));
+    const savedDump = sql(".dump");
+    const retryQueue = desktopCall("queue");
+    assert.deepEqual(retryQueue, queue);
+    const retry = await phone(delivery);
+    assert.deepEqual(retry, { ok: true, state: "committed", replayed: true, receipt: savedReceipt });
+    const query = { profile: "p1-host-query-1", kind: "receipt.lookup", operation: patch.operation };
+    assert.deepEqual(await phone(`receiveDesktopCommand(${JSON.stringify(JSON.stringify(query))})`),
+      { ok: true, state: "committed", receipt: savedReceipt });
+    const end = await phone("inspect()");
+    assert.deepEqual(end.expenses, [{ ...local.expenses[0], amount_cents: 2150 }]);
+    assert.equal(end.totalCents, 2150);
+    assert.equal(end.outboxCount, 0);
+    assert.equal(sql("SELECT count(*) FROM received_patches"), "1");
+    assert.equal(end.revisionCount, local.revisionCount + 1);
+    assert.deepEqual(end.revisions.slice(0, -1), local.revisions);
+    assert.equal(sql(".dump"), savedDump);
+    assert.deepEqual(savedReceipt.operation, patch.operation);
+    assert.deepEqual([savedReceipt.effect, savedReceipt.intent_sha256, savedReceipt.entity_id,
+      savedReceipt.result_revision_id, savedReceipt.synced_desktop_revision_id, end.syncedDesktopRevisionId],
+      ["changed", canonical.sha256, queue.entity_id, end.headRevisionId, editedRevision, editedRevision]);
+    const finalTrip = inspect();
+    assert.deepEqual(finalTrip.version_ids, [...after.version_ids, editedRevision]);
+    assert.equal(finalTrip.head_revision_id, editedRevision);
+    assert.deepEqual(finalTrip.head_expenses, [...before.head_expenses, { ...after.head_expenses.at(-1), amount_cents: 2150 }]);
+    assert.equal(finalTrip.head_paid_cents, before.head_paid_cents + 2150);
+    assert.deepEqual(finalTrip.fork, before.fork);
+    const finalFork = inspectFork();
+    assert.deepEqual(finalFork.head_expenses, originalFork.head_expenses);
+    assert.equal(finalFork.head_paid_cents, originalFork.head_paid_cents);
+    assert.deepEqual(desktopCall("queue"), queue);
+    console.log(JSON.stringify({ originalDesktopRevision: revision, editedRevision, entity: queue.entity_id,
+      rawLength: patchBytes.length, rawSha256: createHash("sha256").update(patchBytes).digest("hex"),
+      savedReceipt, mobilePaidCents: end.totalCents, desktopPaidCents: finalTrip.head_paid_cents,
+      fork: finalTrip.fork, forkPaidCents: finalFork.head_paid_cents, queueCount: 1, deliveryState: queue.delivery_state,
+      receivedPatchCount: 1 }, null, 2));
+  }
   if (values.patch) {
     session.cdp.close();
     adb(serial, ["install", "-r", "-t", upgraded.apk]);
