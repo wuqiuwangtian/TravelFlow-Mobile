@@ -848,3 +848,7 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 **差异和覆盖边界**。冲突诊断字段在 SPEC §4 写作 `pending_operation_id`，固定桌面参考实现返回 `blocking_operation_id` 和 `blocking_entity_id`。EP04/05 断言涵盖阻塞与保留结果，未约束该返回字段名；移动宿主按 SPEC 返回 `pending_operation_id`。两端应在冻结前统一字段名并补入样例。移动旧控制信封使用 `payload`，候选另含顶层 `patch` 与 `source_revision_id`，本次仅由隔离评审代码解析。
 
 **Android**。复用 `f196725` 的 API 35 实测，仅证明新增消费确认后，重启可从 SQLite 读回桌面版本 `576d3d5797a3`。当前版本存在已确认的 outbox 行上。按分支推进更正后的桌面版本、持久接收回执和本地待发冲突保护，本轮仅有宿主证据。Android 更正业务入口仍待双方对齐。
+
+### 更正第二候选增量复核
+
+桌面固定提交 `cfc7a1cfafc02119aaa15242da9dd48458d059aa` 的 `expense-patch-candidate.2` 已导入移动仓。宿主复跑 `node scripts/check-p1-patch-candidate.mjs`，四组摘要一致，10 组 21 步通过。EP04、EP05 的完整拒绝响应均与各自的 `expected.response` 相等，只有 `ok: false`、`error: "local_pending_conflict"` 和 `pending_operation_id`。该 ID 分别指向本地操作 `op-mobile-local-edit-1`、`op-mobile-other-2`。拒绝前后持久文件字节相同，待发原文、本地版本、已确认桌面版本均保留，远端回执数仍为零。第一候选的冲突诊断字段差异已消除。本轮覆盖宿主候选检查。

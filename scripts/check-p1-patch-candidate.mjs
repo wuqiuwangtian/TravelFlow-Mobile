@@ -8,7 +8,7 @@ import { fingerprintPatchCandidate } from "../prototypes/p1-canonical/intent.mjs
 import { BoundaryError } from "../prototypes/p1-boundary/input.mjs";
 import "./check-contracts.mjs";
 
-const bundle = new URL("../vendor/contracts/expense-patch-candidate/", import.meta.url);
+const bundle = new URL("../vendor/contracts/expense-patch-candidate.2/", import.meta.url);
 const json = name => JSON.parse(readFileSync(new URL(name, bundle)));
 const { cases } = json("canonical-digests.json");
 assert.equal(cases.length, 4);
@@ -99,7 +99,7 @@ try {
       pending: scenario.initial_pending, receipts: [] });
     const bindings = new Map();
     for (const step of scenario.steps) {
-      const { business_outcome: outcome, ...expected } = step.expected;
+      const { business_outcome: outcome, response, ...expected } = step.expected;
       const before = load();
       const diskBefore = readFileSync(stateFile);
       const query = step.action === "lookup";
@@ -108,6 +108,7 @@ try {
       const result = receive(raw, channel, step.scope_override ?? {});
       const after = load();
       const spec = mapping[outcome].desktop_reference;
+      if (response !== undefined) assert.deepEqual(result, response, step.name + "/response");
       assert.equal(result.ok, spec.ok, step.name);
       for (const key of ["error", "state", "replayed", "receipt"]) {
         if (Object.hasOwn(spec, key)) assert.deepEqual(result[key], spec[key], step.name);

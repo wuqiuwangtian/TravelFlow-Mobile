@@ -68,3 +68,5 @@ console.log("Frozen expense-create 0.1.0 snapshot and candidate equivalence chec
 
 // Reverse-delivery review package at desktop ebf1c2fcdd90a48ee2da90ed75d8af85fc3ad7eb.
 verifyExpenseSnapshot("expense-patch-candidate", "26634e1ebe54b44803361af707eee6d68fca7420f8eb89f1bdba967cf6795cdc");
+// Second candidate at desktop cfc7a1cfafc02119aaa15242da9dd48458d059aa.
+verifyExpenseSnapshot("expense-patch-candidate.2", "99168dc8137e38e7c654b7571f833ad5df7627a1ef14312e46ee68f7a2c319e0");
