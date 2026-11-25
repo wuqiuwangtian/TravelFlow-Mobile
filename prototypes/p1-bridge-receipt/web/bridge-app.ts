@@ -336,6 +336,7 @@ interface P1BridgeReceiptPlugin {
     canonicalIntentJson: string;
   }): Promise<OfflineTripSaveResult>;
   confirmOfflineDelivery(options: { operationId: string; response: unknown }): Promise<{ accepted: boolean }>;
+  receiveDesktopCommand(options: { raw: string }): Promise<unknown>;
   inspectOfflineTripLedger(): Promise<OfflineTripLedgerState>;
   exportOfflineOutboxCommands(): Promise<OfflineOutboxExportResult>;
 }
@@ -366,6 +367,7 @@ interface OfflineTripOutboxItem {
 }
 
 interface OfflineTripLedgerState {
+  syncedDesktopRevisionId?: string | null;
   initialized: boolean;
   callerPid: number;
   datasetId?: string;
@@ -1908,6 +1910,11 @@ tripEntrySaveBtn.addEventListener("click", () => {
     const state = await bridge.inspectOfflineTripLedger();
     renderOfflineTripLedger(state);
     return state;
+  },
+  receiveDesktopCommand: async (raw: string) => {
+    const result = await bridge.receiveDesktopCommand({ raw });
+    renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+    return result;
   },
   confirmDelivery: async (operationId: string, response: unknown) => {
     const result = await bridge.confirmOfflineDelivery({ operationId, response });

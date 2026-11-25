@@ -852,3 +852,12 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 ### 更正第二候选增量复核
 
 桌面固定提交 `cfc7a1cfafc02119aaa15242da9dd48458d059aa` 的 `expense-patch-candidate.2` 已导入移动仓。宿主复跑 `node scripts/check-p1-patch-candidate.mjs`，四组摘要一致，10 组 21 步通过。EP04、EP05 的完整拒绝响应均与各自的 `expected.response` 相等，只有 `ok: false`、`error: "local_pending_conflict"` 和 `pending_operation_id`。该 ID 分别指向本地操作 `op-mobile-local-edit-1`、`op-mobile-other-2`。拒绝前后持久文件字节相同，待发原文、本地版本、已确认桌面版本均保留，远端回执数仍为零。第一候选的冲突诊断字段差异已消除。本轮覆盖宿主候选检查。
+
+### Android SQLite 接收更正实测
+
+在指定 API 35 模拟器上安装移动 `5d34b2d` 旧 APK，从记账页面保存 1723 分，用桌面 `cfc7a1cfafc02119aaa15242da9dd48458d059aa` 的隔离入口确认，再覆盖安装当前 APK。旧库中已确认的 outbox 行恢复出分支桌面版本 `6aa3de701d04`。以旧手机本地版本发起更正返回 `baseline_conflict`。以已确认桌面版本更正后强停重启，SQLite 原消费 `exp-1316c0bd-03e1-46a6-bdac-181cb98040b2` 为 2150 分，仍只有一笔；本地新版本 `local-rev-5960a552-6776-49b5-b8ee-087561555c0d`、桌面分支映射 `desk-rev-2`。原消费其他字段、旧版本快照及原始新增回执均保留。
+
+- 接收回执的操作为 `op-desktop-patch-1`，方向为 `received`，意图 SHA-256 为 `aadcfae29b2b430d573313aebff6f7ed099c2094c9c87780c937478e2018960d`。从 SQLite 直接读取、独立查询、重复投递均得到同一份完整回执。已接收更正的待发数为 0；同键异金额返回 `intent_conflict`。模拟最后一步插入回执失败，整个 SQLite 逻辑导出与提交前一致，随后正常重投成功。
+- 同分支另有本地新增 2800 分待发送时，拒绝响应的 `pending_operation_id` 指向本地待发操作，合计仍为 4950 分；已提交的远端操作仍可重放。另按 EP04 在隔离 SQLite 夹具写入同实体本地编辑 1999 分，再投递新的远端更正，完整响应为 `{"ok":false,"error":"local_pending_conflict","pending_operation_id":"op-mobile-local-edit-1"}`。冷重启后本地金额 1999 分、待发原文 SHA-256 `01ea8442fa8bace871612c13defc85244bf246349f8d34511f4a8b5ee2c72637`、本地编辑版本和桌面映射均保留，拒绝的操作查无回执；全部表的逻辑导出逐字节相同。
+
+此轮实测使用隔离桥的固定桌面设备身份与当前旅行分支。更正输入来自第二候选样例，替换为本轮真实生成的消费和桌面确认版本；`desk-rev-2` 是样例桌面新版本。同实体待发编辑由测试夹具预置。复跑见 [MAINTAINING](MAINTAINING.md#android-sqlite-接收桌面消费更正)。

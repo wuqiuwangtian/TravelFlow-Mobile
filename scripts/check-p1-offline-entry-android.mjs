@@ -53,10 +53,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildApk(tripContext) {
+function buildApk(tripContext, sourceRoot = root) {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "travelflow-p1-offline-entry-"));
   const projectDir = path.join(tempRoot, "project");
-  runCommand(process.execPath, [path.join(root, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir, ...(tripContext ? ["--trip-context", tripContext] : [])], {
+  runCommand(process.execPath, [path.join(sourceRoot, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir, ...(tripContext ? ["--trip-context", tripContext] : [])], {
     cwd: root,
     stdio: "inherit",
   });

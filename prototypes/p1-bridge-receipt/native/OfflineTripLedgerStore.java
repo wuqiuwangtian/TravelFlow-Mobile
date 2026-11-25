@@ -35,6 +35,9 @@ final class OfflineTripLedgerStore {
             Arrays.asList("transport", "lodging", "meal", "ticket", "shopping", "other"));
     private static final Set<String> COMMAND_KEYS = new HashSet<>(
             Arrays.asList("profile", "kind", "operation", "target", "expected_revision_id", "payload"));
+    private static final Set<String> QUERY_KEYS = new HashSet<>(Arrays.asList("profile", "kind", "operation"));
+    private static final Set<String> PATCH_KEYS = new HashSet<>(Arrays.asList(
+            "profile", "kind", "operation", "target", "expected_revision_id", "source_revision_id", "patch"));
     private static final Set<String> OPERATION_KEYS = new HashSet<>(
             Arrays.asList("dataset_id", "source_device_id", "operation_id"));
     private static final Set<String> TARGET_KEYS = new HashSet<>(
@@ -135,6 +138,19 @@ final class OfflineTripLedgerStore {
                 if (db.getVersion() == 0) {
                     db.execSQL("ALTER TABLE outbox ADD COLUMN desktop_revision_id TEXT");
                     db.setVersion(1);
+                }
+                if (db.getVersion() == 1) {
+                    db.execSQL("ALTER TABLE branch_head ADD COLUMN synced_desktop_revision_id TEXT");
+                    db.execSQL("UPDATE branch_head SET synced_desktop_revision_id=("
+                            + "SELECT desktop_revision_id FROM outbox WHERE delivery_state='confirmed' ORDER BY seq DESC LIMIT 1)");
+                    db.execSQL("CREATE TABLE received_patches(dataset_id TEXT NOT NULL, source_device_id TEXT NOT NULL, "
+                            + "operation_id TEXT NOT NULL, canonical_intent TEXT NOT NULL, receipt_json TEXT NOT NULL, "
+                            + "PRIMARY KEY(dataset_id,source_device_id,operation_id))");
+                    // A replay of an old create confirmation must never rewind the branch mapping.
+                    db.execSQL("CREATE TRIGGER advance_create_confirmation AFTER UPDATE OF delivery_state ON outbox "
+                            + "WHEN NEW.delivery_state='confirmed' AND OLD.delivery_state!='confirmed' BEGIN "
+                            + "UPDATE branch_head SET synced_desktop_revision_id=NEW.desktop_revision_id WHERE id=1; END");
+                    db.setVersion(2);
                 }
                 db.setTransactionSuccessful();
             } finally {
@@ -756,6 +772,142 @@ final class OfflineTripLedgerStore {
         }
     }
 
+    private static JSObject patchError(String error) {
+        JSObject response = new JSObject();
+        response.put("ok", false);
+        response.put("error", error);
+        return response;
+    }
+
+    private static JSObject patchResult(JSONObject receipt, boolean replayed, boolean lookup) {
+        JSObject response = new JSObject();
+        response.put("ok", true);
+        response.put("state", receipt == null ? "not_found_at_settled_read" : "committed");
+        response.put("receipt", receipt == null ? JSONObject.NULL : receipt);
+        if (!lookup) response.put("replayed", replayed);
+        return response;
+    }
+
+    private static boolean patchIdentifier(Object value) {
+        if (!(value instanceof String)) return false;
+        String text = (String) value;
+        return !text.isEmpty() && text.codePointCount(0, text.length()) <= 256
+                && text.getBytes(StandardCharsets.UTF_8).length <= 1024;
+    }
+
+    // Local bridge transport for the candidate's single authorized desktop fixture.
+    static JSObject receiveDesktopCommand(File dir, String raw) throws Exception {
+        if (raw.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) return patchError("resource_bytes");
+        Map<String, Object> cmd;
+        try {
+            cmd = asObject(new StrictJsonParser(raw).parseDocument());
+        } catch (StrictJsonError error) {
+            return patchError("invalid_json".equals(error.code) ? "json" : error.code);
+        }
+        if (cmd == null) return patchError("shape");
+        boolean lookup = "receipt.lookup".equals(cmd.get("kind"));
+        Set<String> keys = lookup ? QUERY_KEYS : PATCH_KEYS;
+        if (!hasExactKeys(cmd, keys)) return patchError("shape");
+        if (!(lookup ? "p1-host-query-1" : "p1-host-control-1").equals(cmd.get("profile"))) return patchError("unsupported_profile");
+        if (!lookup && !"expense.patch".equals(cmd.get("kind"))) return patchError("unsupported_command");
+        Map<String, Object> op = asObject(cmd.get("operation"));
+        if (!hasExactKeys(op, OPERATION_KEYS)) return patchError("shape");
+        for (String key : OPERATION_KEYS) if (!patchIdentifier(op.get(key))) return patchError("identity");
+        if (!"desktop-device-1".equals(op.get("source_device_id"))) return patchError("unauthorized");
+        String[] identity = {(String) op.get("dataset_id"), (String) op.get("source_device_id"), (String) op.get("operation_id")};
+        Map<String, Object> target = asObject(cmd.get("target"));
+        if (!lookup) {
+            if (!hasExactKeys(target, TARGET_KEYS) || asObject(cmd.get("patch")) == null) return patchError("shape");
+            for (String key : TARGET_KEYS) if (!patchIdentifier(target.get(key))) return patchError("identity");
+            if (!patchIdentifier(cmd.get("expected_revision_id")) || !patchIdentifier(cmd.get("source_revision_id")))
+                return patchError("identity");
+        }
+        String canonical = lookup ? null : canonicalizeControlDocument(cmd);
+        if (!lookup && canonical.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) return patchError("canonical_bytes");
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            db.beginTransaction();
+            try (Cursor branch = db.rawQuery("SELECT dataset_id,travel_id,branch_id,head_revision_id,synced_desktop_revision_id "
+                    + "FROM branch_head WHERE id=1", null)) {
+                if (!branch.moveToFirst() || !identity[0].equals(branch.getString(0))) return patchError("unauthorized");
+                if (!lookup && (!branch.getString(1).equals(target.get("travel_id"))
+                        || !branch.getString(2).equals(target.get("branch_id")))) return patchError("unauthorized");
+                try (Cursor prior = db.rawQuery("SELECT canonical_intent,receipt_json FROM received_patches "
+                        + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?", identity)) {
+                    if (prior.moveToFirst()) {
+                        if (!lookup && !canonical.equals(prior.getString(0))) return patchError("intent_conflict");
+                        return patchResult(new JSONObject(prior.getString(1)), true, lookup);
+                    }
+                }
+                if (lookup) return patchResult(null, false, true);
+                JSObject result = applyDesktopPatch(db, cmd, canonical, branch.getString(3), branch.getString(4));
+                if (result.getBoolean("ok")) db.setTransactionSuccessful();
+                return result;
+            } finally {
+                db.endTransaction();
+            }
+        }
+    }
+
+    private static JSObject applyDesktopPatch(SQLiteDatabase db, Map<String, Object> cmd, String canonical,
+            String localRevision, String desktopRevision) throws Exception {
+        Map<String, Object> patch = asObject(cmd.get("patch"));
+        for (String key : patch.keySet()) {
+            if (!"amount_cents".equals(key)) return patchError(PAYLOAD_KEYS.contains(key) ? "unsupported_capability" : "invalid_field");
+        }
+        Long amount = null;
+        if (patch.containsKey("amount_cents")) {
+            if (!(patch.get("amount_cents") instanceof Long)) return patchError("type");
+            amount = (Long) patch.get("amount_cents");
+            if (amount < 1 || amount > 9999999999L) return patchError("integer_range");
+        }
+        Map<String, Object> target = asObject(cmd.get("target"));
+        String entity = (String) target.get("entity_id");
+        try (Cursor pending = db.rawQuery("SELECT operation_id FROM outbox WHERE delivery_state!='confirmed' "
+                + "ORDER BY (entity_id=?) DESC, seq LIMIT 1", new String[]{entity})) {
+            if (pending.moveToFirst()) {
+                JSObject blocked = patchError("local_pending_conflict");
+                blocked.put("pending_operation_id", pending.getString(0));
+                return blocked;
+            }
+        }
+        if (!cmd.get("expected_revision_id").equals(desktopRevision)) {
+            JSObject conflict = patchError("baseline_conflict");
+            conflict.put("current_synced_revision_id", desktopRevision == null ? JSONObject.NULL : desktopRevision);
+            return conflict;
+        }
+        boolean changed;
+        try (Cursor row = db.rawQuery("SELECT amount_cents,currency FROM expenses WHERE entity_id=?", new String[]{entity})) {
+            if (!row.moveToFirst()) return patchError("entity_not_found");
+            if (!"CNY".equals(row.getString(1))) return patchError("unsupported_capability");
+            changed = amount != null && amount != row.getLong(0);
+        }
+        String source = (String) cmd.get("source_revision_id");
+        if (changed == source.equals(desktopRevision)) return patchError("revision_mismatch");
+        String revision = localRevision;
+        if (changed) {
+            revision = "local-rev-" + UUID.randomUUID();
+            db.execSQL("UPDATE expenses SET amount_cents=? WHERE entity_id=?", new Object[]{amount, entity});
+            db.execSQL("INSERT INTO revisions(revision_id,parent_revision_id,snapshot_json) VALUES(?,?,?)",
+                    new Object[]{revision, localRevision, buildSnapshotJson(db)});
+            db.execSQL("UPDATE branch_head SET head_revision_id=?,synced_desktop_revision_id=? WHERE id=1",
+                    new Object[]{revision, source});
+        }
+        Map<String, Object> op = asObject(cmd.get("operation"));
+        JSONObject receipt = new JSONObject(target);
+        receipt.put("operation", new JSONObject(op));
+        receipt.put("kind", "expense.patch");
+        receipt.put("canonical_profile", "p1-host-intent-c14n-1");
+        receipt.put("intent_sha256", BridgeCreateLedgerStore.sha256Hex(canonical));
+        receipt.put("origin_direction", "received");
+        receipt.put("effect", changed ? "changed" : "no_change");
+        receipt.put("result_revision_id", revision);
+        receipt.put("synced_desktop_revision_id", source);
+        db.execSQL("INSERT INTO received_patches(dataset_id,source_device_id,operation_id,canonical_intent,receipt_json) "
+                + "VALUES(?,?,?,?,?)", new Object[]{op.get("dataset_id"), op.get("source_device_id"), op.get("operation_id"),
+                    canonical, receipt.toString()});
+        return patchResult(receipt, false, false);
+    }
+
     static JSObject inspectLedger(File dir) throws Exception {
         JSObject data = new JSObject();
         data.put("callerPid", Process.myPid());
@@ -774,7 +926,7 @@ final class OfflineTripLedgerStore {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
             data.put("initialized", true);
             try (Cursor head = db.rawQuery(
-                    "SELECT dataset_id, travel_id, branch_id, head_revision_id, baseline_source "
+                    "SELECT dataset_id, travel_id, branch_id, head_revision_id, baseline_source, synced_desktop_revision_id "
                             + "FROM branch_head WHERE id=1", null)) {
                 if (head.moveToFirst()) {
                     data.put("datasetId", head.getString(0));
@@ -782,6 +934,7 @@ final class OfflineTripLedgerStore {
                     data.put("branchId", head.getString(2));
                     data.put("headRevisionId", head.getString(3));
                     data.put("baselineSource", head.getString(4));
+                    data.put("syncedDesktopRevisionId", head.isNull(5) ? JSONObject.NULL : head.getString(5));
                 }
             }
             data.put("expenseCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM expenses", null));

@@ -598,3 +598,14 @@ node scripts/check-p1-trip-handoff.mjs --serial emulator-5580 \
 两个路径分别用于读取固定提交 `aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a` 及使用具备桌面后端依赖的 Python。脚本将固定源码归档到临时目录，由 init-trip 创建虚构库与授权上下文。隔离 APK 仅打包旅行、分支、基线及测试设备身份；它使用正常「记一笔」页面，记录手机本次新增，未导入桌面历史账单。正式移动构建仍独立于桌面仓。
 
 从手机 SQLite 的 raw_command_json 列读取 UTF-8 原字节，经标准输入调用桌面 CLI。故障退出后强停重开手机，从同一行取字节重投。确认使用匹配操作键、意图摘要、目标与结果版本的回执，原始命令、本机版本与桌面确认版本分别保留。末尾 JSON 包含原字节摘要、各端实读版本、实付与笔数。此入口使用隔离文件和子进程传递数据，全程未建立设备间网络连接。
+
+### Android SQLite 接收桌面消费更正
+
+沿用上一节的隔离 API 35、SDK 和 JDK 环境，在移动仓根目录执行：
+
+```sh
+node scripts/check-p1-trip-handoff.mjs --patch --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python
+```
+
+该模式固定桌面 `cfc7a1cfafc02119aaa15242da9dd48458d059aa` 和移动旧版 `5d34b2d`。先用旧 APK 在虚构旅行记账并接收桌面确认，再覆盖安装当前 APK，按第二候选投递更正。脚本读取 SQLite 金额、分支头及回执，强停重开并比较重放结果。失败注入和同实体本地待发编辑样例仅写入此次新建的隔离应用库。末尾 JSON 记录版本、摘要和金额。设备配对及实际网络传输另验。

@@ -921,6 +921,18 @@ public class P1BridgeReceiptPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void receiveDesktopCommand(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                call.resolve(OfflineTripLedgerStore.receiveDesktopCommand(
+                        OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir()), call.getString("raw", "")));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_RECEIVE_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
     public void inspectOfflineTripLedger(PluginCall call) {
         executor.execute(() -> {
             try {

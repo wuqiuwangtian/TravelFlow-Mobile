@@ -1,20 +1,21 @@
 // Explicit, isolated integration test. The mobile build uses only the generated public trip context.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
-import { fingerprintIntent } from "../prototypes/p1-canonical/intent.mjs";
+import { fingerprintIntent, fingerprintPatchCandidate } from "../prototypes/p1-canonical/intent.mjs";
 import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, launchAndAttach,
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
-const ref = "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
+
 const { values } = parseArgs({ options: {
-  "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
+  "patch": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
   serial: { type: "string" }, "cdp-port": { type: "string", default: "19241" },
 } });
+const ref = values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
 const serial = values.serial;
 assert.equal(serial, "emulator-5580");
 const port = Number(values["cdp-port"]);
@@ -30,7 +31,7 @@ const trip = path.join(work, "trip");
 const archive = path.join(work, "source.tar");
 const script = path.join(desktop, "backend/scripts/exchange_trip_handoff.py");
 let installed = false;
-let built, session;
+let built, upgraded, session;
 
 function cli(args, input, expected = 0) {
   const proc = spawnSync(python, [script, ...args], { cwd: desktop, input, timeout: 120000 });
@@ -62,7 +63,17 @@ try {
     "--fork-branch-id", ctx.fork_branch_id]);
   const before = inspect();
   assert.equal(before.head_revision_id, ctx.current_revision_id);
-  built = buildApk(contextPath);
+  if (values.patch) {
+    const previous = path.join(work, "mobile-before-upgrade");
+    mkdirSync(previous);
+    execFileSync("git", ["archive", "-o", archive, "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
+    execFileSync("tar", ["-xf", archive, "-C", previous]);
+    symlinkSync(path.resolve("node_modules"), path.join(previous, "node_modules"));
+    built = buildApk(contextPath, previous);
+    upgraded = buildApk(contextPath);
+  } else {
+    built = buildApk(contextPath);
+  }
   adb(serial, ["install", "-t", built.apk]);
   installed = true;
   setAirplaneMode(serial, true);
@@ -137,6 +148,7 @@ try {
   assert.deepEqual([local.expenseCount, local.totalCents, local.expenses[0].delivery_state, local.expenses[0].desktop_revision_id],
     [1, 1723, "confirmed", revision]);
   assert.equal(sql("SELECT desktop_revision_id FROM outbox"), revision);
+  if (!values.patch) assert.equal(local.syncedDesktopRevisionId, revision);
   assert.match((await phone("getUiState()")).syncStatusText, /桌面已确认/);
   assert.deepEqual(readBytes(), raw);
   console.log(JSON.stringify({ desktopCommit: ref, operation: cmd.operation, entity: cmd.target.entity_id,
@@ -147,6 +159,116 @@ try {
     desktopHead: after.head_revision_id, phonePaidCents: local.totalCents, desktopPaidBefore: before.head_paid_cents,
     desktopPaidAfter: after.head_paid_cents, expensesBefore: before.head_expenses.length, expensesAfter: after.head_expenses.length,
     pendingAfter: local.outboxCount, forkUnchanged: true }, null, 2));
+  if (values.patch) {
+    session.cdp.close();
+    adb(serial, ["install", "-r", "-t", upgraded.apk]);
+    session = await launchAndAttach(serial, port);
+    assert.equal((await phone("inspect()")).syncedDesktopRevisionId, revision);
+    const vectors = JSON.parse(readFileSync(new URL("../vendor/contracts/expense-patch-candidate.2/normative-vectors.json", import.meta.url)));
+    const patch = structuredClone(vectors.scenarios[0].steps[0].command);
+    patch.operation.dataset_id = cmd.operation.dataset_id;
+    patch.target = cmd.target;
+    patch.expected_revision_id = revision;
+    const receive = command => phone(`receiveDesktopCommand(${JSON.stringify(JSON.stringify(command))})`);
+    const query = command => receive({ profile: "p1-host-query-1", kind: "receipt.lookup", operation: command.operation });
+    const dump = () => sql(".dump");
+    // stdin keeps fixture SQL out of shell argument parsing; only this run's fresh app database is writable.
+    const fixtureSql = input => adb(serial, ["shell", "-T", "run-as", PACKAGE, "sqlite3", "-bail",
+      "files/p1-offline-trip-ledger/store.db"], { input });
+    const baseDump = dump();
+    const stale = { ...patch, expected_revision_id: local.headRevisionId };
+    assert.deepEqual(await receive(stale), { ok: false, error: "baseline_conflict", current_synced_revision_id: revision });
+    assert.equal(dump(), baseDump);
+    fixtureSql("CREATE TRIGGER fail_fixture_receipt BEFORE INSERT ON received_patches BEGIN SELECT RAISE(ABORT,'fixture_receipt_failure'); END;");
+    try {
+      await assert.rejects(receive(patch), /fixture_receipt_failure/);
+    } finally {
+      fixtureSql("DROP TRIGGER fail_fixture_receipt;");
+    }
+    assert.equal(dump(), baseDump);
+    const applied = await receive(patch);
+    assert.deepEqual([applied.ok, applied.replayed, applied.receipt.effect], [true, false, "changed"]);
+    assert.equal(applied.receipt.intent_sha256, fingerprintPatchCandidate(Buffer.from(JSON.stringify(patch)), "control").sha256);
+    await restart();
+    const recovered = await phone("inspect()");
+    assert.deepEqual([recovered.totalCents, recovered.expenseCount, recovered.revisionCount, recovered.outboxCount],
+      [2150, 1, local.revisionCount + 1, 0]);
+    assert.deepEqual(recovered.expenses[0], { ...local.expenses[0], amount_cents: 2150 });
+    assert.deepEqual([recovered.syncedDesktopRevisionId, recovered.headRevisionId],
+      [patch.source_revision_id, applied.receipt.result_revision_id]);
+    assert.notEqual(recovered.headRevisionId, local.headRevisionId);
+    assert.deepEqual(JSON.parse(sql("SELECT receipt_json FROM received_patches")), applied.receipt);
+    assert.equal(sql("SELECT amount_cents FROM expenses"), "2150");
+    assert.deepEqual(recovered.revisions.slice(0, -1), local.revisions);
+    const committedDump = dump();
+    assert.deepEqual((await query(patch)).receipt, applied.receipt);
+    assert.deepEqual(await receive(patch), { ...applied, replayed: true });
+    assert.deepEqual(await receive({ ...patch, patch: { amount_cents: 2151 } }), { ok: false, error: "intent_conflict" });
+    assert.equal((await confirm(replay)).accepted, true);
+    assert.equal(dump(), committedDump);
+
+    const next = structuredClone(cmd);
+    next.operation.operation_id += "-next";
+    next.target.entity_id += "-next";
+    next.expected_revision_id = recovered.headRevisionId;
+    next.payload.amount_cents = 2800;
+    assert.equal((await phone(`submitRawCommand(${JSON.stringify(next)})`)).accepted, true);
+    const pendingDump = dump();
+    for (const target of [patch.target, next.target]) {
+      const blocked = { ...patch, target, operation: { ...patch.operation, operation_id: "blocked-" + target.entity_id },
+        expected_revision_id: patch.source_revision_id, source_revision_id: "desk-rev-3" };
+      assert.deepEqual(await receive(blocked), { ok: false, error: "local_pending_conflict",
+        pending_operation_id: next.operation.operation_id });
+      assert.deepEqual(await query(blocked), { ok: true, state: "not_found_at_settled_read", receipt: null });
+    }
+    assert.deepEqual(await receive(patch), { ...applied, replayed: true });
+    await restart();
+    assert.equal(dump(), pendingDump);
+    assert.equal((await phone("exportOutboxCommands()")).items[0].raw_command_json, JSON.stringify(next));
+    const totalBeforeEditFixture = (await phone("inspect()")).totalCents;
+    // There is no local patch editor in this slice. Seed EP04 as a pending edit in this disposable DB.
+    const edit = structuredClone(patch);
+    edit.operation = { ...cmd.operation, operation_id: "op-mobile-local-edit-1" };
+    edit.expected_revision_id = patch.source_revision_id;
+    edit.source_revision_id = "fixture-local-edit-revision";
+    edit.patch.amount_cents = 1999;
+    const editRaw = JSON.stringify(edit);
+    const editProof = fingerprintPatchCandidate(Buffer.from(editRaw), "control");
+    const snapshot = JSON.parse(sql("SELECT snapshot_json FROM revisions ORDER BY seq DESC LIMIT 1"));
+    snapshot.expenses.find(row => row.id === edit.target.entity_id).amount_cents = 1999;
+    const literal = value => "'" + value.replaceAll("'", "''") + "'";
+    const keyValues = [edit.operation.dataset_id, edit.operation.source_device_id, edit.operation.operation_id].map(literal).join(",");
+    fixtureSql(`PRAGMA foreign_keys=ON;
+      BEGIN IMMEDIATE;
+      UPDATE expenses SET amount_cents=1999 WHERE entity_id=${literal(edit.target.entity_id)};
+      INSERT INTO revisions(revision_id,parent_revision_id,snapshot_json)
+        SELECT ${literal(edit.source_revision_id)},head_revision_id,${literal(JSON.stringify(snapshot))} FROM branch_head;
+      UPDATE branch_head SET head_revision_id=${literal(edit.source_revision_id)};
+      INSERT INTO receipts VALUES(${keyValues},${literal(editProof.canonical_json)},'changed',${literal(edit.source_revision_id)});
+      INSERT INTO outbox(dataset_id,source_device_id,operation_id,entity_id,expected_revision_id,result_revision_id,
+        raw_command_json,canonical_intent_json,intent_sha256,delivery_state)
+        VALUES(${keyValues},${literal(edit.target.entity_id)},${literal(edit.expected_revision_id)},${literal(edit.source_revision_id)},
+        ${literal(editRaw)},${literal(editProof.canonical_json)},${literal(editProof.sha256)},'verification_pending');
+      COMMIT;`);
+    const editDump = dump();
+    const againstEdit = { ...patch, expected_revision_id: patch.source_revision_id, source_revision_id: "desk-rev-3",
+      operation: { ...patch.operation, operation_id: "desktop-versus-local-edit" } };
+    assert.deepEqual(await receive(againstEdit), { ok: false, error: "local_pending_conflict", pending_operation_id: edit.operation.operation_id });
+    await restart();
+    assert.deepEqual(await query(againstEdit), { ok: true, state: "not_found_at_settled_read", receipt: null });
+    assert.equal(dump(), editDump);
+    const preserved = await phone("inspect()");
+    assert.equal(preserved.expenses.find(row => row.id === edit.target.entity_id).amount_cents, 1999);
+    assert.equal(preserved.headRevisionId, edit.source_revision_id);
+    assert.equal(preserved.syncedDesktopRevisionId, patch.source_revision_id);
+    assert.equal(sql("SELECT hex(raw_command_json) FROM outbox ORDER BY seq DESC LIMIT 1"), Buffer.from(editRaw).toString("hex").toUpperCase());
+    console.log(JSON.stringify({ upgradedFrom: "5d34b2d", coldPaidCents: recovered.totalCents, receipt: applied.receipt,
+      mappedFrom: revision, pendingOperation: next.operation.operation_id, pendingTotalCents: totalBeforeEditFixture,
+      localEditCents: 1999, localEditOperation: edit.operation.operation_id, localEditRawSha256: createHash("sha256").update(editRaw).digest("hex"),
+      injectedReceiptFailureRolledBack: true,
+      replaySameReceipt: true, conflictDumpIdentical: true }, null, 2));
+  }
+
 } finally {
   session?.cdp.close();
   if (installed) {
@@ -154,6 +276,7 @@ try {
     adb(serial, ["forward", "--remove", `tcp:${port}`], {allowFailure: true});
     adb(serial, ["uninstall", PACKAGE]);
   }
+  if (upgraded) rmSync(upgraded.tempRoot, { recursive: true, force: true });
   if (built) rmSync(built.tempRoot, { recursive: true, force: true });
   rmSync(work, { recursive: true, force: true });
 }
