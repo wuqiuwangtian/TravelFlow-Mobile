@@ -12,6 +12,19 @@ export const FIXTURE_EXPENSE_ID = "fixture-expense-1";
 export const MIN_AMOUNT_CENTS = 1;
 export const MAX_AMOUNT_CENTS = 9999999999;
 
+export const OFFLINE_CONTRACT_ID = "travelflow.expense-create" as const;
+export const OFFLINE_CONTRACT_VERSION = "0.1.0" as const;
+export const OFFLINE_DATASET_ID = "fixture-dataset" as const;
+export const OFFLINE_DEVICE_ID = "fixture-device" as const;
+export const OFFLINE_TRAVEL_ID = "fixture-travel" as const;
+export const OFFLINE_BRANCH_ID = "fixture-branch" as const;
+export const OFFLINE_INITIAL_REVISION_ID = "fixture-r0" as const;
+export const OFFLINE_BASELINE_SOURCE =
+  "vendor/contracts/expense-create-v0.1.0 (fixture-dataset / fixture-travel / fixture-branch / fixture-r0)" as const;
+
+export const EXPENSE_CATEGORIES = ["meal", "transport", "lodging", "ticket", "shopping", "other"] as const;
+export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
+
 export interface OperationIdentity {
   dataset_id: string;
   source_device_id: string;
@@ -180,4 +193,153 @@ export function canonicalizeQueryDocument(intent: ReceiptLookupIntent): string {
     channel: "receipt-query",
     intent,
   });
+}
+
+const TITLE_WHITESPACE_POINTS = new Set([
+  0x20, 0xa0, 0x1680, 0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+  0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+]);
+
+function extractUnicodeScalars(value: string): number[] {
+  const points: number[] = [];
+  for (const ch of value) {
+    const cp = ch.codePointAt(0)!;
+    if (cp >= 0xd800 && cp <= 0xdfff) {
+      throw new Error("文本包含无效的 Unicode 代理项");
+    }
+    points.push(cp);
+  }
+  return points;
+}
+
+export function parseDecimalYuanToCents(raw: string): number {
+  if (typeof raw !== "string" || !/^\d+(?:\.\d{1,2})?$/.test(raw)) {
+    throw new Error("金额须为正数且最多两位小数（例如 86.35）");
+  }
+  const [whole, frac = ""] = raw.split(".");
+  const centsBig = BigInt(whole) * 100n + BigInt(frac.padEnd(2, "0"));
+  if (centsBig < BigInt(MIN_AMOUNT_CENTS) || centsBig > BigInt(MAX_AMOUNT_CENTS)) {
+    throw new Error("金额超出允许范围（0.01 至 99999999.99 元）");
+  }
+  return Number(centsBig);
+}
+
+export function formatCentsToYuan(cents: number): string {
+  if (!Number.isSafeInteger(cents) || cents < 0) {
+    throw new Error(`Invalid cents value: ${String(cents)}`);
+  }
+  const whole = Math.floor(cents / 100);
+  const frac = String(cents % 100).padStart(2, "0");
+  return `${whole}.${frac}`;
+}
+
+export function validateExpenseTitle(raw: string): string {
+  if (typeof raw !== "string") {
+    throw new Error("标题不能为空");
+  }
+  const points = extractUnicodeScalars(raw);
+  if (points.length === 0 || points.length > 100) {
+    throw new Error("标题须为 1 至 100 个字符（按 Unicode 标量计数）");
+  }
+  for (const cp of points) {
+    if (cp === 0xfeff || cp < 0x20 || (cp >= 0x7f && cp <= 0x9f)) {
+      throw new Error("标题不能包含控制字符或 U+FEFF");
+    }
+  }
+  if (!points.some((cp) => !TITLE_WHITESPACE_POINTS.has(cp))) {
+    throw new Error("标题不能全为空白字符");
+  }
+  return raw;
+}
+
+export function validateExpenseNotes(raw: string): string {
+  if (typeof raw !== "string") {
+    throw new Error("备注须为文本");
+  }
+  const points = extractUnicodeScalars(raw);
+  if (points.length > 1000) {
+    throw new Error("备注长度不能超过 1000 个字符（按 Unicode 标量计数）");
+  }
+  for (const cp of points) {
+    if (cp === 0xfeff || (cp >= 0x7f && cp <= 0x9f) || (cp < 0x20 && cp !== 9 && cp !== 10 && cp !== 13)) {
+      throw new Error("备注包含不允许的控制字符或 U+FEFF");
+    }
+  }
+  return raw;
+}
+
+export function buildOfflineExpenseCreateIntent(params: {
+  datasetId: string;
+  sourceDeviceId: string;
+  operationId: string;
+  travelId: string;
+  branchId: string;
+  entityId: string;
+  expectedRevisionId: string;
+  title: string;
+  amountCents: number;
+  category: string;
+  notes?: string;
+}): ExpenseCreateIntent {
+  const datasetId = assertSafeIdentifier(params.datasetId, "datasetId");
+  const sourceDeviceId = assertSafeIdentifier(params.sourceDeviceId, "sourceDeviceId");
+  const operationId = assertSafeIdentifier(params.operationId, "operationId");
+  const travelId = assertSafeIdentifier(params.travelId, "travelId");
+  const branchId = assertSafeIdentifier(params.branchId, "branchId");
+  const entityId = assertSafeIdentifier(params.entityId, "entityId");
+  const expectedRevisionId = assertSafeIdentifier(params.expectedRevisionId, "expectedRevisionId");
+  if (operationId === entityId) {
+    throw new Error("operation_id and entity_id must be distinct");
+  }
+  const title = validateExpenseTitle(params.title);
+  const amountCents = assertAmountCents(params.amountCents);
+  if (!(EXPENSE_CATEGORIES as readonly string[]).includes(params.category)) {
+    throw new Error(`Invalid expense category: ${String(params.category)}`);
+  }
+  const notes = validateExpenseNotes(params.notes ?? "");
+  return {
+    profile: CONTROL_PROFILE,
+    kind: "expense.create",
+    operation: {
+      dataset_id: datasetId,
+      source_device_id: sourceDeviceId,
+      operation_id: operationId,
+    },
+    target: {
+      travel_id: travelId,
+      branch_id: branchId,
+      entity_id: entityId,
+    },
+    expected_revision_id: expectedRevisionId,
+    payload: {
+      title,
+      amount_cents: amountCents,
+      currency: "CNY",
+      paid_on: null,
+      category: params.category,
+      day: null,
+      activity_id: null,
+      notes,
+      receipt_ids: [],
+      allow_shared_receipts: false,
+      budget_item_id: null,
+      settles_budget: false,
+    },
+  };
+}
+
+export function buildOfflineReceiptLookupIntent(params: {
+  datasetId: string;
+  sourceDeviceId: string;
+  operationId: string;
+}): ReceiptLookupIntent {
+  return {
+    profile: QUERY_PROFILE,
+    kind: "receipt.lookup",
+    operation: {
+      dataset_id: assertSafeIdentifier(params.datasetId, "datasetId"),
+      source_device_id: assertSafeIdentifier(params.sourceDeviceId, "sourceDeviceId"),
+      operation_id: assertSafeIdentifier(params.operationId, "operationId"),
+    },
+  };
 }

@@ -86,6 +86,7 @@ for (const name of [
   "MainActivity.java",
   "BridgeLedgerStore.java",
   "BridgeCreateLedgerStore.java",
+  "OfflineTripLedgerStore.java",
   "BridgeLockHolderProvider.java",
   "P1BridgeReceiptPlugin.java",
 ]) {

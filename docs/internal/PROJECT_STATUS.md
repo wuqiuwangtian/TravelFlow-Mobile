@@ -786,3 +786,49 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 **真实触摸脚本**：在同一新构建、指定 `emulator-5580` 用 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241 --apk "$apk"` 两次全新安装复跑。首次超时于首笔连点保存（页面已换为合法车票，提示仍是前一条备注超限）；第二次已通过两笔、两次重开及三个 shape 拒绝，到 100／1000 标量边界保存超时。当前负例只等待任意非空错误文字，可能复用旧提示。请验证每次触摸确实命中保存按钮，等待本次提交对应的状态、错误和数据库变化，重跑真实触摸入口并记录结果。
 
 同一 APK 原桥 17/17 项通过。另行用页面按钮 DOM click 触发同一保存处理函数、用 CDP Input.insertText 输入非 BMP 文字并按具体错误文字断言：100 字标题及 1000 字备注完整入账、导出且摘要相符，101／1001 字和 U+FEFF 保留草稿并拒绝，缺字段和额外字段返回 shape 且零写入。该对照确认前三项修复的处理逻辑，实际触摸仍以两次原脚本记录为准。执行提交暂缓合入；评审仅涉及隔离应用。
+
+## 2026-11-24 Android 旅行账本离线记一笔实测（工作包 D 发送侧第一段）
+
+在执行分支 `antigravity/android-offline-expense-entry`（起点 `48cdc53`）复用 `prototypes/p1-bridge-receipt/`（固定 Capacitor 8.6.0，保留原 17 项桥回归入口）与 `src/domain/ledger.ts`、`vendor/design` 样式组件，新增离线旅行账本正常入口（`index.html`／`bridge-app.ts`）、十进制元转整分与 0.1.0 命令构造校验（`bridge-command.ts`）、单事务原子落库的隔离 SQLite 存储（`OfflineTripLedgerStore.java`）及端到端脚本（`scripts/check-p1-offline-entry-android.mjs`）。起始虚构基线显式标注来源为 `vendor/contracts/expense-create-v0.1.0 (fixture-dataset / fixture-travel / fixture-branch / fixture-r0)`。
+
+实测结果：
+- **宿主校验全通过**：`pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command`（含十进制元转整分边界／非法输入与 0.1.0 离线命令规范化摘要 `7f2bcf64acbfbc2803d429e6b2fc31dece4ad590a6a95458aeeeec65fd94b186` 校验）及脚本语法检查通过。
+- **离线记一笔端到端实测**（隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`，`DELETE`／`FULL`，全程开启飞行模式）：运行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`，通过（`passed: true`）：
+  - 8 组非法金额输入（`""`、`0`、`0.00`、`-12.50`、`86.355`、`1e2`、`abc`、`100000000.00`）均在页面报错且 SQLite 零写入。
+  - 首笔非固定午餐样例（`机场快线车票`、`42.80` 元 → `4280` 分、`transport`、`paid_on: null`、备注 `首都机场线`）快速连点「保存消费」仅记录一次（操作 ID `op-7bd43c01-e07b-48df-a06a-0baecc224dc1` 与实体 ID `exp-dfe59a94-5033-4a4a-b248-1815c0487e0c` 分离，基线 `fixture-r0` → `local-rev-7debdad0-eb57-42c1-b61d-3d1e31e8c504`）；`am force-stop` 冷重开（PID `4307 -> 4413`）后明细、总额 `¥42.80` 与 `已在本机保存，待发送` 状态完整保留。
+  - 第二笔输入 `86.35` 元（`午餐` → `8635` 分、`meal`、`paid_on: null`、备注空，操作 ID `op-2e509580-1251-4bb4-bf5c-ece0c111398a`、实体 ID `exp-c5fc1aac-a8a4-4260-857b-7fb136149f56`，基线接续至 `local-rev-0bf09320-64a8-4453-8b2c-5dffd628d29b`）并再次强停冷重开（PID `4413 -> 4508`）；核对页面与 SQLite 均为 2 笔、整分总额 `12915` 分（`¥129.15`）、修订 3、回执 2、待发送 2，状态明确显示 `已在本机保存，待发送 2 笔（本机提交成功，尚未经桌面端确认）`。
+  - 从隔离测试入口 `exportOfflineOutboxCommands` 导出两条 `travelflow.expense-create` `0.1.0` 命令，独立复算规范化 JSON 与 SHA-256 全部吻合，且第二笔 86.35 元载荷与冻结桌面午餐样例逐字段一致。
+- **原桥回归保留**：在同一隔离 API 35 模拟器运行 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`，全部 **17/17 项**通过（`passed: true`）。
+
+未验证项：本次仅覆盖隔离 API 35 模拟器的本地离线连续记账与 0.1.0 命令导出，未覆盖跨设备真实网络连接、多笔跨端投递与基线衔接、真机、个人主库或共享协议变更。复跑入口见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。
+
+## 2026-11-24 Android 离线旅行记账按评审（2f622ac）返修实测
+
+在执行分支 `antigravity/android-offline-expense-entry` 针对评审 `2f622ac` 的三项问题完成返修并独立复跑：
+
+1. **Unicode 标量长度与禁止静默截断**：移除 `index.html` 表单上的 UTF-16 `maxlength` 属性，在 TS（`bridge-command.ts`）与原生存储（`OfflineTripLedgerStore.java`）统一按 Unicode 标量计数（标题 `1..100` 标量、备注 `0..1000` 标量）并拒绝孤立代理项。超限输入（101 个 `𠮷` 标题、1001 个 `𠮷` 备注）报错且完整保留表单草稿、SQLite 零写入；通过 WebView CDP `Input.insertText` 实输 100 个 `𠮷` 标题与 1000 个 `𠮷` 备注（`12.34` 元）可完整保存并由移动宿主 `fingerprintIntent` 复算通过（`nonBmpIntentSha256: e338c2c8b212b0d961613806c9fe79476e9c4e2fde8a73d4dddce208f01b1ddf`）。
+2. **`U+FEFF` 与移动规范化器对齐**：TS 与原生文本校验统一对齐 `prototypes/p1-patch/expense.mjs`（拒绝 `U+FEFF`、C0/C1 控制字符及孤立代理项，对应 `text_control`），禁止静默剥离用户输入。实测表单备注 `"A\uFEFFB"` 被拒、草稿原文保留且零写入；所有导出待发送命令均可由 `fingerprintIntent` 无错复算。
+3. **原生写事务前严格冻结命令字段集合校验**：`OfflineTripLedgerStore.java` 新增顶层、`operation`、`target` 与 `payload` 12 字段精确键集合检查，并以 `payload.opt(...) != JSONObject.NULL` 严格区分显式 `null` 与缺键。实测删除 `payload.paid_on`、追加未知 `payload.extra_field` 或顶层 `extra_top` 均在事务前返回 `shape` 且零写入；合法显式 `paid_on: null` 继续可保存。
+
+实测结果：宿主 `pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command` 均通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`（`-read-only`，SQLite `3.44.3`）运行 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`（全程飞行模式）与 `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240`（17/17 场景）均通过（`passed: true`）。
+
+## 2026-11-25 Android 离线记账按评审（3c7f1d4）返修实测
+
+针对评审 `3c7f1d4` 的原生原始字节解析、规范化封装摘要／重放及真实触摸稳定性三项要求完成返修：
+
+1. **原生严格 RFC 8259 原始命令解析（拒绝重复键）**：`OfflineTripLedgerStore.java` 新增 `StrictJsonParser`，在写事务与业务字段校验之前直接解析 `rawCommandJson` 原始字节，重复键立即返回 `duplicate_key`、无效语法返回 `invalid_json`、孤立代理项返回 `unicode`，零写入。
+2. **原生唯一规范化字节作为存储、摘要与重放依据**：`OfflineTripLedgerStore.java` 从校验通过的命令对象直接按 `p1-host-intent-c14n-1`（UTF-16 码元键序、紧凑 UTF-8、精确整数）生成 `canonicalVerified`，若调用方传入带空白的非规范封装则直接返回 `non_canonical_intent` 且零写入；合法规范封装落库、计算 `intent_sha256` 与同键重放（`replayed: true`）均以该唯一规范字节为准。
+3. **真实触摸逐次命中确认与当次结果断言**：`bridge-app.ts` 新增递增保存尝试序号 `saveAttemptSeq` 与当次结果 `lastAttempt`；`check-p1-offline-entry-android.mjs` 在 `tap` 与 `doubleTapElement` 中等待软键盘收起与布局稳定（`elementFromPoint` 命中目标且连续两次坐标与 `visualViewport.height` 不变），通过捕获阶段 `click` 监听逐次断言 `trusted && expected`，每次负例与正例均等待 `saveAttemptSeq > prevSeq` 并核对对应错误文案或数据库增量；新增原生原始字符串桥接回归，覆盖重复键（`duplicate_key`）、带空白封装（`non_canonical_intent`）与同键规范重放（`replayed: true`）。
+
+实测结果（宿主 `pnpm typecheck`、`pnpm check:contracts`、`pnpm check:ledger`、`pnpm check:p1-bridge-command` 均通过；隔离 API 35 模拟器 `travelflow_p0_api35` / `emulator-5580`，`-read-only`，SQLite `3.44.3`）：
+
+- 连续两次全新安装复跑 `node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241`（全程飞行模式）均一次通过（`passed: true`，PID `2682 -> 2798 -> 2900` 与 `3202 -> 3312 -> 3414`），`duplicateKey: "duplicate_key"`、`nonCanonicalWhitespaceEnvelope: "non_canonical_intent"`、`sameKeyCanonicalReplayVerified: true`、`zeroWritesVerified: true`，全部触摸逐次命中确认无误。
+- `node scripts/check-p1-bridge-android.mjs --serial emulator-5580 --cdp-port 19240` **17/17 场景全部通过**（`passed: true`）。
+
+## Android 旅行账本离线新增集成复验
+
+执行提交 `e47964d4a61dd69d873f84f3118e0a5bfc6b0e78` 的新 APK 在指定 API 35 模拟器连续两次全新安装，真实触摸记账、连点、强停重开、Unicode 上限及当次错误验证通过；原桥 17/17 通过。另以首轮评审脚本直接送原始字符串，重复金额键返回 duplicate_key，非零小数分返回 integer_range，带缩进的调用方摘要封装返回 non_canonical_intent，三次导出计数均为零。随后标准封装正常提交。
+
+集成另对齐了冻结规则的两个解析细节：金额用精确十进制判定是否为整分，Unicode 转义限 ASCII 十六进制。增加同键 1234.0 与 12.34e2 的原版本／原摘要重放对照，1234.0000000000000001 和使用全角数字的转义均须拒绝。集成和测试均未修改冻结包。复跑见 [MAINTAINING](MAINTAINING.md#p1-桥接消费更正与回执恢复复验)。
+
+最终集成 APK 再次连续两次全新安装通过完整离线入口，8 类非法金额、文字和原生拒绝均无部分写入。两次冷重开后两笔为 12915 分、三版历史、两份回执及两条待发送；再记 1234 分后共 14149 分，等值重放不增加记录。同一最终 APK 原桥 17/17 通过。此阶段仅验隔离 Android 离线发送侧，手机命令在桌面旅行中的实际投递与确认仍待联调。
