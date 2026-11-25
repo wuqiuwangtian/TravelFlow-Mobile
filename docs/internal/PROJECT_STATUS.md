@@ -885,3 +885,14 @@ API 35上，从同一份备份在新目录恢复到842分的修订3，核对了�
 使用 prepare 输出的独立查询取得 Android 完整回执，交给 `confirm-outbound`。新进程运行 `outbound-status` 读得待发 0、已确认 1；操作 `op-desktop-patch-65d8b5ba19bf` 的持久手机版本 `local-rev-3048e998-ffa8-44e3-8052-314f829cbe29` 与 Android SQLite 分支头、接收回执三者一致。桌面持久保存的响应与查询响应完整相等，手机保存的桌面版本为 `fc1dc7f1f5aa`。
 
 用同一查询响应重复确认返回 `already_confirmed=true`。再次读取，桌面主分支实付 10785 分、5 个版本、1 份新增消费接收回执；手机实付 2150 分、3 个版本、1 份本地新增回执、1 份更正接收回执。两次确认后的桌面队列及账本读取结果相同，Android 全库逻辑导出逐字节相同。原分叉仍为 `ce99e5ec7352`、0 笔、0 分。复跑见 [MAINTAINING](MAINTAINING.md#桌面通过-android-查询回执确认待发更正)。
+
+### Android 与 WSL 桌面隔离配对
+
+固定桌面 `768043340f3bb681bd1904cc2b873e7632070982`，API 35 模拟器与桌面前台服务均运行于 WSL2（内核 `6.18.58.1-microsoft-standard-WSL2`）。桌面绑定 WSL eth0 的 `172.20.31.170:34517`。Android 路由实读为 `172.20.31.170 via 10.0.2.2 dev wlan0 table 1016 src 10.0.2.16`，经模拟器虚拟网关到同机 WSL 服务。ADB 转发仅用于 WebView 自动化操作。桌面批准、撤销使用 WSL 本机控制面。
+
+- 从桌面前台 JSON 取证书 DER SHA-256。将显示信息中两处指纹同步改错一位，手机在 TLS 握手返回 `pin_mismatch`，桌面待审请求 0 条。恢复原指纹后，双方独立计算的六位核对码一致。
+- 桌面批准前手机确认返回 `409 awaiting_desktop_confirm`；仅桌面批准时手机仍为 `not_paired`。手机点击确认后读到「北京三日游」，旅行 ID `92ba6a148a17`，样例消费 8635 分。
+- 强停前后应用 PID 从 1888 变为 2061。手机冷重启后从本机 AndroidKeyStore 密钥保护的加密记录恢复配对，读回同一旅行。桌面撤销后再读返回 `403 device_revoked`，页面不再显示旅行数据，桌面设备状态为 `revoked`。
+- **真机同 Wi-Fi：未实测。真机经热点：未实测。** 本轮运行环境未提供物理手机到桌面的跨设备结果。Windows 原生服务也未作为本轮 Android 对端。实测覆盖隔离配对及虚构旅行读取，消费交换仍按既有隔离流程验收。
+
+复跑见 [MAINTAINING](MAINTAINING.md#android-隔离桌面配对)。

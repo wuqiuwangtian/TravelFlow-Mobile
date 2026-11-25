@@ -85,6 +85,18 @@
       </div>
     </section>
 
+    <section class="tf-card trip-panel" aria-label="隔离桌面配对">
+      <h2>桌面配对（虚构旅行）</h2>
+      <label for="pair-display">桌面前台显示的连接信息（JSON）</label>
+      <input class="trip-field" id="pair-display" type="password" autocomplete="off" spellcheck="false">
+      <div class="trip-actions">
+        <button class="tf-button" id="pair-begin">请求配对</button>
+        <button class="tf-button" id="pair-confirm" disabled>核对码一致，确认配对</button>
+        <button class="tf-button" id="pair-read">读取虚构旅行</button>
+      </div>
+      <p id="pair-status" role="status"></p>
+    </section>
+
     <hr>
     <h2>P1 桥接消费更正与回执恢复原型（回归入口）</h2>
     <p>隔离测试环境，仅写入虚构消费更正与历史票据，不是正式账本或同步协议。</p>

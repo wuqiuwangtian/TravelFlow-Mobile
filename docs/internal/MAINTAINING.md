@@ -631,3 +631,15 @@ node scripts/check-p1-trip-handoff.mjs --roundtrip --confirm-outbound --serial e
 ```
 
 此模式固定移动 APK `641fd85` 和桌面 `f5f8a98`。从 `prepare-outbound` 的输出文件取更正原文与独立查询，校验更正字节与 SQLite 原文一致。首次成功回包丢弃，手机强停重开，桌面另起进程读队列。随后只投递查询，把 Android 返回的完整响应经标准输入交给 `confirm-outbound`。每次确认后均以新进程运行 `outbound-status`，核对持久记录与手机版本，最后比较重复确认前后的桌面账本和手机库逻辑导出。
+
+### Android 隔离桌面配对
+
+在上述 API 35、SDK、JDK 环境中启动指定只读模拟器，留空调试端口 19242。选择模拟器能直接路由到的桌面 IPv4 地址。WSL 示例从本机 eth0 取当前地址：
+
+```sh
+node scripts/check-android-desktop-pairing.mjs --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python \
+  --bind "$(ip -4 -o addr show dev eth0 | awk '{split($4,a,"/");print a[1];exit}')"
+```
+
+脚本从桌面固定提交 `768043340f3bb681bd1904cc2b873e7632070982` 创建临时源码、证书与配对库，通过前台 `serve --open-pairing` 的 JSON 向手机提供地址、端口、证书指纹与一次性会话。手机端入口为「桌面配对（虚构旅行）」，依次粘贴前台 JSON、请求配对、核对双方六位码并确认，再读取旅行。自动化通过 CDP 操作该页面，旅行请求由 Android 原生 HTTPS 客户端直接发往显示地址。结束时停止前台服务、移除临时身份和测试 APK，并恢复模拟器原飞行模式。

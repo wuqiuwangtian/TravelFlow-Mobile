@@ -1,5 +1,6 @@
 {
   "appId": "org.travelflow.p1bridge",
   "appName": "TravelFlow P1 Bridge",
+  "loggingBehavior": "none",
   "webDir": "www"
 }

@@ -99,6 +99,7 @@ const javaDir = path.join(output, "android/app/src/main/java/org/travelflow/p1br
 mkdirSync(javaDir, { recursive: true });
 for (const name of [
   "MainActivity.java",
+  "DesktopPairingPlugin.java",
   "BridgeLedgerStore.java",
   "BridgeCreateLedgerStore.java",
   "OfflineTripLedgerStore.java",

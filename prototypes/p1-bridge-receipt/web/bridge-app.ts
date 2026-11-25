@@ -1983,3 +1983,54 @@ async function init(): Promise<void> {
 }
 
 void init();
+
+const pairing = registerPlugin<{
+  begin(data: { display: string }): Promise<{ sas: string }>;
+  confirm(): Promise<void>;
+  readTrip(): Promise<{ trip: { title: string; travel_id: string; sample_expense_amount_cents: number } }>;
+}>("DesktopPairing");
+const displayInfo = document.querySelector<HTMLInputElement>("#pair-display")!;
+const pairBegin = document.querySelector<HTMLButtonElement>("#pair-begin")!;
+const pairConfirm = document.querySelector<HTMLButtonElement>("#pair-confirm")!;
+const pairRead = document.querySelector<HTMLButtonElement>("#pair-read")!;
+const pairStatus = document.querySelector<HTMLElement>("#pair-status")!;
+let pendingSas = "";
+
+async function pairingAction(action: () => Promise<string>) {
+  pairBegin.disabled = pairConfirm.disabled = pairRead.disabled = true;
+  pairStatus.textContent = "连接中…";
+  try {
+    pairStatus.textContent = await action();
+  } catch (error) {
+    const code = (error as {code?: string}).code || "pairing_failed";
+    const messages: Record<string, string> = {
+      pin_mismatch: "桌面证书指纹不符，已拒绝连接",
+      not_paired: "请先完成双方确认",
+      HTTP_409_awaiting_desktop_confirm: "请先在桌面核对并批准配对",
+      HTTP_403_device_revoked: "桌面已撤销此设备",
+      invalid_display: "请粘贴完整的桌面前台连接信息",
+    };
+    pairStatus.textContent = (messages[code] ?? "连接失败") + " (" + code + ")"
+      + (pendingSas ? " · 核对码 " + pendingSas : "");
+  } finally {
+    pairBegin.disabled = pairRead.disabled = false;
+    pairConfirm.disabled = !pendingSas;
+  }
+}
+pairBegin.onclick = () => pairingAction(async () => {
+  pendingSas = "";
+  const display = displayInfo.value.trim();
+  displayInfo.value = "";
+  const { sas } = await pairing.begin({ display });
+  pendingSas = sas;
+  return "请与桌面核对 " + sas;
+});
+pairConfirm.onclick = () => pairingAction(async () => {
+  await pairing.confirm();
+  pendingSas = "";
+  return "配对已完成";
+});
+pairRead.onclick = () => pairingAction(async () => {
+  const { trip } = await pairing.readTrip();
+  return trip.title + " · " + trip.travel_id + " · 样例消费 ¥" + formatCentsToYuan(trip.sample_expense_amount_cents);
+});
