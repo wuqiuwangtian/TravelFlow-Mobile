@@ -906,6 +906,21 @@ public class P1BridgeReceiptPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void confirmOfflineDelivery(PluginCall call) {
+        executor.execute(() -> {
+            try {
+                JSObject response = call.getObject("response");
+                if (response == null) throw new IllegalArgumentException("Missing receiver response");
+                call.resolve(OfflineTripLedgerStore.confirmDelivery(
+                        OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir()),
+                        call.getString("operationId", ""), response));
+            } catch (Exception error) {
+                call.reject(error.getMessage(), "OFFLINE_CONFIRM_FAILED");
+            }
+        });
+    }
+
+    @PluginMethod
     public void inspectOfflineTripLedger(PluginCall call) {
         executor.execute(() -> {
             try {

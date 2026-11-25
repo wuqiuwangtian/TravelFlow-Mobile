@@ -53,10 +53,10 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildApk() {
+function buildApk(tripContext) {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "travelflow-p1-offline-entry-"));
   const projectDir = path.join(tempRoot, "project");
-  runCommand(process.execPath, [path.join(root, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir], {
+  runCommand(process.execPath, [path.join(root, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir, ...(tripContext ? ["--trip-context", tripContext] : [])], {
     cwd: root,
     stdio: "inherit",
   });
@@ -953,4 +953,7 @@ async function main() {
   }
 }
 
-await main();
+export { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, launchAndAttach,
+  PACKAGE, setAirplaneMode, setInputValue, waitForCondition };
+
+if (path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

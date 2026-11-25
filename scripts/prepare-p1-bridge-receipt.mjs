@@ -11,8 +11,8 @@ const p0Runtime = path.join(root, "prototypes/android-runtime");
 const bridgeSource = path.join(root, "prototypes/p1-bridge-receipt");
 
 const args = process.argv.slice(2);
-const usage = "Usage: prepare-p1-bridge-receipt.mjs --output NEW_DIRECTORY";
-if (args.length !== 2 || args[0] !== "--output" || !args[1] || args[1].startsWith("--")) {
+const usage = "Usage: prepare-p1-bridge-receipt.mjs --output NEW_DIRECTORY [--trip-context FILE]";
+if (!(args.length === 2 || (args.length === 4 && args[2] === "--trip-context")) || args[0] !== "--output" || !args[1] || args[1].startsWith("--")) {
   throw new Error(usage);
 }
 
@@ -52,6 +52,21 @@ if (createHash("sha256").update(createFixtureBytes).digest("hex") !== "da9a97398
   throw new Error("Pinned p1-desktop-expense-create.json digest mismatch");
 }
 writeFileSync(path.join(www, "p1-desktop-expense-create.json"), createFixtureBytes);
+// Package only the public scope of the isolated desktop trip (never host file paths).
+let tripSeed = null;
+if (args[3]) {
+  const ctx = JSON.parse(readFileSync(args[3], "utf8"));
+  const ids = [ctx.dataset_id, ctx.travel_id, ctx.branch_id, ctx.current_revision_id];
+  if (ctx.handoff_format !== "travelflow-p3-trip-handoff/0-draft" ||
+      ctx.contract_id !== "travelflow.expense-create" || ctx.contract_version !== "0.1.0" ||
+      !Array.isArray(ctx.authorized_devices) || ctx.authorized_devices.length !== 1 ||
+      ![...ids, ctx.authorized_devices[0]].every(id => typeof id === "string" && id.length > 0)) {
+    throw new Error("Invalid isolated init-trip context");
+  }
+  tripSeed = { datasetId: ctx.dataset_id, travelId: ctx.travel_id, branchId: ctx.branch_id,
+    initialRevisionId: ctx.current_revision_id, sourceDeviceId: ctx.authorized_devices[0], baselineSource: "desktop init-trip" };
+}
+writeFileSync(path.join(www, "offline-trip-seed.json"), JSON.stringify(tripSeed));
 for (const name of ["tokens.css", "components.css"]) {
   cpSync(path.join(root, "vendor/design", name), path.join(www, name));
 }

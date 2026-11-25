@@ -585,3 +585,16 @@ node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-por
 Linux／WSL、Node 22.16+，根目录运行 `pnpm check:p1-desktop-create`。输入为桌面提交 `5c457e61f5238825f4bfc12cceba3ca9f5e4413a` 的 `backend/tests/fixtures/p1_expense_create_candidate.json` 原字节，固定在本仓内部测试资料。脚本验证文件及两条规范化摘要，只创建并清理自己的临时 SQLite 库。输出两次独立尝试的实际结果版本、拒绝码和摘要，版本 ID 每次生成，按同一操作重放是否返回原 ID 断言。预期两个子进程分别在提交前和提交后被 SIGKILL。该入口不需要电脑仓、SDK、设备或个人账本。
 
 集成版 Android 当前消费与历史快照共用同一读取路径，检查 12 个消费字段。共享票据许可 `allow_shared_receipts` 随原命令保存在回执意图中；仅改变这一项也应在重放／恢复时报告冲突。
+
+### Android 离线账本与桌面隔离旅行投递
+
+启动上文指定的只读 API 35 模拟器 `emulator-5580`，留空 CDP 端口 19241，设置 Android SDK、JDK 21 和 Gradle 环境。在移动仓根目录执行：
+
+```sh
+node scripts/check-p1-trip-handoff.mjs --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python
+```
+
+两个路径分别用于读取固定提交 `aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a` 及使用具备桌面后端依赖的 Python。脚本将固定源码归档到临时目录，由 init-trip 创建虚构库与授权上下文。隔离 APK 仅打包旅行、分支、基线及测试设备身份；它使用正常「记一笔」页面，记录手机本次新增，未导入桌面历史账单。正式移动构建仍独立于桌面仓。
+
+从手机 SQLite 的 raw_command_json 列读取 UTF-8 原字节，经标准输入调用桌面 CLI。故障退出后强停重开手机，从同一行取字节重投。确认使用匹配操作键、意图摘要、目标与结果版本的回执，原始命令、本机版本与桌面确认版本分别保留。末尾 JSON 包含原字节摘要、各端实读版本、实付与笔数。此入口使用隔离文件和子进程传递数据，全程未建立设备间网络连接。

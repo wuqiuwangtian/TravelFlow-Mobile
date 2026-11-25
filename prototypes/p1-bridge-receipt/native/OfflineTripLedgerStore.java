@@ -61,9 +61,6 @@ final class OfflineTripLedgerStore {
             String initialRevisionId,
             String baselineSource
     ) throws Exception {
-        if (dir.isDirectory() && new File(dir, "store.db").isFile()) {
-            return;
-        }
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IllegalStateException("Failed to create offline trip ledger directory");
         }
@@ -128,6 +125,16 @@ final class OfflineTripLedgerStore {
                             new Object[]{initialRevisionId, null, "{\"expenses\":[]}"});
                     db.execSQL("INSERT INTO branch_head VALUES(1,?,?,?,?,?)",
                             new Object[]{datasetId, travelId, branchId, initialRevisionId, baselineSource});
+                }
+                if (readHeadIfScopeMatches(db, datasetId, travelId, branchId) == null
+                        || !initialRevisionId.equals(DatabaseUtils.stringForQuery(db,
+                                "SELECT revision_id FROM revisions ORDER BY seq LIMIT 1", null))) {
+                    throw new IllegalStateException("Offline trip has a different initial context");
+                }
+                // Older isolated ledgers have only local result_revision_id.
+                if (db.getVersion() == 0) {
+                    db.execSQL("ALTER TABLE outbox ADD COLUMN desktop_revision_id TEXT");
+                    db.setVersion(1);
                 }
                 db.setTransactionSuccessful();
             } finally {
@@ -606,6 +613,7 @@ final class OfflineTripLedgerStore {
         String intentSha256 = BridgeCreateLedgerStore.sha256Hex(canonicalVerified);
 
         String resultRevisionId = null;
+        String deliveryState = DELIVERY_STATE_PENDING_SEND;
         boolean replayed = false;
         String rejectError = null;
 
@@ -619,7 +627,8 @@ final class OfflineTripLedgerStore {
 
                 if (rejectError == null) {
                     try (Cursor row = db.rawQuery(
-                            "SELECT intent_json, result_revision_id FROM receipts "
+                            "SELECT r.intent_json, r.result_revision_id, o.delivery_state FROM receipts r "
+                                    + "JOIN outbox o USING(dataset_id,source_device_id,operation_id) "
                                     + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?",
                             new String[]{datasetId, sourceDeviceId, operationId})) {
                         if (row.moveToFirst()) {
@@ -628,6 +637,7 @@ final class OfflineTripLedgerStore {
                             } else {
                                 replayed = true;
                                 resultRevisionId = row.getString(1);
+                                deliveryState = row.getString(2);
                             }
                         }
                     }
@@ -712,8 +722,38 @@ final class OfflineTripLedgerStore {
         ok.put("expected_revision_id", expectedRevisionId);
         ok.put("result_revision_id", resultRevisionId);
         ok.put("intent_sha256", intentSha256);
-        ok.put("delivery_state", DELIVERY_STATE_PENDING_SEND);
+        ok.put("delivery_state", deliveryState);
         return ok;
+    }
+
+    static JSObject confirmDelivery(File dir, String operationId, JSONObject response) throws Exception {
+        JSONObject receipt = response.optJSONObject("receipt");
+        if (!Boolean.TRUE.equals(response.opt("ok")) || !"committed".equals(response.opt("state"))
+                || receipt == null || !"expense.create".equals(receipt.opt("kind"))
+                || !"changed".equals(receipt.opt("effect")) || !"received".equals(receipt.opt("origin_direction"))
+                || !"p1-host-intent-c14n-1".equals(receipt.opt("canonical_profile"))) {
+            return rejected("receipt_mismatch");
+        }
+        JSONObject op = receipt.optJSONObject("operation");
+        Object remote = receipt.opt("result_revision_id");
+        if (op == null || !operationId.equals(op.opt("operation_id"))
+                || !(remote instanceof String) || ((String) remote).isEmpty()) return rejected("receipt_mismatch");
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put("delivery_state", "confirmed");
+            values.put("desktop_revision_id", (String) remote);
+            int matched = db.update("outbox", values,
+                    "dataset_id=? AND source_device_id=? AND operation_id=? AND entity_id=? AND intent_sha256=? "
+                    + "AND (desktop_revision_id IS NULL OR desktop_revision_id=?) "
+                    + "AND EXISTS (SELECT 1 FROM branch_head WHERE dataset_id=outbox.dataset_id AND travel_id=? AND branch_id=?)",
+                    new String[]{op.getString("dataset_id"), op.getString("source_device_id"), operationId,
+                        receipt.getString("entity_id"), receipt.getString("intent_sha256"), (String) remote,
+                        receipt.getString("travel_id"), receipt.getString("branch_id")});
+            if (matched != 1) return rejected("receipt_mismatch");
+            JSObject result = new JSObject();
+            result.put("accepted", true);
+            return result;
+        }
     }
 
     static JSObject inspectLedger(File dir) throws Exception {
@@ -748,14 +788,14 @@ final class OfflineTripLedgerStore {
             data.put("totalCents", BridgeLedgerStore.queryLong(db, "SELECT COALESCE(SUM(amount_cents), 0) FROM expenses", null));
             data.put("revisionCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM revisions", null));
             data.put("receiptCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM receipts", null));
-            data.put("outboxCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM outbox", null));
+            data.put("outboxCount", BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM outbox WHERE delivery_state='pending_send'", null));
 
             JSArray expenses = new JSArray();
             try (Cursor rows = db.rawQuery(
                     "SELECT e.entity_id, e.title, e.amount_cents, e.currency, e.paid_on, e.category, "
                             + "e.day, e.activity_id, e.notes, e.receipt_ids_json, e.budget_item_id, "
                             + "e.settles_budget, e.operation_id, o.delivery_state, o.expected_revision_id, "
-                            + "o.result_revision_id, o.intent_sha256 "
+                            + "o.result_revision_id, o.intent_sha256, o.desktop_revision_id "
                             + "FROM expenses e LEFT JOIN outbox o ON o.operation_id = e.operation_id "
                             + "ORDER BY e.seq", null)) {
                 while (rows.moveToNext()) {
@@ -777,6 +817,7 @@ final class OfflineTripLedgerStore {
                     item.put("expected_revision_id", rows.isNull(14) ? JSONObject.NULL : rows.getString(14));
                     item.put("result_revision_id", rows.isNull(15) ? JSONObject.NULL : rows.getString(15));
                     item.put("intent_sha256", rows.isNull(16) ? JSONObject.NULL : rows.getString(16));
+                    item.put("desktop_revision_id", rows.isNull(17) ? JSONObject.NULL : rows.getString(17));
                     expenses.put(item);
                 }
             }
@@ -846,7 +887,7 @@ final class OfflineTripLedgerStore {
         try (Cursor rows = db.rawQuery(
                 "SELECT seq, dataset_id, source_device_id, operation_id, entity_id, expected_revision_id, "
                         + "result_revision_id, raw_command_json, canonical_intent_json, intent_sha256, delivery_state "
-                        + "FROM outbox ORDER BY seq", null)) {
+                        + "FROM outbox WHERE delivery_state='pending_send' ORDER BY seq", null)) {
             while (rows.moveToNext()) {
                 String datasetId = rows.getString(1);
                 String sourceDeviceId = rows.getString(2);

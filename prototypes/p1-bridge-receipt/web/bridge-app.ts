@@ -335,11 +335,13 @@ interface P1BridgeReceiptPlugin {
     rawCommandJson: string;
     canonicalIntentJson: string;
   }): Promise<OfflineTripSaveResult>;
+  confirmOfflineDelivery(options: { operationId: string; response: unknown }): Promise<{ accepted: boolean }>;
   inspectOfflineTripLedger(): Promise<OfflineTripLedgerState>;
   exportOfflineOutboxCommands(): Promise<OfflineOutboxExportResult>;
 }
 
 interface OfflineTripExpenseRow extends CreateExpenseRow {
+  desktop_revision_id: string | null;
   operation_id: string;
   delivery_state: string;
   expected_revision_id: string | null;
@@ -465,6 +467,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "其他",
 };
 
+let offlineSourceDevice: string = OFFLINE_DEVICE_ID;
 let currentTripState: OfflineTripLedgerState | null = null;
 let tripSaveInFlight = false;
 let tripDraftOperationId: string | null = null;
@@ -1736,12 +1739,13 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
   const baselineSource = state.baselineSource ?? OFFLINE_BASELINE_SOURCE;
 
   tripMetaEl.textContent =
-    `虚构旅行 ${travelId} · 分支 ${branchId} · 头版本 ${headRevisionId} · 起始基线 ${OFFLINE_INITIAL_REVISION_ID}（来源：${baselineSource}）`;
+    `虚构旅行 ${travelId} · 分支 ${branchId} · 头版本 ${headRevisionId} · 起始基线 ${state.revisions[0]?.revision_id ?? OFFLINE_INITIAL_REVISION_ID}（来源：${baselineSource}）`;
   tripSummaryEl.textContent = `共 ${state.expenseCount} 笔 · 合计 ¥${formatCentsToYuan(totalCents)}`;
 
   if (state.outboxCount === 0) {
     tripSyncStatusEl.dataset.tone = "pending";
-    tripSyncStatusEl.textContent = "本机离线账本已就绪 · 暂无待发送记录（不会当作桌面已确认）";
+    if (state.expenseCount > 0) tripSyncStatusEl.textContent = `桌面已确认 · 共 ${state.expenseCount} 笔`;
+    else tripSyncStatusEl.textContent = "本机离线账本已就绪 · 暂无待发送记录（不会当作桌面已确认）";
   } else {
     tripSyncStatusEl.dataset.tone = "warning";
     tripSyncStatusEl.textContent = `已在本机保存，待发送 ${state.outboxCount} 笔（本机提交成功，尚未经桌面端确认）`;
@@ -1785,7 +1789,7 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
     const badge = document.createElement("span");
     badge.className = "tf-badge";
     badge.dataset.tone = "amber";
-    badge.textContent = "已在本机保存，待发送";
+    badge.textContent = item.delivery_state === "confirmed" ? "桌面已确认" : "已在本机保存，待发送";
 
     subRow.append(detailSpan, badge);
     li.append(topRow, subRow);
@@ -1839,7 +1843,7 @@ tripEntrySaveBtn.addEventListener("click", () => {
 
       const command = buildOfflineExpenseCreateIntent({
         datasetId,
-        sourceDeviceId: OFFLINE_DEVICE_ID,
+        sourceDeviceId: offlineSourceDevice,
         operationId,
         travelId,
         branchId,
@@ -1905,6 +1909,11 @@ tripEntrySaveBtn.addEventListener("click", () => {
     renderOfflineTripLedger(state);
     return state;
   },
+  confirmDelivery: async (operationId: string, response: unknown) => {
+    const result = await bridge.confirmOfflineDelivery({ operationId, response });
+    renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+    return result;
+  },
   exportOutboxCommands: () => bridge.exportOfflineOutboxCommands(),
   submitRawCommand: (rawCommand: Record<string, unknown>) =>
     bridge.saveOfflineTripExpense({
@@ -1943,7 +1952,11 @@ async function init(): Promise<void> {
       throw new Error(`Failed to load desktop create fixture: ${fixtureResponse.status}`);
     }
     desktopCreateFixture = (await fixtureResponse.json()) as DesktopCreateFixture;
-    const tripState = await bridge.initOfflineTripLedger({
+    const seedFile = await fetch("./offline-trip-seed.json");
+    if (!seedFile.ok) throw new Error("Cannot load isolated trip context");
+    const seed = await seedFile.json();
+    offlineSourceDevice = seed?.sourceDeviceId ?? OFFLINE_DEVICE_ID;
+    const tripState = await bridge.initOfflineTripLedger(seed ?? {
       datasetId: OFFLINE_DATASET_ID,
       travelId: OFFLINE_TRAVEL_ID,
       branchId: OFFLINE_BRANCH_ID,
