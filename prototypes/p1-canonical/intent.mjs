@@ -1,7 +1,7 @@
 // Isolated host encoding candidate. No receipt writes, auth or shared version.
 import { createHash } from "node:crypto";
 import { controlIntent, queryIntent } from "../p1-boundary/commands.mjs";
-import { BoundaryError, require, parseInput, exactInteger } from "../p1-boundary/input.mjs";
+import { BoundaryError, require, parseInput, exactInteger, fields, identifier } from "../p1-boundary/input.mjs";
 
 export const CANONICAL_PROFILE = Object.freeze({
   id: "p1-host-intent-c14n-1", status: "host-candidate-not-shared-contract", digest: "sha256",
@@ -50,6 +50,26 @@ function fixtureValue(tree) {
     case "string": case "boolean": return tree[1];
     default: throw new Error("Unexpected strict diagnostic node");
   }
+}
+
+// Isolated reverse-delivery candidate. The legacy controlIntent envelope stays independent.
+export function fingerprintPatchCandidate(bytes, channel) {
+  if (channel === "receipt-query") return fingerprintIntent(bytes, channel);
+  require(channel === "control", "canonical_channel");
+  const tree = parseInput(bytes, "control");
+  const envelope = fields(tree, ["profile", "kind", "operation", "target", "expected_revision_id", "source_revision_id", "patch"]);
+  for (const [key, names] of [
+    ["operation", ["dataset_id", "source_device_id", "operation_id"]],
+    ["target", ["travel_id", "branch_id", "entity_id"]],
+  ]) {
+    for (const value of fields(envelope.get(key), names).values()) identifier(value);
+  }
+  identifier(envelope.get("expected_revision_id"));
+  identifier(envelope.get("source_revision_id"));
+  require(envelope.get("patch")[0] === "object", "shape");
+  const intent = fixtureValue(tree);
+  require(intent.profile === "p1-host-control-1" && intent.kind === "expense.patch", "shape");
+  return artifact({ canonical_profile: CANONICAL_PROFILE.id, channel, intent });
 }
 
 // Primitive serialization vectors only. This is not an application command,

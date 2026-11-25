@@ -65,3 +65,6 @@ for (const name of Object.keys(frozen.manifest.files).filter(name => name.endsWi
   assert.deepEqual(frozen.json(name), expected, name);
 }
 console.log("Frozen expense-create 0.1.0 snapshot and candidate equivalence checks passed.");
+
+// Reverse-delivery review package at desktop ebf1c2fcdd90a48ee2da90ed75d8af85fc3ad7eb.
+verifyExpenseSnapshot("expense-patch-candidate", "26634e1ebe54b44803361af707eee6d68fca7420f8eb89f1bdba967cf6795cdc");
