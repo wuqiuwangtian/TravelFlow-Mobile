@@ -649,3 +649,15 @@ node scripts/check-android-desktop-pairing.mjs --serial emulator-5580 \
 在上述隔离配对命令中加入 `--exchange`，其余参数相同。此模式使用桌面固定提交 `34c7808f45806d197158a43f4015609d292d354b`，由 `init-trip` 生成虚构旅行，并向桌面前台传入 `--trip-db`。配对后，桌面还需要用 `bind-exchange` 将配对设备绑定到该旅行、分支、数据集和业务设备身份。
 
 在手机的「记一笔」页面离线保存消费，恢复连接后点该笔的「发送到桌面」。原生客户端从 SQLite 读取原命令字节，通过固定证书 HTTPS 投递。若未收到回包，冷重开后可点「查询桌面回执」恢复确认。已确认记录可用「重投原文」验证幂等。自动化使用桌面本地控制面模拟提交后丢回包，从两端库核对版本及笔数，并在撤销后分别尝试写入和查询。
+
+### 配对 HTTPS 单笔消费往返
+
+沿用 API 35 隔离模拟器及桌面配对环境。在移动仓根目录执行：
+
+```sh
+node scripts/check-android-desktop-pairing.mjs --roundtrip --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python \
+  --bind "$(ip -4 -o addr show dev eth0 | awk '{split($4,a,"/");print a[1];exit}')"
+```
+
+桌面固定 `fbb4dfc86aef7bcc71446cfd8a3b86d6d67b2f94`。脚本经 HTTPS 同步手机的离线消费，再从桌面正常消费 PUT 入口修改金额。手机点「领取桌面更正」后，接收事务先完成，交回回执由单独按钮触发。中断后可重领，客户端按同一操作读回 SQLite 原回执。脚本核对两次领取的原文字节摘要、桌面服务进程重启后的待发及确认记录，并复核重复交回后两端账本和原分叉。

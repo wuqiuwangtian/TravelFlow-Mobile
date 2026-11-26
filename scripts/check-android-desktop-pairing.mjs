@@ -12,7 +12,7 @@ import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, 
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 const { values } = parseArgs({ options: { serial: { type: "string" }, "desktop-repo": { type: "string" },
-  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" } } });
+  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" } } });
 const serial = values.serial, port = 19242;
 assert.equal(serial, "emulator-5580");
 assertIsolatedAvd(serial);
@@ -21,7 +21,8 @@ const bind = values.bind;
 assert.ok(Object.values(networkInterfaces()).flat().some(i => !i.internal && i.family === "IPv4" && i.address === bind),
   "Provide an IPv4 address of this desktop host with --bind");
 const python = path.resolve(values["desktop-python"]);
-const ref = values.exchange ? "34c7808f45806d197158a43f4015609d292d354b" : "768043340f3bb681bd1904cc2b873e7632070982";
+const exchange = values.exchange || values.roundtrip;
+const ref = values.roundtrip ? "fbb4dfc86aef7bcc71446cfd8a3b86d6d67b2f94" : values.exchange ? "34c7808f45806d197158a43f4015609d292d354b" : "768043340f3bb681bd1904cc2b873e7632070982";
 const work = mkdtempSync(path.join(tmpdir(), "travel-pair-"));
 const desktop = path.join(work, "desktop-src");
 const state = path.join(work, "private");
@@ -33,12 +34,12 @@ let built, installed, server, exited, session;
 try {
   mkdirSync(desktop);
   const archive = path.join(work, "desktop.tar");
-  execFileSync("git", ["-C", values["desktop-repo"], "archive", "-o", archive, ref, "desktop", ...(values.exchange ? ["backend"] : [])]);
+  execFileSync("git", ["-C", values["desktop-repo"], "archive", "-o", archive, ref, "desktop", ...(exchange ? ["backend"] : [])]);
   execFileSync("tar", ["-xf", archive, "-C", desktop]);
   const handoff = (...params) => JSON.parse(execFileSync(python, ["backend/scripts/exchange_trip_handoff.py", ...params],
     { cwd: desktop, encoding: "utf8", timeout: 60000 }));
   const contextFile = path.join(work, "trip-context.json");
-  const ctx = values.exchange ? handoff("init-trip", "--work-dir", path.join(work, "trip"), "--context-out", contextFile) : null;
+  const ctx = exchange ? handoff("init-trip", "--work-dir", path.join(work, "trip"), "--context-out", contextFile) : null;
   const inspect = (branch = ctx.branch_id) => handoff("inspect-trip", "--database", ctx.database, "--branch-id", branch,
     "--fork-branch-id", ctx.fork_branch_id);
   const initial = ctx && inspect();
@@ -48,13 +49,16 @@ try {
   installed = true;
   setAirplaneMode(serial, false);
   session = await launchAndAttach(serial, port);
-  server = spawn(python, [...args, "serve", "--state-dir", state, "--bind", bind, "--port", "0", "--open-pairing", ...(ctx ? ["--trip-db", ctx.database] : [])],
-    { cwd: desktop, stdio: ["ignore", "pipe", "inherit"] });
-  exited = once(server, "exit");
-  const lines = createInterface({ input: server.stdout });
-  const [line] = await Promise.race([once(lines, "line"), exited.then(() => { throw Error("Desktop startup failed"); })]);
-  lines.close();
-  const info = JSON.parse(line);
+  async function startDesktop(listenPort, openPairing) {
+    server = spawn(python, [...args, "serve", "--state-dir", state, "--bind", bind, "--port", String(listenPort), ...(openPairing ? ["--open-pairing"] : []), ...(ctx ? ["--trip-db", ctx.database] : [])],
+      { cwd: desktop, stdio: ["ignore", "pipe", "inherit"] });
+    exited = once(server, "exit");
+    const lines = createInterface({ input: server.stdout });
+    const [line] = await Promise.race([once(lines, "line"), exited.then(() => { throw Error("Desktop startup failed"); })]);
+    lines.close();
+    return JSON.parse(line);
+  }
+  const info = await startDesktop(0, true);
   assert.equal(info.lan_host, bind);
   const route = adb(serial, ["shell", "ip", "route", "get", bind]).stdout.trim();
   async function tap(id, expected) {
@@ -177,7 +181,80 @@ try {
     const fork = inspect(ctx.fork_branch_id);
     assert.deepEqual(fork.head_expenses, initialFork.head_expenses);
     assert.equal(fork.head_paid_cents, initialFork.head_paid_cents);
-    verifyRevoked = async () => {
+    if (values.roundtrip) {
+      const desktopEdit = JSON.parse(execFileSync(python, [path.resolve("scripts/p1-roundtrip-desktop.py"), "edit",
+        ctx.database, receipt.result_version_id, command.target.entity_id, ctx.branch_id], { cwd: desktop, encoding: "utf8" }));
+      const status = () => handoff("outbound-status", "--database", ctx.database);
+      const queued = status().pending;
+      assert.equal(queued.length, 1);
+      const rawSha = createHash("sha256").update(queued[0].raw_command_json).digest("hex");
+      const patchTap = async (id, expected) => {
+        const beforeRoute = networkRoute().stdout.trim().split("\n")[0].trim();
+        assert.ok(beforeRoute.includes(" dev " + routedInterface + " "));
+        await tap(id, expected);
+        assert.equal(networkRoute().stdout.trim().split("\n")[0].trim(), beforeRoute);
+        exchangeRoutes[id + ":" + expected.source] = beforeRoute;
+      };
+      const pull = async expected => {
+        await patchTap("patch-pull", expected);
+        assert.equal(await session.cdp.evaluate("document.querySelector('#patch-pull').dataset.rawSha256"), rawSha);
+      };
+      await pull(/已更新原消费/);
+      const mobileReceipt = () => JSON.parse(sql("SELECT receipt_json FROM received_patches"));
+      const first = mobileReceipt();
+      assert.equal(first.operation.operation_id, queued[0].operation_id);
+      assert.equal(first.intent_sha256, queued[0].intent_sha256);
+      assert.equal(first.entity_id, command.target.entity_id);
+      const changedPhone = await phone();
+      assert.deepEqual(changedPhone.expenses, [{ ...recovered.expenses[0], amount_cents: 2150 }]);
+      assert.equal(changedPhone.headRevisionId, first.result_revision_id);
+      assert.deepEqual([changedPhone.totalCents, changedPhone.revisionCount, changedPhone.receiptCount, changedPhone.outboxCount],
+        [2150, recovered.revisionCount + 1, recovered.receiptCount, 0]);
+      assert.deepEqual([changedPhone.syncedDesktopRevisionId, first.synced_desktop_revision_id], [desktopEdit, desktopEdit]);
+      assert.equal(sql("SELECT count(*) FROM received_patches"), "1");
+      const savedDump = sql(".dump");
+      session.cdp.close();
+      session = await forceStopAndReopen(serial, port, session.pid);
+      assert.equal(status().pending[0].delivery_state, "verification_pending");
+      assert.deepEqual(mobileReceipt(), first);
+      await pull(/已读回原回执/);
+      assert.equal(sql(".dump"), savedDump);
+      const afterEdit = inspect();
+      assert.equal(afterEdit.head_paid_cents, initial.head_paid_cents + 2150);
+      assert.deepEqual(afterEdit.head_expenses, [...initial.head_expenses, { ...committed.head_expenses.at(-1), amount_cents: 2150 }]);
+      assert.deepEqual(afterEdit.version_ids, [...committed.version_ids, desktopEdit]);
+      assert.deepEqual(afterEdit.receipts, committed.receipts);
+      await patchTap("patch-confirm", /桌面已收到更正回执/);
+      const oldPid = server.pid;
+      assert.ok(control("stop").ok);
+      await exited;
+      const restarted = await startDesktop(info.lan_port, false);
+      assert.notEqual(server.pid, oldPid);
+      assert.equal(restarted.cert_sha256, info.cert_sha256);
+      const confirmed = status();
+      assert.deepEqual([confirmed.pending_count, confirmed.confirmed_count, confirmed.all.length], [0, 1, 1]);
+      assert.equal(confirmed.confirmed[0].confirmed_mobile_revision_id, first.result_revision_id);
+      assert.deepEqual(JSON.parse(confirmed.confirmed[0].last_raw_response_json).receipt, first);
+      const final = inspect();
+      for (const key of ["version_ids", "head_paid_cents", "head_expenses", "receipts", "fork"]) {
+        assert.deepEqual(final[key], afterEdit[key]);
+      }
+      await patchTap("patch-confirm", /桌面已确认同一份回执/);
+      assert.deepEqual(status(), confirmed);
+      assert.deepEqual(inspect(), final);
+      assert.equal(sql(".dump"), savedDump);
+      assert.deepEqual(final.fork, initial.fork);
+      const forkRead = inspect(ctx.fork_branch_id);
+      assert.deepEqual(forkRead.head_expenses, initialFork.head_expenses);
+      assert.equal(forkRead.head_paid_cents, initialFork.head_paid_cents);
+      await patchTap("patch-pull", /暂无待领更正/);
+      console.log(JSON.stringify({ roundtrip: true, desktopEdit, mobileRevision: first.result_revision_id,
+        operation: first.operation.operation_id, rawSha, mobileCents: changedPhone.totalCents, mobileExpenses: changedPhone.expenseCount,
+        mobileVersions: changedPhone.revisionCount, mobileCreateReceipts: changedPhone.receiptCount, mobilePatchReceipts: 1,
+        desktopCents: final.head_paid_cents, desktopExpenses: final.head_expenses.length, desktopVersions: final.version_ids.length,
+        desktopCreateReceipts: final.receipts.length, pending: confirmed.pending_count, confirmed: confirmed.confirmed_count,
+        fork: final.fork, forkPaid: forkRead.head_paid_cents, oldDesktopPid: oldPid, newDesktopPid: server.pid, exchangeRoutes }, null, 2));
+    } else verifyRevoked = async () => {
       await action("send", "HTTP_403_device_revoked");
       await action("query", "HTTP_403_device_revoked");
       assert.equal(sql(".dump"), confirmedDump);

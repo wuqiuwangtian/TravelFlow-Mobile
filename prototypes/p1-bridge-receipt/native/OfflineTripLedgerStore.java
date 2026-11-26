@@ -810,6 +810,10 @@ final class OfflineTripLedgerStore {
 
     // Local bridge transport for the candidate's single authorized desktop fixture.
     static JSObject receiveDesktopCommand(File dir, String raw) throws Exception {
+        return receiveDesktopCommand(dir, raw, null);
+    }
+
+    static JSObject receiveDesktopCommand(File dir, String raw, JSONObject pulled) throws Exception {
         if (raw.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) return patchError("resource_bytes");
         Map<String, Object> cmd;
         try {
@@ -837,6 +841,14 @@ final class OfflineTripLedgerStore {
         }
         String canonical = lookup ? null : canonicalizeControlDocument(cmd);
         if (!lookup && canonical.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES) return patchError("canonical_bytes");
+        if (pulled != null && (lookup || !"verification_pending".equals(pulled.opt("delivery_state"))
+                || !identity[0].equals(pulled.opt("dataset_id")) || !identity[1].equals(pulled.opt("source_device_id"))
+                || !identity[2].equals(pulled.opt("operation_id")) || !target.get("entity_id").equals(pulled.opt("entity_id"))
+                || !cmd.get("expected_revision_id").equals(pulled.opt("expected_revision_id"))
+                || !cmd.get("source_revision_id").equals(pulled.opt("source_revision_id"))
+                || !BridgeCreateLedgerStore.sha256Hex(canonical).equals(pulled.opt("intent_sha256")))) {
+            return patchError("patch_envelope_mismatch");
+        }
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
             db.beginTransaction();
             try (Cursor branch = db.rawQuery("SELECT dataset_id,travel_id,branch_id,head_revision_id,synced_desktop_revision_id "

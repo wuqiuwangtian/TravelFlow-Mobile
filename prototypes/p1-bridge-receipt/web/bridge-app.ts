@@ -2009,6 +2009,8 @@ async function init(): Promise<void> {
 void init();
 
 const pairing = registerPlugin<{
+  pullPatch(): Promise<{ available: boolean; replayed: boolean; revision: string; rawSha256: string }>;
+  confirmPatch(): Promise<{ alreadyConfirmed: boolean }>;
   begin(data: { display: string }): Promise<{ sas: string }>;
   confirm(): Promise<void>;
   exchangeExpense(data: { operationId: string; lookup: boolean }): Promise<{ revision: string; replayed: boolean }>;
@@ -2019,10 +2021,13 @@ const pairBegin = document.querySelector<HTMLButtonElement>("#pair-begin")!;
 const pairConfirm = document.querySelector<HTMLButtonElement>("#pair-confirm")!;
 const pairRead = document.querySelector<HTMLButtonElement>("#pair-read")!;
 const pairStatus = document.querySelector<HTMLElement>("#pair-status")!;
+const patchPull = document.querySelector<HTMLButtonElement>("#patch-pull")!;
+const patchConfirm = document.querySelector<HTMLButtonElement>("#patch-confirm")!;
+let hasPatchReceipt = false;
 let pendingSas = "";
 
 async function pairingAction(action: () => Promise<string>) {
-  pairBegin.disabled = pairConfirm.disabled = pairRead.disabled = true;
+  patchPull.disabled = patchConfirm.disabled = pairBegin.disabled = pairConfirm.disabled = pairRead.disabled = true;
   pairStatus.textContent = "连接中…";
   try {
     pairStatus.textContent = await action();
@@ -2038,7 +2043,8 @@ async function pairingAction(action: () => Promise<string>) {
     pairStatus.textContent = (messages[code] ?? "连接失败") + " (" + code + ")"
       + (pendingSas ? " · 核对码 " + pendingSas : "");
   } finally {
-    pairBegin.disabled = pairRead.disabled = false;
+    patchPull.disabled = pairBegin.disabled = pairRead.disabled = false;
+    patchConfirm.disabled = !hasPatchReceipt;
     pairConfirm.disabled = !pendingSas;
   }
 }
@@ -2052,10 +2058,26 @@ pairBegin.onclick = () => pairingAction(async () => {
 });
 pairConfirm.onclick = () => pairingAction(async () => {
   await pairing.confirm();
+  hasPatchReceipt = false;
   pendingSas = "";
   return "配对已完成";
 });
 pairRead.onclick = () => pairingAction(async () => {
   const { trip } = await pairing.readTrip();
   return trip.title + " · " + trip.travel_id + " · 样例消费 ¥" + formatCentsToYuan(trip.sample_expense_amount_cents);
+});
+
+patchPull.onclick = () => pairingAction(async () => {
+  hasPatchReceipt = false;
+  delete patchPull.dataset.rawSha256;
+  const result = await pairing.pullPatch();
+  if (!result.available) return "暂无待领更正";
+  patchPull.dataset.rawSha256 = result.rawSha256;
+  hasPatchReceipt = true;
+  renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+  return (result.replayed ? "更正已处理，已读回原回执 " : "已更新原消费，待交回回执 ") + result.revision;
+});
+patchConfirm.onclick = () => pairingAction(async () => {
+  const result = await pairing.confirmPatch();
+  return result.alreadyConfirmed ? "桌面已确认同一份回执" : "桌面已收到更正回执";
 });

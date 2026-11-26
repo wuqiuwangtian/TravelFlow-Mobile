@@ -77,3 +77,5 @@ Android 单笔待发送恢复的集成回执见 [PROJECT_STATUS](PROJECT_STATUS.
 阶段四的隔离配对客户端已在 API 35 模拟器与 WSL2 前台桌面服务之间验证证书指纹、双方确认、重连和撤销。真机同 Wi-Fi、热点可达性及业务命令接入配对通道仍待分别验收，见 [配对实读](PROJECT_STATUS.md#android-与-wsl-桌面隔离配对)。
 
 配对 HTTPS 已验通手机离线新增消费、桌面业务授权、丢回包后查询确认、重投及撤销拒绝，见 [HTTPS 新增实读](PROJECT_STATUS.md#android-离线新增经配对-https-确认)。反向消费更正经该网络通道及物理设备可达性待另验。
+
+单笔消费新增、桌面更正、手机冷重启重领和桌面重启后回执确认已在同一配对 HTTPS 连接配置下完成 API 35 隔离往返验收。实测边界及结果见 [HTTPS 往返实读](PROJECT_STATUS.md#单笔消费经配对-https-往返实读)。物理设备网络可达性仍待单独验证。

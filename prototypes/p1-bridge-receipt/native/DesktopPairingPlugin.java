@@ -45,6 +45,7 @@ public class DesktopPairingPlugin extends Plugin {
     private static final String ALIAS = "travelflow.isolated.desktop.v1";
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
     private JSONObject pending;
+    private JSONObject lastPatchQuery;
     private final SecureRandom random = new SecureRandom();
 
     private static String hex(byte[] bytes) {
@@ -211,6 +212,7 @@ public class DesktopPairingPlugin extends Plugin {
                 !peer.getString("pin").equals(reply.getString("cert_sha256")) ||
                 !reply.getString("device_token").matches("[A-Za-z0-9_-]{43}")) throw new Failure("invalid_credential");
             save(peer.put("token", reply.getString("device_token")));
+            lastPatchQuery = null;
             pending = null;
             return new JSObject();
         });
@@ -247,6 +249,47 @@ public class DesktopPairingPlugin extends Plugin {
             JSObject result = new JSObject();
             result.put("revision", reply.getJSONObject("receipt").getString("result_revision_id"));
             result.put("replayed", reply.optBoolean("replayed", false));
+            return result;
+        });
+    }
+
+    @PluginMethod public void pullPatch(PluginCall call) {
+        execute(call, () -> {
+            org.json.JSONArray items = request(saved(), "/exchange/expense-patch/pull", new JSONObject(), true)
+                    .getJSONArray("items");
+            JSObject result = new JSObject();
+            result.put("available", items.length() > 0);
+            lastPatchQuery = null;
+            if (items.length() == 0) return result;
+            // Process the oldest command first; the desktop retains it until explicit confirmation.
+            JSONObject item = items.getJSONObject(0);
+            String raw = item.getString("raw_command_json");
+            File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+            JSObject applied = OfflineTripLedgerStore.receiveDesktopCommand(dir, raw, item);
+            if (!applied.getBoolean("ok")) throw new Failure(applied.getString("error"));
+            JSONObject receipt = applied.getJSONObject("receipt");
+            lastPatchQuery = new JSONObject().put("profile", "p1-host-query-1").put("kind", "receipt.lookup")
+                    .put("operation", receipt.getJSONObject("operation"));
+            result.put("replayed", applied.getBoolean("replayed"));
+            result.put("revision", receipt.getString("result_revision_id"));
+            result.put("rawSha256", BridgeCreateLedgerStore.sha256Hex(raw));
+            return result;
+        });
+    }
+
+    @PluginMethod public void confirmPatch(PluginCall call) {
+        execute(call, () -> {
+            if (lastPatchQuery == null) throw new Failure("pull_required");
+            File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+            JSONObject lookup = OfflineTripLedgerStore.receiveDesktopCommand(dir, lastPatchQuery.toString());
+            JSONObject receipt = lookup.optJSONObject("receipt");
+            if (receipt == null) throw new Failure("receipt_not_found");
+            JSONObject reply = request(saved(), "/exchange/expense-patch/confirm", lookup, true);
+            if (!reply.getBoolean("confirmed") || !receipt.getString("result_revision_id")
+                    .equals(reply.getJSONObject("record").getString("confirmed_mobile_revision_id")))
+                throw new Failure("receipt_mismatch");
+            JSObject result = new JSObject();
+            result.put("alreadyConfirmed", reply.getBoolean("already_confirmed"));
             return result;
         });
     }
