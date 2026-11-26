@@ -79,3 +79,5 @@ Android 单笔待发送恢复的集成回执见 [PROJECT_STATUS](PROJECT_STATUS.
 配对 HTTPS 已验通手机离线新增消费、桌面业务授权、丢回包后查询确认、重投及撤销拒绝，见 [HTTPS 新增实读](PROJECT_STATUS.md#android-离线新增经配对-https-确认)。反向消费更正经该网络通道及物理设备可达性待另验。
 
 单笔消费新增、桌面更正、手机冷重启重领和桌面重启后回执确认已在同一配对 HTTPS 连接配置下完成 API 35 隔离往返验收。实测边界及结果见 [HTTPS 往返实读](PROJECT_STATUS.md#单笔消费经配对-https-往返实读)。物理设备网络可达性仍待单独验证。
+
+同一 API 35 往返也已在 Windows 原生前台服务和实际 WLAN 网卡地址通过验收，包括原端点重启及手机持久凭据重连。网络和入站覆盖见 [Windows 往返实读](PROJECT_STATUS.md#windows-原生前台服务与-android-单笔消费往返实读)。

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { isIPv4 } from "node:net";
 import { networkInterfaces, release, tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -12,21 +13,39 @@ import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, 
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 const { values } = parseArgs({ options: { serial: { type: "string" }, "desktop-repo": { type: "string" },
-  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" } } });
+  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" }, windows: { type: "boolean" } } });
 const serial = values.serial, port = 19242;
 assert.equal(serial, "emulator-5580");
 assertIsolatedAvd(serial);
 assert.ok(!adb(serial, ["forward", "--list"]).stdout.split(/\s+/).includes("tcp:" + port));
 const bind = values.bind;
-assert.ok(Object.values(networkInterfaces()).flat().some(i => !i.internal && i.family === "IPv4" && i.address === bind),
-  "Provide an IPv4 address of this desktop host with --bind");
+const windows = values.windows;
+assert.ok(!windows || values.roundtrip, "--windows requires --roundtrip");
+assert.ok(isIPv4(bind), "Provide the IPv4 address of the desktop adapter");
 const python = path.resolve(values["desktop-python"]);
+const capture = (command, args) => execFileSync(command, args, { encoding: "utf8", timeout: 20000 }).trim();
+const ps = script => capture("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+  ["-NoProfile", "-NonInteractive", "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + script]);
+const nativePath = p => windows ? capture("wslpath", ["-w", p]) : p;
+let winHost;
+if (windows) {
+  winHost = JSON.parse(capture(python, ["-X", "utf8", "-c", "import json,platform,sys,tempfile;print(json.dumps(dict(os=sys.platform,version=platform.python_version(),temp=tempfile.gettempdir())))"]));
+  assert.equal(winHost.os, "win32");
+  winHost.adapter = ps(`(Get-NetIPAddress -AddressFamily IPv4 -IPAddress '${bind}' -ErrorAction Stop).InterfaceAlias`);
+  assert.ok(winHost.adapter);
+  winHost.wslRoute = capture("ip", ["-4", "route", "get", bind]).split("\n")[0];
+} else {
+  assert.ok(Object.values(networkInterfaces()).flat().some(i => !i.internal && i.address === bind),
+    "Provide an IPv4 address of this desktop host with --bind");
+}
 const exchange = values.exchange || values.roundtrip;
-const ref = values.roundtrip ? "fbb4dfc86aef7bcc71446cfd8a3b86d6d67b2f94" : values.exchange ? "34c7808f45806d197158a43f4015609d292d354b" : "768043340f3bb681bd1904cc2b873e7632070982";
-const work = mkdtempSync(path.join(tmpdir(), "travel-pair-"));
+const ref = windows ? "fcd696d055641193ab63d2164512ab2ad759a5fd" : values.roundtrip ? "fbb4dfc86aef7bcc71446cfd8a3b86d6d67b2f94" : values.exchange ? "34c7808f45806d197158a43f4015609d292d354b" : "768043340f3bb681bd1904cc2b873e7632070982";
+const temp = windows ? capture("wslpath", ["-u", winHost.temp]) : tmpdir();
+const work = mkdtempSync(path.join(temp, "travel-pair-"));
+const pyFlags = ["-X", "utf8"];
 const desktop = path.join(work, "desktop-src");
-const state = path.join(work, "private");
-const args = ["-m", "desktop.lan_pairing"];
+const state = nativePath(path.join(work, "private"));
+const args = [...pyFlags, "-m", "desktop.lan_pairing"];
 const control = (action, ...params) => JSON.parse(execFileSync(python,
   [...args, action, "--state-dir", state, ...params], { cwd: desktop, timeout: 10000, encoding: "utf8" }));
 const airplane = getAirplaneMode(serial);
@@ -36,10 +55,10 @@ try {
   const archive = path.join(work, "desktop.tar");
   execFileSync("git", ["-C", values["desktop-repo"], "archive", "-o", archive, ref, "desktop", ...(exchange ? ["backend"] : [])]);
   execFileSync("tar", ["-xf", archive, "-C", desktop]);
-  const handoff = (...params) => JSON.parse(execFileSync(python, ["backend/scripts/exchange_trip_handoff.py", ...params],
+  const handoff = (...params) => JSON.parse(execFileSync(python, [...pyFlags, "backend/scripts/exchange_trip_handoff.py", ...params],
     { cwd: desktop, encoding: "utf8", timeout: 60000 }));
   const contextFile = path.join(work, "trip-context.json");
-  const ctx = exchange ? handoff("init-trip", "--work-dir", path.join(work, "trip"), "--context-out", contextFile) : null;
+  const ctx = exchange ? handoff("init-trip", "--work-dir", nativePath(path.join(work, "trip")), "--context-out", nativePath(contextFile)) : null;
   const inspect = (branch = ctx.branch_id) => handoff("inspect-trip", "--database", ctx.database, "--branch-id", branch,
     "--fork-branch-id", ctx.fork_branch_id);
   const initial = ctx && inspect();
@@ -144,7 +163,7 @@ try {
     assert.deepEqual(inspect().head_expenses, initial.head_expenses);
     assert.ok(control("bind-exchange", "--device-id", pending[0].device_id, "--dataset-id", ctx.dataset_id,
       "--source-device-id", ctx.authorized_devices[0], "--travel-id", ctx.travel_id, "--branch-id", ctx.branch_id).ok);
-    const faultStatus = execFileSync(python, ["-c", [
+    const faultStatus = execFileSync(python, [...pyFlags, "-c", [
       "import sys", "from pathlib import Path", "from desktop.lan_pairing import _control_call",
       "print(_control_call(Path(sys.argv[1]), 'POST', '/control/exchange/fault', {'fault':'after_commit_before_reply'})[0])",
     ].join("\n"), state], { cwd: desktop, encoding: "utf8" }).trim();
@@ -182,7 +201,8 @@ try {
     assert.deepEqual(fork.head_expenses, initialFork.head_expenses);
     assert.equal(fork.head_paid_cents, initialFork.head_paid_cents);
     if (values.roundtrip) {
-      const desktopEdit = JSON.parse(execFileSync(python, [path.resolve("scripts/p1-roundtrip-desktop.py"), "edit",
+      const desktopEdit = windows ? handoff("edit-expense", "--database", ctx.database, "--version-id", receipt.result_version_id,
+        "--expense-id", command.target.entity_id, "--amount", "21.50").version_id : JSON.parse(execFileSync(python, [path.resolve("scripts/p1-roundtrip-desktop.py"), "edit",
         ctx.database, receipt.result_version_id, command.target.entity_id, ctx.branch_id], { cwd: desktop, encoding: "utf8" }));
       const status = () => handoff("outbound-status", "--database", ctx.database);
       const queued = status().pending;
@@ -225,11 +245,16 @@ try {
       assert.deepEqual(afterEdit.version_ids, [...committed.version_ids, desktopEdit]);
       assert.deepEqual(afterEdit.receipts, committed.receipts);
       await patchTap("patch-confirm", /桌面已收到更正回执/);
-      const oldPid = server.pid;
+      const listenerPid = () => windows ? Number(ps(`(Get-NetTCPConnection -State Listen -LocalAddress '${bind}' -LocalPort ${info.lan_port} -ErrorAction Stop).OwningProcess`)) : server.pid;
+      const oldPid = listenerPid();
+      assert.ok(oldPid > 0);
       assert.ok(control("stop").ok);
       await exited;
       const restarted = await startDesktop(info.lan_port, false);
-      assert.notEqual(server.pid, oldPid);
+      const newPid = listenerPid();
+      assert.ok(newPid > 0 && newPid !== oldPid);
+      assert.equal(restarted.lan_port, info.lan_port);
+      assert.equal(restarted.lan_host, info.lan_host);
       assert.equal(restarted.cert_sha256, info.cert_sha256);
       const confirmed = status();
       assert.deepEqual([confirmed.pending_count, confirmed.confirmed_count, confirmed.all.length], [0, 1, 1]);
@@ -247,13 +272,19 @@ try {
       const forkRead = inspect(ctx.fork_branch_id);
       assert.deepEqual(forkRead.head_expenses, initialFork.head_expenses);
       assert.equal(forkRead.head_paid_cents, initialFork.head_paid_cents);
+      if (windows) {
+        session.cdp.close();
+        session = await forceStopAndReopen(serial, port, session.pid);
+        await tap("pair-read", /92ba6a148a17.*86\.35/);
+        assert.equal(sql(".dump"), savedDump);
+      }
       await patchTap("patch-pull", /暂无待领更正/);
       console.log(JSON.stringify({ roundtrip: true, desktopEdit, mobileRevision: first.result_revision_id,
         operation: first.operation.operation_id, rawSha, mobileCents: changedPhone.totalCents, mobileExpenses: changedPhone.expenseCount,
         mobileVersions: changedPhone.revisionCount, mobileCreateReceipts: changedPhone.receiptCount, mobilePatchReceipts: 1,
         desktopCents: final.head_paid_cents, desktopExpenses: final.head_expenses.length, desktopVersions: final.version_ids.length,
         desktopCreateReceipts: final.receipts.length, pending: confirmed.pending_count, confirmed: confirmed.confirmed_count,
-        fork: final.fork, forkPaid: forkRead.head_paid_cents, oldDesktopPid: oldPid, newDesktopPid: server.pid, exchangeRoutes }, null, 2));
+        fork: final.fork, forkPaid: forkRead.head_paid_cents, oldDesktopPid: oldPid, newDesktopPid: newPid, desktopPlatform: windows ? winHost.os : process.platform, desktopPython: winHost?.version, adapter: winHost?.adapter, wslRoute: winHost?.wslRoute, exchangeRoutes }, null, 2));
     } else verifyRevoked = async () => {
       await action("send", "HTTP_403_device_revoked");
       await action("query", "HTTP_403_device_revoked");
@@ -276,7 +307,9 @@ try {
     trip, pid, coldPid: session.pid, revoked: "403 device_revoked" }, null, 2));
 } finally {
   if (server && server.exitCode === null && server.signalCode === null) {
-    server.kill("SIGTERM");
+    if (windows) {
+      try { control("stop"); } catch { server.kill("SIGTERM"); }
+    } else server.kill("SIGTERM");
     await exited;
   }
   session?.cdp.close();

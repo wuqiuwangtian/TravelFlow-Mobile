@@ -661,3 +661,16 @@ node scripts/check-android-desktop-pairing.mjs --roundtrip --serial emulator-558
 ```
 
 桌面固定 `fbb4dfc86aef7bcc71446cfd8a3b86d6d67b2f94`。脚本经 HTTPS 同步手机的离线消费，再从桌面正常消费 PUT 入口修改金额。手机点「领取桌面更正」后，接收事务先完成，交回回执由单独按钮触发。中断后可重领，客户端按同一操作读回 SQLite 原回执。脚本核对两次领取的原文字节摘要、桌面服务进程重启后的待发及确认记录，并复核重复交回后两端账本和原分叉。
+
+### Windows 原生前台服务与 API 35 往返
+
+从 WSL 启动上节的隔离模拟器。下例通过 Windows 原生 PowerShell 读取 WLAN 的当前 IPv4 地址；`WIN_PY` 指向 Windows 侧已安装桌面后端依赖的 Python 3.13 环境，从 WSL 使用其挂载路径：
+
+```sh
+PS_EXE=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+WIN_IP=$("$PS_EXE" -NoProfile -Command '(Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias WLAN).IPAddress' | tr -d '\r')
+node scripts/check-android-desktop-pairing.mjs --windows --roundtrip --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python "$WIN_PY" --bind "$WIN_IP"
+```
+
+该模式固定桌面 `fcd696d055641193ab63d2164512ab2ad759a5fd`，在 Windows 用户临时目录创建隔离源码、配对状态和旅行业务库，使用 Windows Python 执行前台服务、控制命令和 `edit-expense`。以 Windows TCP 监听器的所属 PID 核对进程重启；复用原绑定地址、端口和证书，不开放新配对会话。测试结束后停止本次服务并删除隔离目录。
