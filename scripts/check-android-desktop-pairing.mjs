@@ -3,23 +3,26 @@ import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import { networkInterfaces, release, tmpdir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
+import { checkForegroundSync } from "./check-foreground-sync-flow.mjs";
 import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, launchAndAttach,
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 const { values } = parseArgs({ options: { serial: { type: "string" }, "desktop-repo": { type: "string" },
-  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" }, windows: { type: "boolean" } } });
+  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" }, windows: { type: "boolean" }, auto: { type: "boolean" }, conflict: { type: "boolean" } } });
 const serial = values.serial, port = 19242;
 assert.equal(serial, "emulator-5580");
 assertIsolatedAvd(serial);
 assert.ok(!adb(serial, ["forward", "--list"]).stdout.split(/\s+/).includes("tcp:" + port));
 const bind = values.bind;
 const windows = values.windows;
+assert.ok(!values.auto || windows && values.roundtrip, "--auto requires --windows --roundtrip");
+assert.ok(!values.conflict || values.auto, "--conflict requires --auto");
 assert.ok(!windows || values.roundtrip, "--windows requires --roundtrip");
 assert.ok(isIPv4(bind), "Provide the IPv4 address of the desktop adapter");
 const python = path.resolve(values["desktop-python"]);
@@ -57,19 +60,29 @@ try {
   execFileSync("tar", ["-xf", archive, "-C", desktop]);
   const handoff = (...params) => JSON.parse(execFileSync(python, [...pyFlags, "backend/scripts/exchange_trip_handoff.py", ...params],
     { cwd: desktop, encoding: "utf8", timeout: 60000 }));
+  function armFault() {
+    const faultStatus = execFileSync(python, [...pyFlags, "-c", [
+      "import sys", "from pathlib import Path", "from desktop.lan_pairing import _control_call",
+      "print(_control_call(Path(sys.argv[1]), 'POST', '/control/exchange/fault', {'fault':'after_commit_before_reply'})[0])",
+    ].join("\n"), state], { cwd: desktop, encoding: "utf8" }).trim();
+    assert.equal(faultStatus, "200");
+  }
   const contextFile = path.join(work, "trip-context.json");
   const ctx = exchange ? handoff("init-trip", "--work-dir", nativePath(path.join(work, "trip")), "--context-out", nativePath(contextFile)) : null;
   const inspect = (branch = ctx.branch_id) => handoff("inspect-trip", "--database", ctx.database, "--branch-id", branch,
     "--fork-branch-id", ctx.fork_branch_id);
   const initial = ctx && inspect();
   const initialFork = ctx && inspect(ctx.fork_branch_id);
-  built = buildApk(ctx ? contextFile : undefined);
+  built = buildApk(ctx ? contextFile : undefined, undefined, { manualSyncFixture: !values.auto });
   adb(serial, ["install", "-t", built.apk]);
   installed = true;
   setAirplaneMode(serial, false);
   session = await launchAndAttach(serial, port);
   async function startDesktop(listenPort, openPairing) {
-    server = spawn(python, [...args, "serve", "--state-dir", state, "--bind", bind, "--port", String(listenPort), ...(openPairing ? ["--open-pairing"] : []), ...(ctx ? ["--trip-db", ctx.database] : [])],
+    const serveArgs = values.auto
+      ? [...pyFlags, nativePath(path.resolve("scripts/p1-observe-exchange.py")), nativePath(path.join(work, "requests.log"))]
+      : args;
+    server = spawn(python, [...serveArgs, "serve", "--state-dir", state, "--bind", bind, "--port", String(listenPort), ...(openPairing ? ["--open-pairing"] : []), ...(ctx ? ["--trip-db", ctx.database] : [])],
       { cwd: desktop, stdio: ["ignore", "pipe", "inherit"] });
     exited = once(server, "exit");
     const lines = createInterface({ input: server.stdout });
@@ -117,7 +130,12 @@ try {
   session = await forceStopAndReopen(serial, port, pid);
   assert.equal(await tap("pair-read", /92ba6a148a17.*86\.35/), trip);
   let verifyRevoked;
-  if (ctx) {
+  if (values.auto) {
+    await checkForegroundSync({ serial, port, getSession: () => session, setSession: value => { session = value; },
+      ctx, initial, initialFork, inspect, handoff, control, deviceId: pending[0].device_id, bind, route,
+      conflict: values.conflict, requests: () => readFileSync(path.join(work, "requests.log"), "utf8").trim().split(/\r?\n/).filter(Boolean),
+      armFault });
+  } else if (ctx) {
     const sql = query => adb(serial, ["shell", `run-as ${PACKAGE} sqlite3 -readonly files/p1-offline-trip-ledger/store.db '${query}'`]).stdout.trim();
     const phone = () => session.cdp.evaluate("window.__travelflowOfflineEntry.inspect()");
     const dbBytes = () => Buffer.from(sql("SELECT hex(CAST(raw_command_json AS BLOB)) FROM outbox"), "hex");
@@ -163,11 +181,7 @@ try {
     assert.deepEqual(inspect().head_expenses, initial.head_expenses);
     assert.ok(control("bind-exchange", "--device-id", pending[0].device_id, "--dataset-id", ctx.dataset_id,
       "--source-device-id", ctx.authorized_devices[0], "--travel-id", ctx.travel_id, "--branch-id", ctx.branch_id).ok);
-    const faultStatus = execFileSync(python, [...pyFlags, "-c", [
-      "import sys", "from pathlib import Path", "from desktop.lan_pairing import _control_call",
-      "print(_control_call(Path(sys.argv[1]), 'POST', '/control/exchange/fault', {'fault':'after_commit_before_reply'})[0])",
-    ].join("\n"), state], { cwd: desktop, encoding: "utf8" }).trim();
-    assert.equal(faultStatus, "200");
+    armFault();
     await action("send", "delivery_unconfirmed");
     const committed = inspect();
     assert.deepEqual(committed.head_expenses, [...initial.head_expenses,
@@ -297,7 +311,7 @@ try {
         forkPaid: fork.head_paid_cents, revokedSendAndLookup: "403 device_revoked" }, null, 2));
     };
   }
-  assert.ok(control("revoke", "--device-id", pending[0].device_id).revoked);
+  if (!values.auto || values.conflict) assert.ok(control("revoke", "--device-id", pending[0].device_id).revoked);
   if (verifyRevoked) await verifyRevoked();
   const revoked = await tap("pair-read", /HTTP_403_device_revoked/);
   assert.ok(!revoked.includes("92ba6a148a17"));

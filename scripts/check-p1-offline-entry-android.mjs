@@ -1,7 +1,7 @@
 // Android API 35 隔离模拟器端到端验收：从旅行账本离线记两笔独立 CNY 消费（含断网、非法金额零写入、连点防重、强停重开与 0.1.0 命令导出校验）。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -53,13 +53,18 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildApk(tripContext, sourceRoot = root) {
+function buildApk(tripContext, sourceRoot = root, { manualSyncFixture = false } = {}) {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "travelflow-p1-offline-entry-"));
   const projectDir = path.join(tempRoot, "project");
   runCommand(process.execPath, [path.join(sourceRoot, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir, ...(tripContext ? ["--trip-context", tripContext] : [])], {
     cwd: root,
     stdio: "inherit",
   });
+  if (manualSyncFixture) {
+    // The historical manual transport checks deliberately pause between pull and confirm.
+    const index = path.join(projectDir, "android/app/src/main/assets/public/index.html");
+    writeFileSync(index, readFileSync(index, "utf8").replace("<head>", '<head><meta name="travelflow-manual-sync-fixture">'));
+  }
   runCommand("./gradlew", [":app:assembleDebug", "--no-daemon", "--console=plain"], {
     cwd: path.join(projectDir, "android"),
     stdio: "inherit",
@@ -557,12 +562,12 @@ async function main() {
     assert.equal(afterFirstState.expenses[0].delivery_state, "pending_send");
     assert.notEqual(afterFirstState.expenses[0].operation_id, afterFirstState.expenses[0].id);
     assert.match(afterFirstUi.summaryText, /共 1 笔 · 合计 ¥42\.80/);
-    assert.match(afterFirstUi.syncStatusText, /已在本机保存，待发送 1 笔/);
-    assert.ok(!afterFirstUi.syncStatusText.includes("桌面已确认"), "Must not claim desktop confirmed");
+    assert.match(afterFirstUi.syncStatusText, /已保存在本机 · 待同步 1 笔/);
+    assert.ok(!afterFirstUi.syncStatusText.includes("对端已确认"), "Must not claim desktop confirmed");
     assert.equal(afterFirstUi.renderedItems.length, 1);
     assert.match(afterFirstUi.renderedItems[0].text, /机场快线车票/);
     assert.match(afterFirstUi.renderedItems[0].text, /¥42\.80/);
-    assert.match(afterFirstUi.renderedItems[0].text, /已在本机保存，待发送/);
+    assert.match(afterFirstUi.renderedItems[0].text, /已保存在本机 · 待同步/);
 
     // 4. Force-stop cold restart and verify first expense persists.
     cdp.close();
@@ -577,7 +582,7 @@ async function main() {
     assert.equal(reopenedFirstState.headRevisionId, rev1);
     assert.equal(reopenedFirstState.outboxCount, 1);
     assert.match(reopenedFirstUi.summaryText, /共 1 笔 · 合计 ¥42\.80/);
-    assert.match(reopenedFirstUi.renderedItems[0].text, /已在本机保存，待发送/);
+    assert.match(reopenedFirstUi.renderedItems[0].text, /已保存在本机 · 待同步/);
 
     // 5. Enter second expense (86.35 yuan -> 8635 cents, matching desktop fixed lunch comparison).
     await cdp.tap("#trip-open-entry-btn");
@@ -604,11 +609,11 @@ async function main() {
     const rev2 = afterSecondState.headRevisionId;
     assert.notEqual(rev2, rev1);
     assert.match(afterSecondUi.summaryText, /共 2 笔 · 合计 ¥129\.15/);
-    assert.match(afterSecondUi.syncStatusText, /已在本机保存，待发送 2 笔/);
+    assert.match(afterSecondUi.syncStatusText, /已保存在本机 · 待同步 2 笔/);
     assert.equal(afterSecondUi.renderedItems.length, 2);
     assert.match(afterSecondUi.renderedItems[1].text, /午餐/);
     assert.match(afterSecondUi.renderedItems[1].text, /¥86\.35/);
-    assert.match(afterSecondUi.renderedItems[1].text, /已在本机保存，待发送/);
+    assert.match(afterSecondUi.renderedItems[1].text, /已保存在本机 · 待同步/);
 
     // 6. Second force-stop cold restart and verify both expenses, revision chain, and exported 0.1.0 commands.
     cdp.close();

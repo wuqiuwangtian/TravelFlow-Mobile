@@ -90,6 +90,7 @@ function transpileTs(sourcePath, targetPath) {
 
 transpileTs(path.join(root, "src/domain/ledger.ts"), path.join(www, "ledger-core.js"));
 transpileTs(path.join(bridgeSource, "web/bridge-command.ts"), path.join(www, "bridge-command.js"));
+transpileTs(path.join(bridgeSource, "web/foreground-sync.ts"), path.join(www, "foreground-sync.js"));
 transpileTs(path.join(bridgeSource, "web/bridge-app.ts"), path.join(www, "bridge-app.js"));
 
 const cli = path.join(output, "node_modules/@capacitor/cli/bin/capacitor");

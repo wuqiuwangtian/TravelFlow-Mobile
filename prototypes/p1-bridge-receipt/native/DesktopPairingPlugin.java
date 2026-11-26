@@ -44,6 +44,7 @@ import org.json.JSONObject;
 public class DesktopPairingPlugin extends Plugin {
     private static final String ALIAS = "travelflow.isolated.desktop.v1";
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private volatile boolean inForeground = true;
     private JSONObject pending;
     private JSONObject lastPatchQuery;
     private final SecureRandom random = new SecureRandom();
@@ -226,72 +227,150 @@ public class DesktopPairingPlugin extends Plugin {
             return result;
         });
     }
+    private JSObject exchangeExpense(JSONObject peer, File dir, String op, boolean lookup) throws Exception {
+        byte[] payload = OfflineTripLedgerStore.deliveryBytes(dir, op, lookup);
+        JSONObject reply;
+        try {
+            reply = requestBytes(peer, lookup ? "/exchange/receipt-lookup" : "/exchange/expense-create", payload, true);
+        } catch (javax.net.ssl.SSLException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new Failure("delivery_unconfirmed");
+        }
+        if (lookup && "unknown".equals(reply.optString("state")) && "storage_busy".equals(reply.optString("reason")))
+            throw new Failure("storage_busy");
+        if (lookup && "not_found_at_settled_read".equals(reply.optString("state"))
+                && reply.has("receipt") && reply.isNull("receipt")) {
+            throw new Failure("receipt_not_found");
+        }
+        if (!OfflineTripLedgerStore.confirmDelivery(dir, op, reply).getBoolean("accepted"))
+            throw new Failure("receipt_mismatch");
+        JSObject result = new JSObject();
+        result.put("revision", reply.getJSONObject("receipt").getString("result_revision_id"));
+        result.put("replayed", reply.optBoolean("replayed", false));
+        return result;
+    }
+
     @PluginMethod public void exchangeExpense(PluginCall call) {
-        execute(call, () -> {
-            File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
-            String op = call.getString("operationId", "");
-            boolean lookup = call.getBoolean("lookup", false);
-            byte[] payload = OfflineTripLedgerStore.deliveryBytes(dir, op, lookup);
-            JSONObject peer = saved();
-            JSONObject reply;
-            try {
-                reply = requestBytes(peer, lookup ? "/exchange/receipt-lookup" : "/exchange/expense-create", payload, true);
-            } catch (javax.net.ssl.SSLException e) {
-                throw e;
-            } catch (IOException e) {
-                throw new Failure("delivery_unconfirmed");
-            }
-            if (lookup && "not_found_at_settled_read".equals(reply.optString("state"))) {
-                throw new Failure("receipt_not_found");
-            }
-            if (!OfflineTripLedgerStore.confirmDelivery(dir, op, reply).getBoolean("accepted"))
-                throw new Failure("receipt_mismatch");
-            JSObject result = new JSObject();
-            result.put("revision", reply.getJSONObject("receipt").getString("result_revision_id"));
-            result.put("replayed", reply.optBoolean("replayed", false));
-            return result;
-        });
+        execute(call, () -> exchangeExpense(saved(), OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir()),
+                call.getString("operationId", ""), call.getBoolean("lookup", false)));
     }
 
     @PluginMethod public void pullPatch(PluginCall call) {
-        execute(call, () -> {
-            org.json.JSONArray items = request(saved(), "/exchange/expense-patch/pull", new JSONObject(), true)
-                    .getJSONArray("items");
-            JSObject result = new JSObject();
-            result.put("available", items.length() > 0);
-            lastPatchQuery = null;
-            if (items.length() == 0) return result;
-            // Process the oldest command first; the desktop retains it until explicit confirmation.
-            JSONObject item = items.getJSONObject(0);
-            String raw = item.getString("raw_command_json");
-            File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
-            JSObject applied = OfflineTripLedgerStore.receiveDesktopCommand(dir, raw, item);
-            if (!applied.getBoolean("ok")) throw new Failure(applied.getString("error"));
-            JSONObject receipt = applied.getJSONObject("receipt");
-            lastPatchQuery = new JSONObject().put("profile", "p1-host-query-1").put("kind", "receipt.lookup")
-                    .put("operation", receipt.getJSONObject("operation"));
-            result.put("replayed", applied.getBoolean("replayed"));
-            result.put("revision", receipt.getString("result_revision_id"));
-            result.put("rawSha256", BridgeCreateLedgerStore.sha256Hex(raw));
-            return result;
-        });
+        execute(call, () -> pullPatch(saved()));
+    }
+
+    private JSObject pullPatch(JSONObject peer) throws Exception {
+        org.json.JSONArray items = request(peer, "/exchange/expense-patch/pull", new JSONObject(), true)
+                .getJSONArray("items");
+        JSObject result = new JSObject();
+        result.put("available", items.length() > 0);
+        lastPatchQuery = null;
+        if (items.length() == 0) return result;
+        // Process the oldest command first; the desktop retains it until explicit confirmation.
+        JSONObject item = items.getJSONObject(0);
+        String raw = item.getString("raw_command_json");
+        File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+        JSObject applied = OfflineTripLedgerStore.receiveDesktopCommand(dir, raw, item);
+        if (!applied.getBoolean("ok")) throw new Failure(applied.getString("error"));
+        JSONObject receipt = applied.getJSONObject("receipt");
+        lastPatchQuery = new JSONObject().put("profile", "p1-host-query-1").put("kind", "receipt.lookup")
+                .put("operation", receipt.getJSONObject("operation"));
+        result.put("replayed", applied.getBoolean("replayed"));
+        result.put("revision", receipt.getString("result_revision_id"));
+        result.put("rawSha256", BridgeCreateLedgerStore.sha256Hex(raw));
+        return result;
     }
 
     @PluginMethod public void confirmPatch(PluginCall call) {
+        execute(call, () -> confirmPatch(saved()));
+    }
+
+    private JSObject confirmPatch(JSONObject peer) throws Exception {
+        if (lastPatchQuery == null) throw new Failure("pull_required");
+        File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
+        JSONObject lookup = OfflineTripLedgerStore.receiveDesktopCommand(dir, lastPatchQuery.toString());
+        JSONObject receipt = lookup.optJSONObject("receipt");
+        if (receipt == null) throw new Failure("receipt_not_found");
+        JSONObject reply = request(peer, "/exchange/expense-patch/confirm", lookup, true);
+        if (!reply.getBoolean("confirmed") || !receipt.getString("result_revision_id")
+                .equals(reply.getJSONObject("record").getString("confirmed_mobile_revision_id")))
+            throw new Failure("receipt_mismatch");
+        JSObject result = new JSObject();
+        result.put("alreadyConfirmed", reply.getBoolean("already_confirmed"));
+        return result;
+    }
+
+    @Override protected void handleOnPause() {
+        inForeground = false;
+        super.handleOnPause();
+    }
+
+    @Override protected void handleOnResume() {
+        super.handleOnResume();
+        inForeground = true;
+    }
+
+    private static JSObject syncResult(String state, String reason, boolean changed) {
+        JSObject result = new JSObject();
+        result.put("state", state);
+        result.put("changed", changed);
+        if (reason != null) result.put("reason", reason);
+        return result;
+    }
+
+    @PluginMethod public void syncForeground(PluginCall call) {
         execute(call, () -> {
-            if (lastPatchQuery == null) throw new Failure("pull_required");
+            if (!inForeground) return syncResult("idle", null, false);
+            if (!file().getBaseFile().exists()) return syncResult("unpaired", null, false);
+            JSONObject peer = saved();
+            if (peer.has("syncStop")) return syncResult("blocked", peer.getString("syncStop"), false);
             File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
-            JSONObject lookup = OfflineTripLedgerStore.receiveDesktopCommand(dir, lastPatchQuery.toString());
-            JSONObject receipt = lookup.optJSONObject("receipt");
-            if (receipt == null) throw new Failure("receipt_not_found");
-            JSONObject reply = request(saved(), "/exchange/expense-patch/confirm", lookup, true);
-            if (!reply.getBoolean("confirmed") || !receipt.getString("result_revision_id")
-                    .equals(reply.getJSONObject("record").getString("confirmed_mobile_revision_id")))
-                throw new Failure("receipt_mismatch");
-            JSObject result = new JSObject();
-            result.put("alreadyConfirmed", reply.getBoolean("already_confirmed"));
-            return result;
+            if (!new File(dir, "store.db").isFile()) return syncResult("idle", null, false);
+            boolean changed = false;
+            try {
+                String op = OfflineTripLedgerStore.firstPendingOperation(dir);
+                if (op != null) {
+                    // A pending row might already be committed remotely, including after a crash or manual send.
+                    try {
+                        exchangeExpense(peer, dir, op, true);
+                    } catch (Failure e) {
+                        if (!e.code.equals("receipt_not_found")) throw e;
+                        if (!inForeground) return syncResult("idle", null, false);
+                        exchangeExpense(peer, dir, op, false);
+                    }
+                    changed = true;
+                }
+                if (inForeground && pullPatch(peer).getBoolean("available")) {
+                    changed = true;
+                    if (inForeground) confirmPatch(peer);
+                }
+                if (inForeground && !peer.optBoolean("exchangeGranted")) save(peer.put("exchangeGranted", true));
+                return syncResult(changed ? "synced" : "idle", null, changed);
+            } catch (Exception e) {
+                String code = syncError(e);
+                if ("HTTP_403_exchange_not_authorized".equals(code) && !peer.optBoolean("exchangeGranted"))
+                    return syncResult("unpaired", code, changed);
+                if ("delivery_unconfirmed".equals(code) || "storage_busy".equals(code)
+                        || "HTTP_400_storage_busy".equals(code) || code.startsWith("HTTP_5"))
+                    return syncResult("retry", code, changed);
+                // Persist the halt with this credential before notifying the page. Re-pairing creates a fresh grant.
+                save(peer.put("syncStop", code));
+                return syncResult("blocked", code, changed);
+            }
         });
+    }
+
+    private static String syncError(Exception e) {
+        if (e instanceof Failure) return ((Failure)e).code;
+        for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+            if (cause instanceof PinMismatch) return "pin_mismatch";
+            if (cause instanceof CertificateException) return "invalid_certificate";
+        }
+        if (e instanceof IOException) return "delivery_unconfirmed";
+        if (e instanceof android.database.sqlite.SQLiteDatabaseLockedException) return "storage_busy";
+        if (e instanceof org.json.JSONException) return "invalid_response";
+        return "local_sync_failed";
     }
 
     @Override protected void handleOnDestroy() {

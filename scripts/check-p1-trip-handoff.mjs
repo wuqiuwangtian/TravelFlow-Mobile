@@ -154,7 +154,7 @@ try {
     [1, 1723, "confirmed", revision]);
   assert.equal(sql("SELECT desktop_revision_id FROM outbox"), revision);
   if (!values.patch) assert.equal(local.syncedDesktopRevisionId, revision);
-  assert.match((await phone("getUiState()")).syncStatusText, /桌面已确认/);
+  assert.match((await phone("getUiState()")).syncStatusText, /对端已确认/);
   assert.deepEqual(readBytes(), raw);
   console.log(JSON.stringify({ desktopCommit: ref, operation: cmd.operation, entity: cmd.target.entity_id,
     travel: ctx.travel_id, branch: ctx.branch_id, baseline: ctx.current_revision_id,

@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from "./capacitor-core.js";
+import { createForegroundSync, type ForegroundSyncResult } from "./foreground-sync.js";
 import { summarizeLedger } from "./ledger-core.js";
 import {
   MAX_AMOUNT_CENTS,
@@ -1725,6 +1726,63 @@ function openTripEntryForm(): void {
   tripEntryViewEl.classList.remove("hidden");
 }
 
+const manualSyncFixture = document.querySelector('meta[name="travelflow-manual-sync-fixture"]') !== null;
+let syncReady = false;
+let pagePaused = false;
+let syncNotice = "";
+let ledgerRefreshNeeded = false;
+
+function syncMessage(result: ForegroundSyncResult): string {
+  if (result.state === "blocked") {
+    const reason = result.reason ?? "";
+    const message = reason.includes("revoked") ? "桌面已撤销授权"
+      : reason.includes("conflict") || reason.includes("pending") ? "本地与桌面的修改需要核对"
+      : "请核对桌面连接和授权";
+    return `${message}，已暂停自动同步（${reason}）`;
+  }
+  if (result.state === "retry") return "等待重新连接或核实回执";
+  if (result.state === "unpaired" && result.reason?.includes("not_authorized")) return "等待桌面授权";
+  return "";
+}
+
+const foregroundSync = createForegroundSync({
+  available: () => syncReady && !manualSyncFixture && !pagePaused && !document.hidden && navigator.onLine,
+  exchange: () => pairing.syncForeground(),
+  present: async (result) => {
+    const notice = syncMessage(result);
+    ledgerRefreshNeeded ||= !!result.changed;
+    if (notice !== syncNotice || ledgerRefreshNeeded) {
+      syncNotice = notice;
+      // Keep the message visible even if the follow-up ledger read temporarily fails.
+      if (currentTripState) renderOfflineTripLedger(currentTripState);
+      if (ledgerRefreshNeeded) {
+        renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+        ledgerRefreshNeeded = false;
+      }
+    }
+  },
+});
+
+function pauseForegroundSync() {
+  pagePaused = true;
+  foregroundSync.cancelTimer();
+}
+function resumeForegroundSync() {
+  pagePaused = false;
+  void foregroundSync.wake();
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) foregroundSync.cancelTimer();
+  else void foregroundSync.wake();
+});
+document.addEventListener("pause", pauseForegroundSync);
+document.addEventListener("resume", resumeForegroundSync);
+window.addEventListener("pagehide", pauseForegroundSync);
+window.addEventListener("pageshow", resumeForegroundSync);
+window.addEventListener("offline", foregroundSync.cancelTimer);
+window.addEventListener("online", () => void foregroundSync.wake());
+
 function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
   currentTripState = state;
   const summary =
@@ -1745,12 +1803,17 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
   tripSummaryEl.textContent = `共 ${state.expenseCount} 笔 · 合计 ¥${formatCentsToYuan(totalCents)}`;
 
   if (state.outboxCount === 0) {
-    tripSyncStatusEl.dataset.tone = "pending";
-    if (state.expenseCount > 0) tripSyncStatusEl.textContent = `桌面已确认 · 共 ${state.expenseCount} 笔`;
-    else tripSyncStatusEl.textContent = "本机离线账本已就绪 · 暂无待发送记录（不会当作桌面已确认）";
+    tripSyncStatusEl.dataset.tone = state.expenseCount ? "success" : "pending";
+    if (state.expenseCount > 0) tripSyncStatusEl.textContent = `对端已确认 · 共 ${state.expenseCount} 笔`;
+    else tripSyncStatusEl.textContent = "本机账本已就绪";
   } else {
     tripSyncStatusEl.dataset.tone = "warning";
-    tripSyncStatusEl.textContent = `已在本机保存，待发送 ${state.outboxCount} 笔（本机提交成功，尚未经桌面端确认）`;
+    tripSyncStatusEl.textContent = `已保存在本机 · 待同步 ${state.outboxCount} 笔`;
+  }
+
+  if (syncNotice) {
+    tripSyncStatusEl.dataset.tone = "warning";
+    tripSyncStatusEl.textContent += " · " + syncNotice;
   }
 
   tripExpenseListEl.innerHTML = "";
@@ -1790,10 +1853,13 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
 
     const badge = document.createElement("span");
     badge.className = "tf-badge";
-    badge.dataset.tone = "amber";
-    badge.textContent = item.delivery_state === "confirmed" ? "桌面已确认" : "已在本机保存，待发送";
+    badge.dataset.tone = item.delivery_state === "confirmed" ? "slate" : "amber";
+    badge.textContent = item.delivery_state === "confirmed" ? "对端已确认" : "已保存在本机 · 待同步";
 
     subRow.append(detailSpan, badge);
+    li.append(topRow, subRow);
+    tripExpenseListEl.appendChild(li);
+    if (!manualSyncFixture) continue;
     const actions = document.createElement("div");
     actions.className = "trip-actions";
     for (const lookup of [false, true]) {
@@ -1818,8 +1884,7 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
       };
       actions.append(button);
     }
-    li.append(topRow, subRow, actions);
-    tripExpenseListEl.appendChild(li);
+    li.append(actions);
   }
 }
 
@@ -1904,6 +1969,7 @@ tripEntrySaveBtn.addEventListener("click", () => {
       tripDraftOperationId = null;
       tripDraftEntityId = null;
       showTripLedgerView();
+      void foregroundSync.wake();
       tripLastAttempt = {
         seq: attemptSeq,
         outcome: "saved",
@@ -2000,6 +2066,8 @@ async function init(): Promise<void> {
     renderCreateState(createState);
     runtimeEl.textContent = `Android原生桥已就绪（PID ${state.callerPid}）`;
     setControlsEnabled(true);
+    syncReady = true;
+    void foregroundSync.wake();
   } catch (error) {
     runtimeEl.textContent = "原生桥初始化失败";
     errorEl.textContent = error instanceof Error ? error.message : String(error);
@@ -2009,6 +2077,7 @@ async function init(): Promise<void> {
 void init();
 
 const pairing = registerPlugin<{
+  syncForeground(): Promise<ForegroundSyncResult>;
   pullPatch(): Promise<{ available: boolean; replayed: boolean; revision: string; rawSha256: string }>;
   confirmPatch(): Promise<{ alreadyConfirmed: boolean }>;
   begin(data: { display: string }): Promise<{ sas: string }>;
@@ -2023,6 +2092,8 @@ const pairRead = document.querySelector<HTMLButtonElement>("#pair-read")!;
 const pairStatus = document.querySelector<HTMLElement>("#pair-status")!;
 const patchPull = document.querySelector<HTMLButtonElement>("#patch-pull")!;
 const patchConfirm = document.querySelector<HTMLButtonElement>("#patch-confirm")!;
+patchPull.classList.toggle("hidden", !manualSyncFixture);
+patchConfirm.classList.toggle("hidden", !manualSyncFixture);
 let hasPatchReceipt = false;
 let pendingSas = "";
 
@@ -2058,6 +2129,7 @@ pairBegin.onclick = () => pairingAction(async () => {
 });
 pairConfirm.onclick = () => pairingAction(async () => {
   await pairing.confirm();
+  foregroundSync.paired();
   hasPatchReceipt = false;
   pendingSas = "";
   return "配对已完成";

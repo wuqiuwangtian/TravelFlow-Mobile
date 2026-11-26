@@ -49,6 +49,7 @@ jobs:
       - run: pnpm check:p1-desktop-source
       - run: pnpm check:p1-canonical
       - run: pnpm check:p1-bridge-command
+      - run: node scripts/check-foreground-sync.mjs
       - run: pnpm typecheck
       - name: Check probe script syntax (native interaction requires an isolated emulator)
         run: |

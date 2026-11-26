@@ -742,6 +742,14 @@ final class OfflineTripLedgerStore {
         return ok;
     }
 
+    static String firstPendingOperation(File dir) {
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false);
+             Cursor row = db.rawQuery("SELECT operation_id FROM outbox WHERE delivery_state=? ORDER BY seq LIMIT 1",
+                     new String[]{DELIVERY_STATE_PENDING_SEND})) {
+            return row.moveToFirst() ? row.getString(0) : null;
+        }
+    }
+
     static byte[] deliveryBytes(File dir, String operationId, boolean lookup) throws Exception {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false);
              Cursor row = db.rawQuery("SELECT dataset_id,source_device_id,operation_id,CAST(raw_command_json AS BLOB) "
