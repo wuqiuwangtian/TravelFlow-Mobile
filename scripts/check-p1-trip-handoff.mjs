@@ -6,19 +6,21 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
+import { checkPendingUpgrade } from "./check-p1-pending-upgrade.mjs";
 import { fingerprintIntent, fingerprintPatchCandidate } from "../prototypes/p1-canonical/intent.mjs";
 import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, launchAndAttach,
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 
 const { values } = parseArgs({ options: {
-  "confirm-outbound": { type: "boolean" }, "patch": { type: "boolean" }, "roundtrip": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
+  "upgrade-pending": { type: "boolean" }, "confirm-outbound": { type: "boolean" }, "patch": { type: "boolean" }, "roundtrip": { type: "boolean" }, "desktop-repo": { type: "string" }, "desktop-python": { type: "string" },
   serial: { type: "string" }, "cdp-port": { type: "string", default: "19241" },
 } });
-assert.ok(!(values.patch && values.roundtrip), "Select one handoff mode");
+const upgradePending = values["upgrade-pending"];
+assert.ok([values.patch, values.roundtrip, upgradePending].filter(Boolean).length <= 1, "Select one handoff mode");
 const confirmOutbound = values["confirm-outbound"];
 assert.ok(!confirmOutbound || values.roundtrip, "--confirm-outbound requires --roundtrip");
-const ref = confirmOutbound ? "f5f8a982c350b60794439b563f5d8f3af5cd048a" : values.roundtrip ? "5ef28acbbbee10d0bd9527b7c2deb043e1930230" : values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
+const ref = upgradePending ? "fcd696d055641193ab63d2164512ab2ad759a5fd" : confirmOutbound ? "f5f8a982c350b60794439b563f5d8f3af5cd048a" : values.roundtrip ? "5ef28acbbbee10d0bd9527b7c2deb043e1930230" : values.patch ? "cfc7a1cfafc02119aaa15242da9dd48458d059aa" : "aeb4a3e540f62a3d1b2d9e706995c4db05e4fe7a";
 const serial = values.serial;
 assert.equal(serial, "emulator-5580");
 const port = Number(values["cdp-port"]);
@@ -55,7 +57,7 @@ const restart = async () => {
   session.cdp.close();
   session = await forceStopAndReopen(serial, port, oldPid);
 };
-try {
+async function run() {
   mkdirSync(desktop);
   execFileSync("git", ["-C", repo, "archive", "-o", archive, ref, "backend", "desktop"]);
   execFileSync("tar", ["-xf", archive, "-C", desktop]);
@@ -68,10 +70,10 @@ try {
   assert.equal(before.head_revision_id, ctx.current_revision_id);
   const inspectFork = () => cli(["inspect-trip", "--database", ctx.database, "--branch-id", ctx.fork_branch_id]);
   const originalFork = values.roundtrip ? inspectFork() : null;
-  if (values.patch || values.roundtrip) {
+  if (upgradePending || values.patch || values.roundtrip) {
     const previous = path.join(work, "mobile-before-upgrade");
     mkdirSync(previous);
-    execFileSync("git", ["archive", "-o", archive, confirmOutbound ? "641fd852c54a9dee545bbdeeb86ad6651464e0c7" : values.roundtrip ? "f944d014362ededc2624f6d49f4ad5c7835a2649" : "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
+    execFileSync("git", ["archive", "-o", archive, upgradePending ? "e9d303e8073efbf7631aecfd206f776b2a20eecb" : confirmOutbound ? "641fd852c54a9dee545bbdeeb86ad6651464e0c7" : values.roundtrip ? "f944d014362ededc2624f6d49f4ad5c7835a2649" : "5d34b2ddd5e90de3261f81b6392b7928ee106ff7"]);
     execFileSync("tar", ["-xf", archive, "-C", previous]);
     symlinkSync(path.resolve("node_modules"), path.join(previous, "node_modules"));
     built = buildApk(contextPath, previous);
@@ -87,6 +89,20 @@ try {
   const initial = await phone("inspect()");
   assert.deepEqual([initial.datasetId, initial.travelId, initial.branchId, initial.headRevisionId, initial.expenseCount],
     [ctx.dataset_id, ctx.travel_id, ctx.branch_id, ctx.current_revision_id, 0]);
+
+  if (upgradePending) {
+    await checkPendingUpgrade({
+      ctx, before, inspect, sql, phone, restart, cdp: () => session.cdp,
+      handoff: (action, raw, expected = 0, ...extra) => cli([action, ...args, ...extra], raw, expected),
+      upgrade: async () => {
+        session.cdp.close();
+        upgraded = buildApk(contextPath);
+        adb(serial, ["install", "-r", "-t", upgraded.apk]);
+        session = await launchAndAttach(serial, port);
+      },
+    });
+    return;
+  }
 
   await session.cdp.tap("#trip-open-entry-btn");
   await waitForCondition(session.cdp, "window.__travelflowOfflineEntry.getUiState().entryViewVisible", "entry form");
@@ -154,7 +170,8 @@ try {
     [1, 1723, "confirmed", revision]);
   assert.equal(sql("SELECT desktop_revision_id FROM outbox"), revision);
   if (!values.patch) assert.equal(local.syncedDesktopRevisionId, revision);
-  assert.match((await phone("getUiState()")).syncStatusText, /对端已确认/);
+  const confirmationLabel = values.patch || values.roundtrip ? /桌面已确认/ : /对端已确认/;
+  assert.match((await phone("getUiState()")).syncStatusText, confirmationLabel);
   assert.deepEqual(readBytes(), raw);
   console.log(JSON.stringify({ desktopCommit: ref, operation: cmd.operation, entity: cmd.target.entity_id,
     travel: ctx.travel_id, branch: ctx.branch_id, baseline: ctx.current_revision_id,
@@ -339,7 +356,10 @@ try {
     assert.deepEqual(await receive(patch), { ...applied, replayed: true });
     await restart();
     assert.equal(dump(), pendingDump);
-    assert.equal((await phone("exportOutboxCommands()")).items[0].raw_command_json, JSON.stringify(next));
+    assert.equal((await phone("inspect()")).outbox[0].raw_command_json, JSON.stringify(next));
+    const frozenNext = (await phone("exportOutboxCommands()")).items[0];
+    assert.deepEqual(JSON.parse(frozenNext.raw_command_json), { ...next, expected_revision_id: patch.source_revision_id });
+    assert.equal(frozenNext.intent_sha256, fingerprintIntent(Buffer.from(frozenNext.raw_command_json)).sha256);
     const totalBeforeEditFixture = (await phone("inspect()")).totalCents;
     // There is no local patch editor in this slice. Seed EP04 as a pending edit in this disposable DB.
     const edit = structuredClone(patch);
@@ -384,6 +404,10 @@ try {
       replaySameReceipt: true, conflictDumpIdentical: true }, null, 2));
   }
 
+}
+
+try {
+  await run();
 } finally {
   session?.cdp.close();
   if (installed) {

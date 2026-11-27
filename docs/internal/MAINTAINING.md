@@ -574,7 +574,7 @@ node scripts/check-p1-bridge-upgrade.mjs --serial emulator-5580 --cdp-port 19240
 node scripts/check-p1-offline-entry-android.mjs --serial emulator-5580 --cdp-port 19241
 ```
 
-脚本在隔离 API 35 模拟器上开启飞行模式（结束后恢复原值），从页面正常入口「记一笔」依次验证 8 类非法金额输入零写入、输入非固定午餐样例（`机场快线车票`、`42.80` 元、`transport`）并连点「保存消费」只记一次、强停冷重开后保留、继续记入第二笔 `86.35` 元午餐后二次强停重开，核对页面明细、整分总额（`12915` 分／`¥129.15`）、三版修订链、`已保存在本机 · 待同步` 状态（不误报桌面已确认），并从隔离测试入口导出两条符合 `travelflow.expense-create` `0.1.0` 的待发送原命令与规范化摘要独立复算校验，结束后清理转发与测试包。
+脚本在隔离 API 35 模拟器上开启飞行模式（结束后恢复原值），从页面正常入口「记一笔」依次验证 8 类非法金额输入零写入、输入非固定午餐样例（`机场快线车票`、`42.80` 元、`transport`）并连点「保存消费」只记一次、强停冷重开后保留、继续记入第二笔 `86.35` 元午餐后二次强停重开，核对页面明细、整分总额（`12915` 分／`¥129.15`）、三版修订链、`已保存在本机 · 待同步` 状态（不误报桌面已确认），独立复算两条本地意图的规范化摘要，并验证此时仅首笔具有可导出的桌面命令，结束后清理转发与测试包。
 
 同一入口另验 100／1000 个 Unicode 标量的标题与备注、超限草稿保留、U+FEFF、字段缺失、重复键、非法 Unicode 转义和非规范封装。对原键分别用 1234、1234.0 和 12.34e2 表示相同整分金额，复读同一版本和摘要；含非零小数分的近似值必须拒绝。真实触摸逐次核对目标及当次保存结果。
 
@@ -688,3 +688,19 @@ node scripts/check-android-desktop-pairing.mjs --windows --roundtrip --auto --co
 ```
 
 正常页面从 SQLite 的待发记录恢复。先独立查回执，桌面明确返回稳定缺失时才发送保存的原文。前台轮询领取桌面更正，本机事务保存后从 SQLite 读取回执并交回桌面。初次配对后可等待旅行授权，冲突或撤销会暂停该配对的自动同步。手动逐步投递与重放的旧验收使用单独的测试构建。
+
+### 同一旅行连续新增两笔
+
+沿用上节的隔离模拟器、Windows 原生前台和已配对 HTTPS 环境。两种模式分别在首笔确认后保存第二笔、离线保存两笔后恢复网络，都在第二笔桌面提交后中断回包并强停手机。`batch` 还通过正常桌面编辑制造真实的分支冲突。
+
+```sh
+check_two() {
+  node scripts/check-android-desktop-pairing.mjs --windows --roundtrip --auto --two "$1" \
+    --serial emulator-5580 --desktop-repo ../TravelFlow-AI --desktop-python "$WIN_PY" --bind "$WIN_IP"
+}
+check_two sequential && check_two batch
+node scripts/check-p1-trip-handoff.mjs --upgrade-pending --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python ../TravelFlow-AI/backend/.venv/bin/python
+```
+
+最后一条命令使用 WSL 桌面 CLI 和 API 35，分别构建 `e9d303e` 和当前 APK，并在保留应用数据的情况下升级。检查本地意图请读 `inspect().outbox`；跨端导出使用 `exportOutboxCommands().items`，其中只含已有确定桌面基线、已保存原文和摘要的待发命令。

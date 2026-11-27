@@ -229,6 +229,7 @@ public class DesktopPairingPlugin extends Plugin {
     }
     private JSObject exchangeExpense(JSONObject peer, File dir, String op, boolean lookup) throws Exception {
         byte[] payload = OfflineTripLedgerStore.deliveryBytes(dir, op, lookup);
+        if (payload == null) throw new Failure("wire_not_ready");
         JSONObject reply;
         try {
             reply = requestBytes(peer, lookup ? "/exchange/receipt-lookup" : "/exchange/expense-create", payload, true);

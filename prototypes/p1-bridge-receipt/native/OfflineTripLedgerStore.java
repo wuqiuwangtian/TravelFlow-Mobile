@@ -70,6 +70,7 @@ final class OfflineTripLedgerStore {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, true)) {
             db.beginTransaction();
             try {
+                if (db.getVersion() > 3) throw new IllegalStateException("Offline ledger requires a newer app");
                 db.execSQL("CREATE TABLE IF NOT EXISTS branch_head("
                         + "id INTEGER PRIMARY KEY CHECK(id=1), "
                         + "dataset_id TEXT NOT NULL, "
@@ -152,9 +153,66 @@ final class OfflineTripLedgerStore {
                             + "UPDATE branch_head SET synced_desktop_revision_id=NEW.desktop_revision_id WHERE id=1; END");
                     db.setVersion(2);
                 }
+                if (db.getVersion() == 2) {
+                    migrateWireSnapshots(db);
+                    db.setVersion(3);
+                }
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
+            }
+        }
+    }
+
+    private static void migrateWireSnapshots(SQLiteDatabase db) throws Exception {
+        db.execSQL("ALTER TABLE revisions ADD COLUMN desktop_revision_id TEXT");
+        db.execSQL("UPDATE revisions SET desktop_revision_id=revision_id WHERE parent_revision_id IS NULL");
+        db.execSQL("UPDATE revisions SET desktop_revision_id=(SELECT o.desktop_revision_id FROM outbox o "
+                + "WHERE o.result_revision_id=revisions.revision_id AND o.delivery_state='confirmed') "
+                + "WHERE revision_id IN (SELECT result_revision_id FROM outbox WHERE delivery_state='confirmed')");
+        try (Cursor patches = db.rawQuery("SELECT receipt_json FROM received_patches", null)) {
+            while (patches.moveToNext()) {
+                JSONObject receipt = new JSONObject(patches.getString(0));
+                db.execSQL("UPDATE revisions SET desktop_revision_id=? WHERE revision_id=?",
+                        new Object[]{receipt.getString("synced_desktop_revision_id"), receipt.getString("result_revision_id")});
+            }
+        }
+        db.execSQL("CREATE TABLE outbox_wire(outbox_seq INTEGER PRIMARY KEY REFERENCES outbox(seq), "
+                + "expected_revision_id TEXT NOT NULL, raw_command_json TEXT NOT NULL, "
+                + "canonical_intent_json TEXT NOT NULL, intent_sha256 TEXT NOT NULL)");
+        // Every v2 command was already exportable and may have reached a receiver.
+        db.execSQL("INSERT INTO outbox_wire SELECT seq,expected_revision_id,raw_command_json,canonical_intent_json,"
+                + "intent_sha256 FROM outbox");
+    }
+
+    // Called in the same transaction that saves a child or confirms its exact parent.
+    private static void freezeReadyCommands(SQLiteDatabase db, String parent) throws Exception {
+        try (Cursor rows = db.rawQuery("SELECT o.seq,r.desktop_revision_id,o.raw_command_json,o.canonical_intent_json,"
+                + "o.intent_sha256 FROM outbox o JOIN revisions r ON r.revision_id=o.expected_revision_id "
+                + "LEFT JOIN outbox_wire w ON w.outbox_seq=o.seq WHERE o.expected_revision_id=? "
+                + "AND r.desktop_revision_id IS NOT NULL AND w.outbox_seq IS NULL", new String[]{parent})) {
+            while (rows.moveToNext()) {
+                String desktopParent = rows.getString(1);
+                // A patch profile can admit a desktop version outside the create profile.
+                // Keep the local save and its dependency if no valid create envelope can be formed.
+                if (validCreateIdentifier(desktopParent) == null) continue;
+                String raw = rows.getString(2);
+                String canonical = rows.getString(3);
+                String hash = rows.getString(4);
+                if (!parent.equals(desktopParent)) {
+                    Map<String, Object> command = asObject(new StrictJsonParser(raw).parseDocument());
+                    command.put("expected_revision_id", desktopParent);
+                    StringBuilder wire = new StringBuilder();
+                    appendCanonicalValue(wire, command);
+                    raw = wire.toString();
+                    canonical = canonicalizeControlDocument(command);
+                    if (raw.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES
+                            || canonical.getBytes(StandardCharsets.UTF_8).length > MAX_CANONICAL_BYTES)
+                        throw new IllegalArgumentException("canonical_bytes");
+                    hash = BridgeCreateLedgerStore.sha256Hex(canonical);
+                }
+                db.execSQL("INSERT INTO outbox_wire(outbox_seq,expected_revision_id,raw_command_json,canonical_intent_json,"
+                        + "intent_sha256) VALUES(?,?,?,?,?)", new Object[]{rows.getLong(0), desktopParent, raw, canonical, hash});
             }
         }
     }
@@ -460,7 +518,10 @@ final class OfflineTripLedgerStore {
     }
 
     private static String validateIdentifier(Map<String, Object> obj, String key) {
-        Object raw = obj.get(key);
+        return validCreateIdentifier(obj.get(key));
+    }
+
+    private static String validCreateIdentifier(Object raw) {
         if (!(raw instanceof String)) {
             return null;
         }
@@ -719,6 +780,7 @@ final class OfflineTripLedgerStore {
                                         intentSha256,
                                         DELIVERY_STATE_PENDING_SEND,
                                 });
+                        freezeReadyCommands(db, expectedRevisionId);
                         db.setTransactionSuccessful();
                     }
                 }
@@ -752,9 +814,10 @@ final class OfflineTripLedgerStore {
 
     static byte[] deliveryBytes(File dir, String operationId, boolean lookup) throws Exception {
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false);
-             Cursor row = db.rawQuery("SELECT dataset_id,source_device_id,operation_id,CAST(raw_command_json AS BLOB) "
-                     + "FROM outbox WHERE operation_id=?", new String[]{operationId})) {
+             Cursor row = db.rawQuery("SELECT o.dataset_id,o.source_device_id,o.operation_id,CAST(w.raw_command_json AS BLOB) "
+                     + "FROM outbox o LEFT JOIN outbox_wire w ON w.outbox_seq=o.seq WHERE o.operation_id=?", new String[]{operationId})) {
             if (row.getCount() != 1 || !row.moveToFirst()) throw new IllegalArgumentException("Missing or ambiguous operation");
+            if (row.isNull(3)) return null;
             if (!lookup) return row.getBlob(3);
             JSONObject operation = new JSONObject().put("dataset_id", row.getString(0))
                     .put("source_device_id", row.getString(1)).put("operation_id", row.getString(2));
@@ -774,22 +837,35 @@ final class OfflineTripLedgerStore {
         JSONObject op = receipt.optJSONObject("operation");
         Object remote = receipt.opt("result_revision_id");
         if (op == null || !operationId.equals(op.opt("operation_id"))
-                || !(remote instanceof String) || ((String) remote).isEmpty()) return rejected("receipt_mismatch");
+                || validCreateIdentifier(remote) == null) return rejected("receipt_mismatch");
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
-            android.content.ContentValues values = new android.content.ContentValues();
-            values.put("delivery_state", "confirmed");
-            values.put("desktop_revision_id", (String) remote);
-            int matched = db.update("outbox", values,
-                    "dataset_id=? AND source_device_id=? AND operation_id=? AND entity_id=? AND intent_sha256=? "
-                    + "AND (desktop_revision_id IS NULL OR desktop_revision_id=?) "
-                    + "AND EXISTS (SELECT 1 FROM branch_head WHERE dataset_id=outbox.dataset_id AND travel_id=? AND branch_id=?)",
-                    new String[]{op.getString("dataset_id"), op.getString("source_device_id"), operationId,
-                        receipt.getString("entity_id"), receipt.getString("intent_sha256"), (String) remote,
-                        receipt.getString("travel_id"), receipt.getString("branch_id")});
-            if (matched != 1) return rejected("receipt_mismatch");
-            JSObject result = new JSObject();
-            result.put("accepted", true);
-            return result;
+            db.beginTransaction();
+            try {
+                android.content.ContentValues values = new android.content.ContentValues();
+                values.put("delivery_state", "confirmed");
+                values.put("desktop_revision_id", (String) remote);
+                int matched = db.update("outbox", values,
+                        "dataset_id=? AND source_device_id=? AND operation_id=? AND entity_id=? "
+                        + "AND EXISTS (SELECT 1 FROM outbox_wire w WHERE w.outbox_seq=outbox.seq AND w.intent_sha256=?) "
+                        + "AND (desktop_revision_id IS NULL OR desktop_revision_id=?) "
+                        + "AND EXISTS (SELECT 1 FROM branch_head WHERE dataset_id=outbox.dataset_id AND travel_id=? AND branch_id=?)",
+                        new String[]{op.getString("dataset_id"), op.getString("source_device_id"), operationId,
+                            receipt.getString("entity_id"), receipt.getString("intent_sha256"), (String) remote,
+                            receipt.getString("travel_id"), receipt.getString("branch_id")});
+                if (matched != 1) return rejected("receipt_mismatch");
+                String localRevision = DatabaseUtils.stringForQuery(db, "SELECT result_revision_id FROM outbox "
+                        + "WHERE dataset_id=? AND source_device_id=? AND operation_id=?", new String[]{
+                                op.getString("dataset_id"), op.getString("source_device_id"), operationId});
+                db.execSQL("UPDATE revisions SET desktop_revision_id=? WHERE revision_id=?",
+                        new Object[]{remote, localRevision});
+                freezeReadyCommands(db, localRevision);
+                db.setTransactionSuccessful();
+                JSObject result = new JSObject();
+                result.put("accepted", true);
+                return result;
+            } finally {
+                db.endTransaction();
+            }
         }
     }
 
@@ -920,8 +996,8 @@ final class OfflineTripLedgerStore {
         if (changed) {
             revision = "local-rev-" + UUID.randomUUID();
             db.execSQL("UPDATE expenses SET amount_cents=? WHERE entity_id=?", new Object[]{amount, entity});
-            db.execSQL("INSERT INTO revisions(revision_id,parent_revision_id,snapshot_json) VALUES(?,?,?)",
-                    new Object[]{revision, localRevision, buildSnapshotJson(db)});
+            db.execSQL("INSERT INTO revisions(revision_id,parent_revision_id,snapshot_json,desktop_revision_id) VALUES(?,?,?,?)",
+                    new Object[]{revision, localRevision, buildSnapshotJson(db), source});
             db.execSQL("UPDATE branch_head SET head_revision_id=?,synced_desktop_revision_id=? WHERE id=1",
                     new Object[]{revision, source});
         }
@@ -1031,7 +1107,7 @@ final class OfflineTripLedgerStore {
             }
             data.put("revisions", revisions);
 
-            data.put("outbox", readOutboxArray(db));
+            data.put("outbox", readOutboxArray(db, false));
             data.put("journal", DatabaseUtils.stringForQuery(db, "PRAGMA journal_mode", null));
             data.put("sqlite", DatabaseUtils.stringForQuery(db, "SELECT sqlite_version()", null));
         }
@@ -1061,19 +1137,21 @@ final class OfflineTripLedgerStore {
                     out.put("baseline_source", head.getString(4));
                 }
             }
-            JSArray items = readOutboxArray(db);
+            JSArray items = readOutboxArray(db, true);
             out.put("count", items.length());
             out.put("items", items);
         }
         return out;
     }
 
-    private static JSArray readOutboxArray(SQLiteDatabase db) throws Exception {
+    private static JSArray readOutboxArray(SQLiteDatabase db, boolean wire) throws Exception {
         JSArray items = new JSArray();
-        try (Cursor rows = db.rawQuery(
-                "SELECT seq, dataset_id, source_device_id, operation_id, entity_id, expected_revision_id, "
-                        + "result_revision_id, raw_command_json, canonical_intent_json, intent_sha256, delivery_state "
-                        + "FROM outbox WHERE delivery_state='pending_send' ORDER BY seq", null)) {
+        String command = wire ? "w" : "o";
+        String join = wire ? " JOIN outbox_wire w ON w.outbox_seq=o.seq " : " ";
+        try (Cursor rows = db.rawQuery("SELECT o.seq,o.dataset_id,o.source_device_id,o.operation_id,o.entity_id,"
+                + command + ".expected_revision_id,o.result_revision_id," + command + ".raw_command_json,"
+                + command + ".canonical_intent_json," + command + ".intent_sha256,o.delivery_state FROM outbox o"
+                + join + "WHERE o.delivery_state='pending_send' ORDER BY o.seq", null)) {
             while (rows.moveToNext()) {
                 String datasetId = rows.getString(1);
                 String sourceDeviceId = rows.getString(2);

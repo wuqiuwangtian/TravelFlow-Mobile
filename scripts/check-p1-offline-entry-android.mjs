@@ -639,13 +639,16 @@ async function main() {
     assert.equal(finalState.revisions[2].parent_revision_id, rev1);
     assert.match(finalUi.summaryText, /共 2 笔 · 合计 ¥129\.15/);
 
-    // Validate exported 0.1.0 outbox commands independently against p1-canonical & frozen 0.1.0 spec.
+    // Only the root has a known desktop parent. Both local intents must still verify independently.
     assert.equal(exported.contract_id, "travelflow.expense-create");
     assert.equal(exported.contract_version, "0.1.0");
-    assert.equal(exported.count, 2);
-    assert.equal(exported.items.length, 2);
+    assert.equal(exported.count, 1);
+    assert.equal(exported.items.length, 1);
 
-    const [item1, item2] = exported.items;
+    const [item1, item2] = finalState.outbox;
+    assert.equal(finalState.outbox.length, 2);
+    assert.equal(exported.items[0].raw_command_json, item1.raw_command_json);
+    assert.equal(exported.items[0].intent_sha256, item1.intent_sha256);
     assert.notEqual(item1.operation_id, item1.entity_id);
     assert.notEqual(item2.operation_id, item2.entity_id);
     assert.notEqual(item1.operation_id, item2.operation_id);
@@ -659,7 +662,7 @@ async function main() {
       readFileSync(path.join(root, "docs/internal/fixtures/p1-desktop-expense-create.json"), "utf8"),
     );
 
-    for (const item of exported.items) {
+    for (const item of finalState.outbox) {
       assert.equal(item.delivery_state, "pending_send");
       assert.equal(item.command.profile, "p1-host-control-1");
       assert.equal(item.command.kind, "expense.create");
@@ -825,7 +828,8 @@ async function main() {
     assert.equal(afterNonBmpState.revisionCount, 4);
     assert.equal(afterNonBmpState.receiptCount, 3);
     assert.equal(afterNonBmpState.outboxCount, 3);
-    const item3 = exportedAfterNonBmp.items[2];
+    assert.deepEqual(exportedAfterNonBmp.items, exported.items);
+    const item3 = afterNonBmpState.outbox[2];
     assert.equal(Array.from(item3.command.payload.title).length, 100);
     assert.equal(item3.command.payload.title, nonBmp100);
     assert.equal(Array.from(item3.command.payload.notes).length, 1000);
@@ -938,7 +942,8 @@ async function main() {
         contract_id: exported.contract_id,
         contract_version: exported.contract_version,
         count: exported.count,
-        secondItemMatchesDesktopLunchPayload: true,
+        localIntents: finalState.outboxCount,
+        secondLocalIntentMatchesDesktopLunchPayload: true,
       },
     }, null, 2));
   } finally {

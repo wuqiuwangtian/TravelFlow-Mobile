@@ -14,7 +14,7 @@ import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, 
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 const { values } = parseArgs({ options: { serial: { type: "string" }, "desktop-repo": { type: "string" },
-  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" }, windows: { type: "boolean" }, auto: { type: "boolean" }, conflict: { type: "boolean" } } });
+  "desktop-python": { type: "string" }, bind: { type: "string" }, exchange: { type: "boolean" }, roundtrip: { type: "boolean" }, windows: { type: "boolean" }, auto: { type: "boolean" }, conflict: { type: "boolean" }, two: { type: "string" } } });
 const serial = values.serial, port = 19242;
 assert.equal(serial, "emulator-5580");
 assertIsolatedAvd(serial);
@@ -22,6 +22,8 @@ assert.ok(!adb(serial, ["forward", "--list"]).stdout.split(/\s+/).includes("tcp:
 const bind = values.bind;
 const windows = values.windows;
 assert.ok(!values.auto || windows && values.roundtrip, "--auto requires --windows --roundtrip");
+assert.ok(!values.two || (values.auto && !values.conflict && ["sequential", "batch"].includes(values.two)),
+  "--two sequential|batch requires --auto and is independent of --conflict");
 assert.ok(!values.conflict || values.auto, "--conflict requires --auto");
 assert.ok(!windows || values.roundtrip, "--windows requires --roundtrip");
 assert.ok(isIPv4(bind), "Provide the IPv4 address of the desktop adapter");
@@ -80,7 +82,8 @@ try {
   session = await launchAndAttach(serial, port);
   async function startDesktop(listenPort, openPairing) {
     const serveArgs = values.auto
-      ? [...pyFlags, nativePath(path.resolve("scripts/p1-observe-exchange.py")), nativePath(path.join(work, "requests.log"))]
+      ? [...pyFlags, nativePath(path.resolve("scripts/p1-observe-exchange.py")), nativePath(path.join(work, "requests.log")),
+          ...(values.two ? ["--drop-second-create", nativePath(path.join(work, "wire.jsonl"))] : [])]
       : args;
     server = spawn(python, [...serveArgs, "serve", "--state-dir", state, "--bind", bind, "--port", String(listenPort), ...(openPairing ? ["--open-pairing"] : []), ...(ctx ? ["--trip-db", ctx.database] : [])],
       { cwd: desktop, stdio: ["ignore", "pipe", "inherit"] });
@@ -134,7 +137,8 @@ try {
     await checkForegroundSync({ serial, port, getSession: () => session, setSession: value => { session = value; },
       ctx, initial, initialFork, inspect, handoff, control, deviceId: pending[0].device_id, bind, route,
       conflict: values.conflict, requests: () => readFileSync(path.join(work, "requests.log"), "utf8").trim().split(/\r?\n/).filter(Boolean),
-      armFault });
+      armFault, two: values.two, wireTrace: () => readFileSync(path.join(work, "wire.jsonl"), "utf8")
+        .trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)) });
   } else if (ctx) {
     const sql = query => adb(serial, ["shell", `run-as ${PACKAGE} sqlite3 -readonly files/p1-offline-trip-ledger/store.db '${query}'`]).stdout.trim();
     const phone = () => session.cdp.evaluate("window.__travelflowOfflineEntry.inspect()");
@@ -311,7 +315,7 @@ try {
         forkPaid: fork.head_paid_cents, revokedSendAndLookup: "403 device_revoked" }, null, 2));
     };
   }
-  if (!values.auto || values.conflict) assert.ok(control("revoke", "--device-id", pending[0].device_id).revoked);
+  if (!values.auto || values.conflict || values.two) assert.ok(control("revoke", "--device-id", pending[0].device_id).revoked);
   if (verifyRevoked) await verifyRevoked();
   const revoked = await tap("pair-read", /HTTP_403_device_revoked/);
   assert.ok(!revoked.includes("92ba6a148a17"));
