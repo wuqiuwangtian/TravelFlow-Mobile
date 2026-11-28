@@ -146,18 +146,32 @@ public class DesktopPairingPlugin extends Plugin {
         return ByteBuffer.allocate(iv.length + ciphertext.length).put(iv).put(ciphertext).array();
     }
 
+    private AtomicFile claimFile() {
+        return new AtomicFile(new File(getContext().getNoBackupFilesDir(), "manager-claim.gcm"));
+    }
+
+    private static void writeAtomic(AtomicFile f, byte[] data) throws IOException {
+        FileOutputStream out = f.startWrite();
+        try {
+            out.write(data);
+            f.finishWrite(out);
+        } catch (IOException e) { f.failWrite(out); throw e; }
+    }
+
+    private JSONObject readClaim() throws Exception {
+        byte[] data;
+        try { data = claimFile().readFully(); }
+        catch (java.io.FileNotFoundException e) { return null; }
+        return decrypt(data);
+    }
+
     private void save(JSONObject peer) throws Exception {
         byte[] data = encrypt(peer);
         if (peer.optBoolean("manager")) {
             OfflineTripLedgerStore.updateManagerCredential(ledgerDir(), data);
             return;
         }
-        AtomicFile f = file();
-        FileOutputStream out = f.startWrite();
-        try {
-            out.write(data);
-            f.finishWrite(out);
-        } catch (IOException e) { f.failWrite(out); throw e; }
+        writeAtomic(file(), data);
     }
     private JSONObject saved() throws Exception {
         byte[] data = OfflineTripLedgerStore.managerCredential(ledgerDir());
@@ -165,6 +179,9 @@ public class DesktopPairingPlugin extends Plugin {
             try { data = file().readFully(); }
             catch (java.io.FileNotFoundException e) { throw new Failure("not_paired"); }
         }
+        return decrypt(data);
+    }
+    private JSONObject decrypt(byte[] data) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key(false), new GCMParameterSpec(128, Arrays.copyOf(data, 12)));
         return new JSONObject(new String(cipher.doFinal(data, 12, data.length - 12), StandardCharsets.UTF_8));
@@ -231,8 +248,47 @@ public class DesktopPairingPlugin extends Plugin {
         return result;
     }
 
+    // Remember the pairing identity even if the very first claim reply never reaches this installation.
+    private String managerDevice(String pin) throws Exception {
+        try {
+            JSONObject old = saved();
+            if (!pin.equals(old.getString("pin"))) throw new Failure("pin_mismatch");
+            return old.getString("device");
+        } catch (Failure e) {
+            if (!e.code.equals("not_paired")) throw e;
+        }
+        android.content.SharedPreferences ids = getContext().getSharedPreferences("desktop-pairing-identities", 0);
+        String id = ids.getString(pin, null);
+        if (id != null) return id;
+        id = UUID.randomUUID().toString();
+        if (!ids.edit().putString(pin, id).commit()) throw new IOException("Cannot save pairing identity");
+        return id;
+    }
+
+    @PluginMethod public void recoverClaim(PluginCall call) {
+        execute(call, () -> {
+            JSONObject claim = readClaim();
+            JSObject result = new JSObject();
+            if (claim != null) {
+                pending = claim;
+                result.put("sas", claim.getJSONObject("complete").getString("sas_code"));
+                result.put("hasToken", claim.getJSONObject("peer").has("token"));
+            }
+            return result;
+        });
+    }
+
+    @PluginMethod public void cancelPairing(PluginCall call) {
+        execute(call, () -> {
+            pending = null;
+            claimFile().delete();
+            return new JSObject();
+        });
+    }
+
     @PluginMethod public void preview(PluginCall call) {
         execute(call, () -> {
+            if (readClaim() != null) throw new Failure("claim_pending");
             pending = null;
             JSONObject info = material(call, true);
             checkManagerScope(info);
@@ -242,6 +298,7 @@ public class DesktopPairingPlugin extends Plugin {
 
     @PluginMethod public void begin(PluginCall call) {
         execute(call, () -> {
+            if (readClaim() != null) throw new Failure("claim_pending");
             pending = null;
             boolean manager = call.getBoolean("runtime", false);
             JSONObject info = material(call, manager);
@@ -252,8 +309,7 @@ public class DesktopPairingPlugin extends Plugin {
             String sid = session.getString("pairing_session_id"), code = session.getString("pairing_code");
             int port = info.getInt("lan_port");
             JSONObject peer = new JSONObject().put("host", host).put("port", port).put("pin", pin);
-            String device = UUID.randomUUID().toString();
-            // A new manager request must not rotate a working credential before the new local binding commits.
+            String device = manager ? managerDevice(pin) : UUID.randomUUID().toString();
             if (!manager && file().getBaseFile().exists()) {
                 JSONObject old = saved();
                 if (pin.equals(old.getString("pin"))) device = old.getString("device");
@@ -291,12 +347,23 @@ public class DesktopPairingPlugin extends Plugin {
             // Token delivery is one-shot. Retry a failed verification or local commit with the
             // verified token held by this same pending session until binding succeeds.
             if (!peer.has("token")) {
-                JSONObject reply = request(peer, "/pair/complete", pending.getJSONObject("complete"), false);
+                if (info != null) writeAtomic(claimFile(), encrypt(pending));
+                JSONObject reply;
+                try {
+                    reply = request(peer, "/pair/complete", pending.getJSONObject("complete"), false);
+                } catch (Failure e) {
+                    if (info != null && e.code.equals("HTTP_409_awaiting_desktop_confirm")) claimFile().delete();
+                    throw e;
+                } catch (IOException e) {
+                    if (info != null) throw new Failure("claim_unconfirmed");
+                    throw e;
+                }
                 if (!peer.getString("device").equals(reply.getString("device_id")) ||
                     !peer.getString("pin").equals(reply.getString("cert_sha256")) ||
                     !reply.getString("device_token").matches("[A-Za-z0-9_-]{43}")) throw new Failure("invalid_credential");
                 peer.put("token", reply.getString("device_token"));
             }
+            if (info != null) writeAtomic(claimFile(), encrypt(pending));
             if (info == null) save(peer);
             else {
                 JSONObject trip = info.getJSONObject("trip");
@@ -309,6 +376,7 @@ public class DesktopPairingPlugin extends Plugin {
                 peer.put("manager", true);
                 OfflineTripLedgerStore.bindManager(ledgerDir(), trip,
                         OfflineTripLedgerStore.businessSource(getContext()), encrypt(peer));
+                claimFile().delete();
             }
             lastPatchQuery = null;
             pending = null;
@@ -420,6 +488,7 @@ public class DesktopPairingPlugin extends Plugin {
     @PluginMethod public void syncForeground(PluginCall call) {
         execute(call, () -> {
             if (!inForeground) return syncResult("idle", null, false);
+            if (readClaim() != null) return syncResult("retry", "claim_pending", false);
             JSONObject peer;
             try { peer = saved(); }
             catch (Failure e) {

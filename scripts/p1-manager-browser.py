@@ -73,11 +73,17 @@ class ManagerPage:
             assert page.locator("#sync-bind-host").input_value() == before["host"]
             return self.start_service()
         if action == "pairing":
-            if not page.locator("#sync-pairing-box").is_visible():
+            if request.get("fresh"):
+                before = page.locator("#sync-pair-session").text_content()
+                page.locator("#sync-open-pairing").click()
+                expect(page.locator("#sync-pair-session")).not_to_have_text(before or "")
+            elif not page.locator("#sync-pairing-box").is_visible():
                 page.locator("#sync-open-pairing").click()
             page.locator("#sync-pairing-json").wait_for()
             return {"display": json.loads(page.locator("#sync-pairing-json").input_value())}
         pending = page.locator("#sync-pending-list [data-request-id]")
+        if action in ("pending", "approve") and request.get("sas"):
+            pending = pending.filter(has=page.locator(".sas-code").filter(has_text=request["sas"]))
         if action == "pending":
             pending.wait_for()
             label = pending.locator(".sync-card-title").inner_text()
@@ -91,7 +97,12 @@ class ManagerPage:
         card = page.locator("#sync-devices-list [data-device-id]")
         if action == "grant":
             field = card.locator("[data-source-input]")
-            expect(field).to_have_value("")
+            if request.get("reauthorize"):
+                # The page may remember the text previously typed for this same device ID.
+                expect(card).to_contain_text("活跃 · 未授权旅行")
+                assert field.input_value() in ("", request["source"])
+            else:
+                expect(field).to_have_value("")
             field.fill(request["source"])
             card.locator('[data-action="sync-authorize"]').click()
             expect(card).to_contain_text("已授权业务来源 ID")

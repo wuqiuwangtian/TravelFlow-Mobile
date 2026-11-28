@@ -2082,7 +2082,16 @@ async function init(): Promise<void> {
     pairRead.classList.toggle("hidden", managerPairing);
     pairPreview.disabled = !managerPairing;
     pairBegin.disabled = managerPairing;
-    if (managerPairing) pairBegin.textContent = "旅行一致，请求配对";
+    if (managerPairing) {
+      pairBegin.textContent = "旅行一致，请求配对";
+      const claim = await pairing.recoverClaim();
+      if (claim.sas) {
+        pendingSas = claim.sas;
+        claimAttempted = true;
+        pairStatus.textContent = claim.hasToken ? "新凭据已领取，请继续确认以完成本机保存" : "上次领取结果待核实，请继续确认";
+        updateClaimControls();
+      }
+    }
     const state = await refreshState();
     const createState = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
     renderCreateState(createState);
@@ -2105,6 +2114,8 @@ const pairing = registerPlugin<{
   confirmPatch(): Promise<{ alreadyConfirmed: boolean }>;
   preview(data: { display: string }): Promise<{ trip: ManagerTrip; sourceDeviceId: string }>;
   begin(data: { display: string; runtime?: boolean }): Promise<{ sas: string }>;
+  recoverClaim(): Promise<{ sas?: string; hasToken?: boolean }>;
+  cancelPairing(): Promise<void>;
   confirm(): Promise<void>;
   exchangeExpense(data: { operationId: string; lookup: boolean }): Promise<{ revision: string; replayed: boolean }>;
   readTrip(): Promise<{ trip: { title: string; travel_id: string; sample_expense_amount_cents: number } }>;
@@ -2117,6 +2128,7 @@ const pairSourceId = byId<HTMLOutputElement>("pair-source-id");
 let reviewedDisplay = "";
 const pairBegin = document.querySelector<HTMLButtonElement>("#pair-begin")!;
 const pairConfirm = document.querySelector<HTMLButtonElement>("#pair-confirm")!;
+const pairCancel = byId<HTMLButtonElement>("pair-cancel");
 const pairRead = document.querySelector<HTMLButtonElement>("#pair-read")!;
 const pairStatus = document.querySelector<HTMLElement>("#pair-status")!;
 const patchPull = document.querySelector<HTMLButtonElement>("#patch-pull")!;
@@ -2125,6 +2137,17 @@ patchPull.classList.toggle("hidden", !manualSyncFixture);
 patchConfirm.classList.toggle("hidden", !manualSyncFixture);
 let hasPatchReceipt = false;
 let pendingSas = "";
+let claimAttempted = false;
+
+function updateClaimControls(): void {
+  const active = managerPairing && !!pendingSas;
+  displayInfo.disabled = active;
+  pairPreview.disabled = !managerPairing || active;
+  pairCancel.classList.toggle("hidden", !active);
+  pairCancel.disabled = !active;
+  pairCancel.textContent = claimAttempted ? "重新开始配对" : "取消配对";
+  pairConfirm.disabled = !pendingSas;
+}
 
 async function loadRuntimeLedger(): Promise<void> {
   const ledger = await bridge.openRuntimeLedger();
@@ -2138,6 +2161,7 @@ async function loadRuntimeLedger(): Promise<void> {
 function clearReview(): void {
   reviewedDisplay = "";
   pendingSas = "";
+  claimAttempted = false;
   pairTripReview.textContent = "";
   pairTripReview.classList.add("hidden");
   pairConfirm.disabled = true;
@@ -2151,7 +2175,7 @@ displayInfo.addEventListener("input", () => {
 });
 
 async function pairingAction(action: () => Promise<string>) {
-  displayInfo.disabled = pairPreview.disabled = true;
+  pairCancel.disabled = displayInfo.disabled = pairPreview.disabled = true;
   patchPull.disabled = patchConfirm.disabled = pairBegin.disabled = pairConfirm.disabled = pairRead.disabled = true;
   pairStatus.textContent = "连接中…";
   try {
@@ -2163,15 +2187,19 @@ async function pairingAction(action: () => Promise<string>) {
       not_paired: "请先完成双方确认",
       HTTP_409_awaiting_desktop_confirm: "请先在桌面核对并批准配对",
       HTTP_403_device_revoked: "桌面已撤销此设备",
+      claim_unconfirmed: "领取回包未收到，请继续确认以核实结果",
+      claim_pending: "上次领取尚未结束，请继续确认或重新开始配对",
+      HTTP_409_token_already_delivered: "桌面已发出一次性凭据。请重新开始配对，使用桌面新生成的配对资料恢复连接",
+      HTTP_404_request_not_found: "桌面已结束该请求，请重新开始配对并获取新资料",
       invalid_display: "请粘贴管理页提供的完整配对资料",
       invalid_trip: "配对资料缺少有效的旅行信息",
       trip_scope_conflict: "这份配对资料与本机账本的旅行、数据集或分支不同。原账本及待同步记录已保留，请使用原旅行的配对资料",
     };
-    pairStatus.textContent = (messages[code] ?? "连接失败") + " (" + code + ")"
+    if (code === "HTTP_409_awaiting_desktop_confirm") claimAttempted = false;
+    pairStatus.textContent = (messages[code] ?? (managerPairing && claimAttempted ? "配对尚未完成，请继续确认；若请求已过期，请使用新的配对资料" : "连接失败")) + " (" + code + ")"
       + (pendingSas ? " · 核对码 " + pendingSas : "");
   } finally {
-    displayInfo.disabled = false;
-    pairPreview.disabled = !managerPairing;
+    updateClaimControls();
     pairBegin.disabled = managerPairing && (!reviewedDisplay || !!pendingSas);
     patchPull.disabled = pairRead.disabled = false;
     patchConfirm.disabled = !hasPatchReceipt;
@@ -2200,7 +2228,14 @@ pairBegin.onclick = () => pairingAction(async () => {
   pendingSas = sas;
   return "请与桌面核对 " + sas;
 });
+pairCancel.onclick = () => pairingAction(async () => {
+  await pairing.cancelPairing();
+  const attempted = claimAttempted;
+  clearReview();
+  return attempted ? "请从桌面生成新配对资料，再次核对旅行" : "已取消配对";
+});
 pairConfirm.onclick = () => pairingAction(async () => {
+  claimAttempted = managerPairing;
   await pairing.confirm();
   if (managerPairing) {
     await loadRuntimeLedger();
@@ -2209,7 +2244,7 @@ pairConfirm.onclick = () => pairingAction(async () => {
   foregroundSync.paired();
   hasPatchReceipt = false;
   pendingSas = "";
-  return "配对已完成";
+  return managerPairing ? "配对已完成，请在桌面授权旅行" : "配对已完成";
 });
 pairRead.onclick = () => pairingAction(async () => {
   const { trip } = await pairing.readTrip();

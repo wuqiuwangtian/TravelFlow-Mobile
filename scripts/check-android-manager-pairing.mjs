@@ -3,17 +3,18 @@ import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
 import { isIPv4 } from "node:net";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseArgs } from "node:util";
+import { checkManagerRepair } from "./check-manager-repair.mjs";
 import { adb, assertIsolatedAvd, buildApk, forceStopAndReopen, getAirplaneMode, launchAndAttach,
   PACKAGE, setAirplaneMode, setInputValue, waitForCondition } from "./check-p1-offline-entry-android.mjs";
 
 const { values } = parseArgs({ options: { serial: { type: "string" }, "desktop-repo": { type: "string" },
-  "desktop-python": { type: "string" }, bind: { type: "string" }, apk: { type: "string" } } });
+  "desktop-python": { type: "string" }, bind: { type: "string" }, apk: { type: "string" }, repair: { type: "boolean" } } });
 const { serial, bind } = values;
 assert.equal(serial, "emulator-5580");
 assertIsolatedAvd(serial);
@@ -114,8 +115,18 @@ try {
   assert.equal((await ledger()).initialized, false);
   assert.ok(await cdp().evaluate("document.getElementById('trip-open-entry-btn').disabled"));
 
+  const environment = { ...process.env };
+  const dropMarker = path.join(work, "drop-claim-once");
+  if (values.repair) {
+    const hooks = path.join(work, "observer");
+    mkdirSync(hooks);
+    copyFileSync("scripts/p1-drop-claim-fixture.py", path.join(hooks, "sitecustomize.py"));
+    environment.WSLENV = [environment.WSLENV, "PYTHONPATH/w", "TRAVELFLOW_TEST_CLAIM_DROP/w"].filter(Boolean).join(":");
+    environment.PYTHONPATH = native(hooks);
+    environment.TRAVELFLOW_TEST_CLAIM_DROP = native(dropMarker);
+  }
   manager = spawn(python, ["-X", "utf8", "-u", native(path.resolve("scripts/p1-manager-browser.py")), native(managerState)],
-    { cwd: desktop, stdio: ["pipe", "pipe", "inherit"] });
+    { cwd: desktop, env: environment, stdio: ["pipe", "pipe", "inherit"] });
   exited = once(manager, "exit");
   replies = createInterface({ input: manager.stdout, crlfDelay: Infinity })[Symbol.asyncIterator]();
   await command("start", { bind, port: 0 });
@@ -185,50 +196,57 @@ try {
     pairedDevice: pending.deviceId, paidCents: paid.totalCents, desktopPaidCents: after.paidCents,
     confirmedVersions: confirmed, pending: paid.outboxCount }));
 
-  const restarted = await command("restart");
-  assert.deepEqual([restarted.host, restarted.port, restarted.pin, restarted.head], [bind, display.lan_port, display.cert_sha256, after.head]);
-  assert.equal(restarted.paidCents, after.paidCents);
-  assert.deepEqual(restarted.grants, after.grants);
-  await cold();
-  assert.equal((await text("pair-source-id")).trim(), source);
-  assert.equal((await ledger()).syncedDesktopRevisionId, after.head);
-  await save("轮渡票", "3.00");
-  await waitText("trip-sync-status", "对端已确认");
-  const reconnected = await ledger();
-  assert.deepEqual([reconnected.totalCents, reconnected.expenseCount, reconnected.receiptCount, reconnected.outboxCount],
-    [2673, 3, 3, 0]);
-  assert.deepEqual(reconnected.expenses.slice(0, 2).map(e => e.desktop_revision_id), confirmed);
-  let postRestart = await command("status");
-  for (let i = 0; i < 20 && postRestart.head !== reconnected.syncedDesktopRevisionId; i++) {
-    await sleep(400);
-    postRestart = await command("status");
-  }
-  assert.equal(postRestart.head, reconnected.expenses[2].desktop_revision_id);
-  assert.deepEqual([postRestart.paidCents, postRestart.expenseCount], [after.paidCents + 300, after.expenseCount + 1]);
+  if (values.repair) {
+    await checkManagerRepair({ serial, command, cdp, ledger, text, waitText, cold, airplane, save, source,
+      deviceId: pending.deviceId, armDrop: () => writeFileSync(dropMarker, "armed", { flag: "wx" }) });
+  } else await checkManagerRestart();
 
-  const fresh = (await command("pairing")).display;
-  const active = typeof fresh === "string" ? JSON.parse(fresh) : fresh;
-  const mismatchConfirmed = await rejectedDifferentTrip(active);
-  await airplane(true);
-  await save("行李寄存", "1.00");
-  const mismatchPending = await rejectedDifferentTrip(active);
-  const beforeRevoke = businessHash();
-  await command("revoke");
-  await airplane(false);
-  await waitText("trip-sync-status", "device_revoked");
-  await cold();
-  await waitText("trip-sync-status", "device_revoked");
-  await cdp().evaluate("for (let i=0;i<5;i++) window.dispatchEvent(new Event('online'))");
-  await sleep(6500);
-  assert.equal(businessHash(), beforeRevoke);
-  const protectedLedger = await ledger();
-  assert.deepEqual([protectedLedger.totalCents, protectedLedger.outboxCount], [2773, 1]);
-  const revoked = await command("status");
-  assert.deepEqual([revoked.head, revoked.paidCents, revoked.expenseCount], [postRestart.head, postRestart.paidCents, postRestart.expenseCount]);
-  assert.ok(revoked.devices.some(d => d.device_id === pending.deviceId && d.status === "revoked"));
-  console.log(JSON.stringify({ restartEndpoint: [restarted.host, restarted.port], savedPinMatched: true,
-    localAfterRevoke: protectedLedger.totalCents, pendingAfterRevoke: protectedLedger.outboxCount,
-    mismatchConfirmed, mismatchPending, receiptsBeforeRevoke: reconnected.receiptCount, postRestartConfirmed: postRestart.head, desktopHead: revoked.head }));
+  async function checkManagerRestart() {
+    const restarted = await command("restart");
+    assert.deepEqual([restarted.host, restarted.port, restarted.pin, restarted.head], [bind, display.lan_port, display.cert_sha256, after.head]);
+    assert.equal(restarted.paidCents, after.paidCents);
+    assert.deepEqual(restarted.grants, after.grants);
+    await cold();
+    assert.equal((await text("pair-source-id")).trim(), source);
+    assert.equal((await ledger()).syncedDesktopRevisionId, after.head);
+    await save("轮渡票", "3.00");
+    await waitText("trip-sync-status", "对端已确认");
+    const reconnected = await ledger();
+    assert.deepEqual([reconnected.totalCents, reconnected.expenseCount, reconnected.receiptCount, reconnected.outboxCount],
+      [2673, 3, 3, 0]);
+    assert.deepEqual(reconnected.expenses.slice(0, 2).map(e => e.desktop_revision_id), confirmed);
+    let postRestart = await command("status");
+    for (let i = 0; i < 20 && postRestart.head !== reconnected.syncedDesktopRevisionId; i++) {
+      await sleep(400);
+      postRestart = await command("status");
+    }
+    assert.equal(postRestart.head, reconnected.expenses[2].desktop_revision_id);
+    assert.deepEqual([postRestart.paidCents, postRestart.expenseCount], [after.paidCents + 300, after.expenseCount + 1]);
+
+    const fresh = (await command("pairing")).display;
+    const active = typeof fresh === "string" ? JSON.parse(fresh) : fresh;
+    const mismatchConfirmed = await rejectedDifferentTrip(active);
+    await airplane(true);
+    await save("行李寄存", "1.00");
+    const mismatchPending = await rejectedDifferentTrip(active);
+    const beforeRevoke = businessHash();
+    await command("revoke");
+    await airplane(false);
+    await waitText("trip-sync-status", "device_revoked");
+    await cold();
+    await waitText("trip-sync-status", "device_revoked");
+    await cdp().evaluate("for (let i=0;i<5;i++) window.dispatchEvent(new Event('online'))");
+    await sleep(6500);
+    assert.equal(businessHash(), beforeRevoke);
+    const protectedLedger = await ledger();
+    assert.deepEqual([protectedLedger.totalCents, protectedLedger.outboxCount], [2773, 1]);
+    const revoked = await command("status");
+    assert.deepEqual([revoked.head, revoked.paidCents, revoked.expenseCount], [postRestart.head, postRestart.paidCents, postRestart.expenseCount]);
+    assert.ok(revoked.devices.some(d => d.device_id === pending.deviceId && d.status === "revoked"));
+    console.log(JSON.stringify({ restartEndpoint: [restarted.host, restarted.port], savedPinMatched: true,
+      localAfterRevoke: protectedLedger.totalCents, pendingAfterRevoke: protectedLedger.outboxCount,
+      mismatchConfirmed, mismatchPending, receiptsBeforeRevoke: reconnected.receiptCount, postRestartConfirmed: postRestart.head, desktopHead: revoked.head }));
+  }
 } finally {
   if (manager && manager.exitCode === null && manager.signalCode === null) {
     try { if (!driverFailed) await command("close"); } finally {
