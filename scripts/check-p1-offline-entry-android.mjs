@@ -53,13 +53,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function buildApk(tripContext, sourceRoot = root, { manualSyncFixture = false } = {}) {
+function buildApk(tripContext, sourceRoot = root, { manualSyncFixture = false, offlineFixture = false } = {}) {
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), "travelflow-p1-offline-entry-"));
   const projectDir = path.join(tempRoot, "project");
   runCommand(process.execPath, [path.join(sourceRoot, "scripts/prepare-p1-bridge-receipt.mjs"), "--output", projectDir, ...(tripContext ? ["--trip-context", tripContext] : [])], {
     cwd: root,
     stdio: "inherit",
   });
+  if (offlineFixture) {
+    // The original local-ledger regression has a named fixture. A normal installation starts unbound.
+    assert.ok(!tripContext);
+    const seed = { datasetId: "fixture-dataset", travelId: "fixture-travel", branchId: "fixture-branch",
+      initialRevisionId: "fixture-r0", sourceDeviceId: "fixture-device",
+      baselineSource: "vendor/contracts/expense-create-v0.1.0 (fixture-dataset / fixture-travel / fixture-branch / fixture-r0)" };
+    writeFileSync(path.join(projectDir, "android/app/src/main/assets/public/offline-trip-seed.json"), JSON.stringify(seed));
+  }
   if (manualSyncFixture) {
     // The historical manual transport checks deliberately pause between pull and confirm.
     const index = path.join(projectDir, "android/app/src/main/assets/public/index.html");
@@ -246,7 +254,8 @@ async function attachWebView(serial, cdpPort) {
       const readyDeadline = Date.now() + 15000;
       while (Date.now() < readyDeadline) {
         const ready = await cdp.evaluate(
-          `Boolean(window.__travelflowOfflineEntry && !document.getElementById("trip-open-entry-btn")?.disabled)`,
+          `Boolean(window.__travelflowOfflineEntry && (document.getElementById("runtime")?.dataset.ready === "true" ||
+            !document.getElementById("trip-open-entry-btn")?.disabled))`,
         );
         if (ready) return { cdp, pid };
         await sleep(200);
@@ -410,7 +419,7 @@ async function main() {
 
   try {
     if (!apkPath) {
-      built = buildApk();
+      built = buildApk(undefined, root, { offlineFixture: true });
       apkPath = built.apk;
     }
     adb(opts.serial, ["install", "-t", apkPath]);

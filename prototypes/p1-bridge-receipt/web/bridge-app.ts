@@ -5,8 +5,6 @@ import {
   MAX_AMOUNT_CENTS,
   OFFLINE_BASELINE_SOURCE,
   OFFLINE_BRANCH_ID,
-  OFFLINE_DATASET_ID,
-  OFFLINE_DEVICE_ID,
   OFFLINE_INITIAL_REVISION_ID,
   OFFLINE_TRAVEL_ID,
   type ExpenseCreateIntent,
@@ -325,6 +323,7 @@ interface P1BridgeReceiptPlugin {
     has_more?: boolean;
     expenses?: CreateExpenseRow[];
   }>;
+  openRuntimeLedger(): Promise<OfflineTripLedgerState & { sourceDeviceId: string; trip?: ManagerTrip }>;
   initOfflineTripLedger(options: {
     datasetId: string;
     travelId: string;
@@ -365,6 +364,14 @@ interface OfflineTripOutboxItem {
   intent_sha256: string;
   delivery_state: string;
   receipt_query: ReceiptLookupIntent;
+}
+
+interface ManagerTrip {
+  title: string;
+  dataset_id: string;
+  travel_id: string;
+  branch_id: string;
+  current_revision_id: string;
 }
 
 interface OfflineTripLedgerState {
@@ -470,7 +477,9 @@ const CATEGORY_LABELS: Record<string, string> = {
   other: "其他",
 };
 
-let offlineSourceDevice: string = OFFLINE_DEVICE_ID;
+let offlineSourceDevice = "";
+let managerPairing = false;
+let ledgerTitle = "";
 let currentTripState: OfflineTripLedgerState | null = null;
 let tripSaveInFlight = false;
 let tripDraftOperationId: string | null = null;
@@ -569,7 +578,7 @@ function setControlsEnabled(enabled: boolean): void {
   for (const id of createButtonIds) {
     byId<HTMLButtonElement>(id).disabled = !enabled;
   }
-  tripOpenEntryBtn.disabled = !enabled;
+  tripOpenEntryBtn.disabled = !enabled || !currentTripState?.initialized;
   tripEntryTitleEl.disabled = !enabled;
   tripEntryAmountYuanEl.disabled = !enabled;
   tripEntryCategoryEl.disabled = !enabled;
@@ -1711,9 +1720,8 @@ function showTripLedgerView(): void {
 }
 
 function openTripEntryForm(): void {
-  const travelId = currentTripState?.travelId ?? OFFLINE_TRAVEL_ID;
-  const branchId = currentTripState?.branchId ?? OFFLINE_BRANCH_ID;
-  const headRevisionId = currentTripState?.headRevisionId ?? OFFLINE_INITIAL_REVISION_ID;
+  if (!currentTripState?.initialized) return;
+  const { travelId, branchId, headRevisionId } = currentTripState;
   tripDraftOperationId = `op-${crypto.randomUUID()}`;
   tripDraftEntityId = `exp-${crypto.randomUUID()}`;
   tripEntryTitleEl.value = "";
@@ -1746,7 +1754,7 @@ function syncMessage(result: ForegroundSyncResult): string {
 }
 
 const foregroundSync = createForegroundSync({
-  available: () => syncReady && !manualSyncFixture && !pagePaused && !document.hidden && navigator.onLine,
+  available: () => syncReady && !!currentTripState?.initialized && !manualSyncFixture && !pagePaused && !document.hidden && navigator.onLine,
   exchange: () => pairing.syncForeground(),
   present: async (result) => {
     const notice = syncMessage(result);
@@ -1785,6 +1793,15 @@ window.addEventListener("online", () => void foregroundSync.wake());
 
 function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
   currentTripState = state;
+  tripOpenEntryBtn.disabled = !state.initialized;
+  if (!state.initialized) {
+    tripMetaEl.textContent = "尚未连接旅行。请粘贴桌面管理页的配对资料，核对旅行后开始记账。";
+    tripSummaryEl.textContent = "";
+    tripSyncStatusEl.textContent = "";
+    tripExpenseEmptyEl.classList.add("hidden");
+    tripExpenseListEl.replaceChildren();
+    return;
+  }
   const summary =
     state.expenses.length > 0
       ? summarizeLedger({
@@ -1799,7 +1816,7 @@ function renderOfflineTripLedger(state: OfflineTripLedgerState): void {
   const baselineSource = state.baselineSource ?? OFFLINE_BASELINE_SOURCE;
 
   tripMetaEl.textContent =
-    `虚构旅行 ${travelId} · 分支 ${branchId} · 头版本 ${headRevisionId} · 起始基线 ${state.revisions[0]?.revision_id ?? OFFLINE_INITIAL_REVISION_ID}（来源：${baselineSource}）`;
+    `${ledgerTitle ? ledgerTitle + " · 旅行" : "虚构旅行"} ${travelId} · 分支 ${branchId} · 头版本 ${headRevisionId} · 起始基线 ${state.revisions[0]?.revision_id ?? OFFLINE_INITIAL_REVISION_ID}（来源：${baselineSource}）`;
   tripSummaryEl.textContent = `共 ${state.expenseCount} 笔 · 合计 ¥${formatCentsToYuan(totalCents)}`;
 
   if (state.outboxCount === 0) {
@@ -1923,10 +1940,9 @@ tripEntrySaveBtn.addEventListener("click", () => {
       const notes = validateExpenseNotes(tripEntryNotesEl.value);
 
       const state = currentTripState ?? (await bridge.inspectOfflineTripLedger());
-      const datasetId = state.datasetId ?? OFFLINE_DATASET_ID;
-      const travelId = state.travelId ?? OFFLINE_TRAVEL_ID;
-      const branchId = state.branchId ?? OFFLINE_BRANCH_ID;
-      const expectedRevisionId = state.headRevisionId ?? OFFLINE_INITIAL_REVISION_ID;
+      if (!state.initialized || !state.datasetId || !state.travelId || !state.branchId || !state.headRevisionId || !offlineSourceDevice)
+        throw new Error("请先核对旅行并完成配对");
+      const { datasetId, travelId, branchId, headRevisionId: expectedRevisionId } = state;
       const operationId = tripDraftOperationId ?? `op-${crypto.randomUUID()}`;
       const entityId = tripDraftEntityId ?? `exp-${crypto.randomUUID()}`;
       tripDraftOperationId = operationId;
@@ -2052,19 +2068,26 @@ async function init(): Promise<void> {
     const seedFile = await fetch("./offline-trip-seed.json");
     if (!seedFile.ok) throw new Error("Cannot load isolated trip context");
     const seed = await seedFile.json();
-    offlineSourceDevice = seed?.sourceDeviceId ?? OFFLINE_DEVICE_ID;
-    const tripState = await bridge.initOfflineTripLedger(seed ?? {
-      datasetId: OFFLINE_DATASET_ID,
-      travelId: OFFLINE_TRAVEL_ID,
-      branchId: OFFLINE_BRANCH_ID,
-      initialRevisionId: OFFLINE_INITIAL_REVISION_ID,
-      baselineSource: OFFLINE_BASELINE_SOURCE,
-    });
-    renderOfflineTripLedger(tripState);
+    managerPairing = !seed && !manualSyncFixture;
+    if (managerPairing) {
+      await loadRuntimeLedger();
+    } else if (seed) {
+      offlineSourceDevice = seed.sourceDeviceId;
+      renderOfflineTripLedger(await bridge.initOfflineTripLedger(seed));
+    } else {
+      // The historical transport-only fixture doesn't bind a travel ledger.
+      renderOfflineTripLedger(await bridge.inspectOfflineTripLedger());
+    }
+    pairPreview.classList.toggle("hidden", !managerPairing);
+    pairRead.classList.toggle("hidden", managerPairing);
+    pairPreview.disabled = !managerPairing;
+    pairBegin.disabled = managerPairing;
+    if (managerPairing) pairBegin.textContent = "旅行一致，请求配对";
     const state = await refreshState();
     const createState = await bridge.inspectCreateState({ scenario: currentCreateScenario() });
     renderCreateState(createState);
     runtimeEl.textContent = `Android原生桥已就绪（PID ${state.callerPid}）`;
+    runtimeEl.dataset.ready = "true";
     setControlsEnabled(true);
     syncReady = true;
     void foregroundSync.wake();
@@ -2080,12 +2103,18 @@ const pairing = registerPlugin<{
   syncForeground(): Promise<ForegroundSyncResult>;
   pullPatch(): Promise<{ available: boolean; replayed: boolean; revision: string; rawSha256: string }>;
   confirmPatch(): Promise<{ alreadyConfirmed: boolean }>;
-  begin(data: { display: string }): Promise<{ sas: string }>;
+  preview(data: { display: string }): Promise<{ trip: ManagerTrip; sourceDeviceId: string }>;
+  begin(data: { display: string; runtime?: boolean }): Promise<{ sas: string }>;
   confirm(): Promise<void>;
   exchangeExpense(data: { operationId: string; lookup: boolean }): Promise<{ revision: string; replayed: boolean }>;
   readTrip(): Promise<{ trip: { title: string; travel_id: string; sample_expense_amount_cents: number } }>;
 }>("DesktopPairing");
 const displayInfo = document.querySelector<HTMLInputElement>("#pair-display")!;
+const pairPreview = byId<HTMLButtonElement>("pair-preview");
+const pairTripReview = byId<HTMLParagraphElement>("pair-trip-review");
+const pairSource = byId<HTMLDivElement>("pair-source");
+const pairSourceId = byId<HTMLOutputElement>("pair-source-id");
+let reviewedDisplay = "";
 const pairBegin = document.querySelector<HTMLButtonElement>("#pair-begin")!;
 const pairConfirm = document.querySelector<HTMLButtonElement>("#pair-confirm")!;
 const pairRead = document.querySelector<HTMLButtonElement>("#pair-read")!;
@@ -2097,7 +2126,32 @@ patchConfirm.classList.toggle("hidden", !manualSyncFixture);
 let hasPatchReceipt = false;
 let pendingSas = "";
 
+async function loadRuntimeLedger(): Promise<void> {
+  const ledger = await bridge.openRuntimeLedger();
+  offlineSourceDevice = ledger.sourceDeviceId;
+  ledgerTitle = ledger.trip?.title ?? "";
+  pairSourceId.textContent = ledger.sourceDeviceId;
+  pairSource.classList.toggle("hidden", !ledger.initialized || !ledger.sourceDeviceId);
+  renderOfflineTripLedger(ledger);
+}
+
+function clearReview(): void {
+  reviewedDisplay = "";
+  pendingSas = "";
+  pairTripReview.textContent = "";
+  pairTripReview.classList.add("hidden");
+  pairConfirm.disabled = true;
+  pairBegin.disabled = managerPairing;
+}
+
+displayInfo.addEventListener("input", () => {
+  if (!managerPairing) return;
+  clearReview();
+  pairStatus.textContent = "";
+});
+
 async function pairingAction(action: () => Promise<string>) {
+  displayInfo.disabled = pairPreview.disabled = true;
   patchPull.disabled = patchConfirm.disabled = pairBegin.disabled = pairConfirm.disabled = pairRead.disabled = true;
   pairStatus.textContent = "连接中…";
   try {
@@ -2109,26 +2163,49 @@ async function pairingAction(action: () => Promise<string>) {
       not_paired: "请先完成双方确认",
       HTTP_409_awaiting_desktop_confirm: "请先在桌面核对并批准配对",
       HTTP_403_device_revoked: "桌面已撤销此设备",
-      invalid_display: "请粘贴完整的桌面前台连接信息",
+      invalid_display: "请粘贴管理页提供的完整配对资料",
+      invalid_trip: "配对资料缺少有效的旅行信息",
+      trip_scope_conflict: "这份配对资料与本机账本的旅行、数据集或分支不同。原账本及待同步记录已保留，请使用原旅行的配对资料",
     };
     pairStatus.textContent = (messages[code] ?? "连接失败") + " (" + code + ")"
       + (pendingSas ? " · 核对码 " + pendingSas : "");
   } finally {
-    patchPull.disabled = pairBegin.disabled = pairRead.disabled = false;
+    displayInfo.disabled = false;
+    pairPreview.disabled = !managerPairing;
+    pairBegin.disabled = managerPairing && (!reviewedDisplay || !!pendingSas);
+    patchPull.disabled = pairRead.disabled = false;
     patchConfirm.disabled = !hasPatchReceipt;
     pairConfirm.disabled = !pendingSas;
   }
 }
+pairPreview.onclick = () => pairingAction(async () => {
+  clearReview();
+  const display = displayInfo.value.trim();
+  const { trip } = await pairing.preview({ display });
+  reviewedDisplay = display;
+  pairTripReview.textContent = `${trip.title} · 旅行 ${trip.travel_id} · 分支 ${trip.branch_id} · 数据集 ${trip.dataset_id} · 当前版本 ${trip.current_revision_id}`;
+  pairTripReview.classList.remove("hidden");
+  return "请与桌面管理页核对旅行";
+});
 pairBegin.onclick = () => pairingAction(async () => {
   pendingSas = "";
-  const display = displayInfo.value.trim();
+  const display = managerPairing ? reviewedDisplay : displayInfo.value.trim();
+  if (managerPairing && (!display || display !== displayInfo.value.trim())) {
+    clearReview();
+    return "请重新识别并核对旅行";
+  }
   displayInfo.value = "";
-  const { sas } = await pairing.begin({ display });
+  reviewedDisplay = "";
+  const { sas } = await pairing.begin({ display, runtime: managerPairing });
   pendingSas = sas;
   return "请与桌面核对 " + sas;
 });
 pairConfirm.onclick = () => pairingAction(async () => {
   await pairing.confirm();
+  if (managerPairing) {
+    await loadRuntimeLedger();
+    clearReview();
+  }
   foregroundSync.paired();
   hasPatchReceipt = false;
   pendingSas = "";

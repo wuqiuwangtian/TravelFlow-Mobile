@@ -864,6 +864,14 @@ public class P1BridgeReceiptPlugin extends Plugin {
     }
 
     @PluginMethod
+    public void openRuntimeLedger(PluginCall call) {
+        executor.execute(() -> {
+            try { call.resolve(OfflineTripLedgerStore.openRuntimeLedger(getContext())); }
+            catch (Exception e) { call.reject(e.getMessage(), "OFFLINE_LEDGER_INIT_FAILED"); }
+        });
+    }
+
+    @PluginMethod
     public void initOfflineTripLedger(PluginCall call) {
         String datasetId = call.getString("datasetId", "");
         String travelId = call.getString("travelId", "");

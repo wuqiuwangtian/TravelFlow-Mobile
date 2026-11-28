@@ -86,17 +86,26 @@
     </section>
 
     <section class="tf-card trip-panel" aria-label="隔离桌面配对">
-      <h2>桌面配对（虚构旅行）</h2>
-      <label for="pair-display">桌面前台显示的连接信息（JSON）</label>
+      <h2>连接桌面旅行</h2>
+      <label for="pair-display">Windows 管理页提供的配对资料（JSON）</label>
       <input class="trip-field" id="pair-display" type="password" autocomplete="off" spellcheck="false">
       <div class="trip-actions">
-        <button class="tf-button" id="pair-begin">请求配对</button>
+        <button class="tf-button hidden" id="pair-preview" disabled>识别旅行</button>
+      </div>
+      <p class="trip-meta hidden" id="pair-trip-review"></p>
+      <div class="trip-actions">
+        <button class="tf-button" id="pair-begin" disabled>请求配对</button>
         <button class="tf-button" id="pair-confirm" disabled>核对码一致，确认配对</button>
         <button class="tf-button" id="pair-read">读取虚构旅行</button>
         <button class="tf-button" id="patch-pull">领取桌面更正</button>
         <button class="tf-button" id="patch-confirm" disabled>交回更正回执</button>
       </div>
       <p id="pair-status" role="status"></p>
+      <div id="pair-source" class="hidden">
+        <label for="pair-source-id">本机业务来源 ID</label>
+        <output id="pair-source-id" style="overflow-wrap:anywhere;user-select:all"></output>
+        <p class="trip-meta">在桌面「授权隔离旅行」中填入此 ID。</p>
+      </div>
     </section>
 
     <hr>

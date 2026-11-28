@@ -136,22 +136,35 @@ public class DesktopPairingPlugin extends Plugin {
         }
         return (SecretKey) store.getKey(ALIAS, null);
     }
-    private void save(JSONObject peer) throws Exception {
+    private File ledgerDir() { return OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir()); }
+
+    private byte[] encrypt(JSONObject peer) throws Exception {
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, key(true));
         byte[] ciphertext = cipher.doFinal(peer.toString().getBytes(StandardCharsets.UTF_8));
+        byte[] iv = cipher.getIV();
+        return ByteBuffer.allocate(iv.length + ciphertext.length).put(iv).put(ciphertext).array();
+    }
+
+    private void save(JSONObject peer) throws Exception {
+        byte[] data = encrypt(peer);
+        if (peer.optBoolean("manager")) {
+            OfflineTripLedgerStore.updateManagerCredential(ledgerDir(), data);
+            return;
+        }
         AtomicFile f = file();
         FileOutputStream out = f.startWrite();
         try {
-            out.write(cipher.getIV());
-            out.write(ciphertext);
+            out.write(data);
             f.finishWrite(out);
         } catch (IOException e) { f.failWrite(out); throw e; }
     }
     private JSONObject saved() throws Exception {
-        AtomicFile f = file();
-        if (!f.getBaseFile().exists()) throw new Failure("not_paired");
-        byte[] data = f.readFully();
+        byte[] data = OfflineTripLedgerStore.managerCredential(ledgerDir());
+        if (data == null) {
+            try { data = file().readFully(); }
+            catch (java.io.FileNotFoundException e) { throw new Failure("not_paired"); }
+        }
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.DECRYPT_MODE, key(false), new GCMParameterSpec(128, Arrays.copyOf(data, 12)));
         return new JSONObject(new String(cipher.doFinal(data, 12, data.length - 12), StandardCharsets.UTF_8));
@@ -168,21 +181,80 @@ public class DesktopPairingPlugin extends Plugin {
             }
         });
     }
+    private JSONObject material(PluginCall call, boolean manager) throws Exception {
+        try {
+            JSONObject info = OfflineTripLedgerStore.parsePairingDisplay(call.getString("display", ""));
+            JSONObject session = info.getJSONObject("pairing_session");
+            Object port = info.opt("lan_port");
+            String pin = info.getString("cert_sha256");
+            if (!"travelflow-lan-pairing/0-draft".equals(info.opt("protocol"))
+                    || !android.util.Patterns.IP_ADDRESS.matcher(info.getString("lan_host")).matches()
+                    || !(port instanceof Number) || ((Number)port).longValue() < 1 || ((Number)port).longValue() > 65535
+                    || !pin.matches("[0-9a-f]{64}") || !pin.equals(session.opt("cert_sha256"))
+                    || !(session.opt("pairing_session_id") instanceof String)
+                    || !session.getString("pairing_session_id").matches("[0-9a-f]{32}")
+                    || !(session.opt("pairing_code") instanceof String) || !session.getString("pairing_code").matches("[0-9]{6}"))
+                throw new Failure("invalid_display");
+            if (manager) {
+                for (String key : new String[]{"pairing_session_id", "pairing_code", "expires_at"})
+                    if (!(info.opt(key) instanceof String) || !info.getString(key).equals(session.opt(key)))
+                        throw new Failure("invalid_display");
+                java.time.OffsetDateTime.parse(info.getString("expires_at"));
+                JSONObject trip = info.getJSONObject("trip");
+                for (String key : new String[]{"dataset_id", "travel_id", "branch_id", "current_revision_id"})
+                    if (OfflineTripLedgerStore.validCreateIdentifier(trip.opt(key)) == null || trip.getString(key).trim().isEmpty())
+                        throw new Failure("invalid_display");
+                if (!(trip.opt("title") instanceof String) || trip.getString("title").trim().isEmpty()
+                        || trip.getString("title").length() > 256 || trip.getString("title").matches("(?s).*\\p{Cc}.*"))
+                    throw new Failure("invalid_display");
+                if (trip.length() != 5 || session.length() != 4 || info.length() != 9) throw new Failure("invalid_display");
+            }
+            return info;
+        } catch (Exception e) { throw new Failure("invalid_display"); }
+    }
+
+    private void checkManagerScope(JSONObject info) throws Exception {
+        if (!OfflineTripLedgerStore.compatibleTrip(ledgerDir(), info.getJSONObject("trip")))
+            throw new Failure("trip_scope_conflict");
+        try {
+            JSONObject old = saved();
+            if (!info.getString("cert_sha256").equals(old.getString("pin"))) throw new Failure("pin_mismatch");
+        } catch (Failure e) {
+            if (!e.code.equals("not_paired")) throw e;
+        }
+    }
+
+    private JSObject displayTrip(JSONObject info) throws Exception {
+        JSObject result = new JSObject();
+        result.put("trip", info.getJSONObject("trip"));
+        result.put("sourceDeviceId", OfflineTripLedgerStore.businessSource(getContext()));
+        return result;
+    }
+
+    @PluginMethod public void preview(PluginCall call) {
+        execute(call, () -> {
+            pending = null;
+            JSONObject info = material(call, true);
+            checkManagerScope(info);
+            return displayTrip(info);
+        });
+    }
+
     @PluginMethod public void begin(PluginCall call) {
         execute(call, () -> {
             pending = null;
-            JSONObject info = new JSONObject(call.getString("display", ""));
+            boolean manager = call.getBoolean("runtime", false);
+            JSONObject info = material(call, manager);
+            if (manager) checkManagerScope(info);
+            else if (OfflineTripLedgerStore.managerCredential(ledgerDir()) != null) throw new Failure("trip_scope_conflict");
             JSONObject session = info.getJSONObject("pairing_session");
             String host = info.getString("lan_host"), pin = info.getString("cert_sha256");
             String sid = session.getString("pairing_session_id"), code = session.getString("pairing_code");
             int port = info.getInt("lan_port");
-            if (!"travelflow-lan-pairing/0-draft".equals(info.optString("protocol")) ||
-                !android.util.Patterns.IP_ADDRESS.matcher(host).matches() || port < 1 || port > 65535 ||
-                !pin.matches("[0-9a-f]{64}") || !pin.equals(session.getString("cert_sha256")) ||
-                !sid.matches("[0-9a-f]{32}") || !code.matches("[0-9]{6}")) throw new Failure("invalid_display");
             JSONObject peer = new JSONObject().put("host", host).put("port", port).put("pin", pin);
             String device = UUID.randomUUID().toString();
-            if (file().getBaseFile().exists()) {
+            // A new manager request must not rotate a working credential before the new local binding commits.
+            if (!manager && file().getBaseFile().exists()) {
                 JSONObject old = saved();
                 if (pin.equals(old.getString("pin"))) device = old.getString("device");
             }
@@ -201,18 +273,43 @@ public class DesktopPairingPlugin extends Plugin {
             pending = new JSONObject().put("peer", peer).put("complete", new JSONObject()
                     .put("request_id", reply.getString("request_id")).put("client_nonce", nonce)
                     .put("device_id", device).put("sas_code", sas));
-            JSObject result = new JSObject(); result.put("sas", sas); return result;
+            JSObject result = new JSObject();
+            if (manager) {
+                pending.put("material", info);
+                result = displayTrip(info);
+            }
+            result.put("sas", sas);
+            return result;
         });
     }
     @PluginMethod public void confirm(PluginCall call) {
         execute(call, () -> {
             if (pending == null) throw new Failure("no_pending_request");
             JSONObject peer = pending.getJSONObject("peer");
-            JSONObject reply = request(peer, "/pair/complete", pending.getJSONObject("complete"), false);
-            if (!peer.getString("device").equals(reply.getString("device_id")) ||
-                !peer.getString("pin").equals(reply.getString("cert_sha256")) ||
-                !reply.getString("device_token").matches("[A-Za-z0-9_-]{43}")) throw new Failure("invalid_credential");
-            save(peer.put("token", reply.getString("device_token")));
+            JSONObject info = pending.optJSONObject("material");
+            if (info != null) checkManagerScope(info);
+            // Token delivery is one-shot. Retry a failed verification or local commit with the
+            // verified token held by this same pending session until binding succeeds.
+            if (!peer.has("token")) {
+                JSONObject reply = request(peer, "/pair/complete", pending.getJSONObject("complete"), false);
+                if (!peer.getString("device").equals(reply.getString("device_id")) ||
+                    !peer.getString("pin").equals(reply.getString("cert_sha256")) ||
+                    !reply.getString("device_token").matches("[A-Za-z0-9_-]{43}")) throw new Failure("invalid_credential");
+                peer.put("token", reply.getString("device_token"));
+            }
+            if (info == null) save(peer);
+            else {
+                JSONObject trip = info.getJSONObject("trip");
+                JSONObject remote = request(peer, "/trip/fictional", null, true).getJSONObject("trip");
+                // This endpoint identifies the fixture's travel and branch; its head is static. The
+                // current baseline comes from the reviewed manager bundle, including on re-pair.
+                if (!Boolean.TRUE.equals(remote.opt("fictional_only")) || !trip.getString("travel_id").equals(remote.opt("travel_id"))
+                        || !trip.getString("branch_id").equals(remote.opt("main_branch_id"))
+                        || !trip.getString("title").equals(remote.opt("title"))) throw new Failure("trip_scope_conflict");
+                peer.put("manager", true);
+                OfflineTripLedgerStore.bindManager(ledgerDir(), trip,
+                        OfflineTripLedgerStore.businessSource(getContext()), encrypt(peer));
+            }
             lastPatchQuery = null;
             pending = null;
             return new JSObject();
@@ -323,8 +420,12 @@ public class DesktopPairingPlugin extends Plugin {
     @PluginMethod public void syncForeground(PluginCall call) {
         execute(call, () -> {
             if (!inForeground) return syncResult("idle", null, false);
-            if (!file().getBaseFile().exists()) return syncResult("unpaired", null, false);
-            JSONObject peer = saved();
+            JSONObject peer;
+            try { peer = saved(); }
+            catch (Failure e) {
+                if (e.code.equals("not_paired")) return syncResult("unpaired", null, false);
+                throw e;
+            }
             if (peer.has("syncStop")) return syncResult("blocked", peer.getString("syncStop"), false);
             File dir = OfflineTripLedgerStore.ledgerDir(getContext().getFilesDir());
             if (!new File(dir, "store.db").isFile()) return syncResult("idle", null, false);

@@ -36,7 +36,7 @@ export async function checkPendingUpgrade({ ctx, before, inspect, sql, phone, re
   assert.equal(desktopAfterCommit.receipts.length, before.receipts.length + 1);
 
   await upgrade();
-  assert.equal(sql("PRAGMA user_version"), "3");
+  assert.equal(sql("PRAGMA user_version"), "4");
   assert.equal(localRows(), localBytes);
   const migrated = await phone("inspect()");
   assert.deepEqual([migrated.expenseCount, migrated.totalCents, migrated.outboxCount, migrated.headRevisionId],
@@ -78,7 +78,7 @@ export async function checkPendingUpgrade({ ctx, before, inspect, sql, phone, re
     `${second.result_revision_id}|`,
   ].join("\n"));
   assert.deepEqual(inspect(), desktopAfterCommit);
-  console.log(JSON.stringify({ upgradedFrom: "e9d303e8073efbf7631aecfd206f776b2a20eecb", schema: "2 -> 3",
+  console.log(JSON.stringify({ upgradedFrom: "e9d303e8073efbf7631aecfd206f776b2a20eecb", schema: "2 -> 4",
     frozenRawSha256: items.map(item => createHash("sha256").update(item.raw_command_json).digest("hex")),
     wireIntentDigests: items.map(item => item.intent_sha256), desktopRevision: final.syncedDesktopRevisionId,
     secondResponse: rejected.error, mobileCents: final.totalCents, pending: final.outboxCount,

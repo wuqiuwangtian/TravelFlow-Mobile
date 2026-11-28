@@ -704,3 +704,18 @@ node scripts/check-p1-trip-handoff.mjs --upgrade-pending --serial emulator-5580 
 ```
 
 最后一条命令使用 WSL 桌面 CLI 和 API 35，分别构建 `e9d303e` 和当前 APK，并在保留应用数据的情况下升级。检查本地意图请读 `inspect().outbox`；跨端导出使用 `exportOutboxCommands().items`，其中只含已有确定桌面基线、已保存原文和摘要的待发命令。
+
+### 未预置旅行的 APK 对接 Windows 管理页
+
+桌面固定 `87c719271251beee6fd2c462a06062ca9267d4ce`。Windows 测试 Python 环境需有桌面后端依赖及 Playwright（实测 1.65.2），使用已安装的 Microsoft Edge。沿用上文的隔离 API 35 模拟器、`WIN_PY` 和当前 WLAN 地址 `WIN_IP`。先在仓外目录生成一次通用 APK，省略旅行参数。已有该版本通用 APK 时直接运行最后一条命令。
+
+```sh
+project="$(mktemp -d)/project"
+node scripts/prepare-p1-bridge-receipt.mjs --output "$project"
+(cd "$project/android" && ./gradlew :app:assembleDebug)
+node scripts/check-android-manager-pairing.mjs --serial emulator-5580 \
+  --desktop-repo ../TravelFlow-AI --desktop-python "$WIN_PY" --bind "$WIN_IP" \
+  --apk "$project/android/app/build/outputs/apk/debug/app-debug.apk"
+```
+
+脚本检查 APK 中的旅行种子为空或缺失，经真实 Windows 管理页复制的配对资料和 Android 正常界面完成绑定。它只安装一次，记录 APK 摘要。管理器重开后，脚本用同一安装与原配对凭据新增一笔来验证重连。异旅行负例仅修改配对资料中的旅行 ID，并在有待发和无待发两种状态下从手机界面提交。脚本结束后卸载隔离测试应用、恢复网络并清理临时桌面实例。

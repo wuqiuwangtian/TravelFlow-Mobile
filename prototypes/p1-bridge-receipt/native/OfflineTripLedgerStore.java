@@ -64,13 +64,18 @@ final class OfflineTripLedgerStore {
             String initialRevisionId,
             String baselineSource
     ) throws Exception {
+        initialize(dir, datasetId, travelId, branchId, initialRevisionId, baselineSource, null, null, null);
+    }
+
+    private static void initialize(File dir, String datasetId, String travelId, String branchId,
+            String initialRevisionId, String baselineSource, JSONObject trip, String source, byte[] credential) throws Exception {
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IllegalStateException("Failed to create offline trip ledger directory");
         }
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, true)) {
             db.beginTransaction();
             try {
-                if (db.getVersion() > 3) throw new IllegalStateException("Offline ledger requires a newer app");
+                if (db.getVersion() > 4) throw new IllegalStateException("Offline ledger requires a newer app");
                 db.execSQL("CREATE TABLE IF NOT EXISTS branch_head("
                         + "id INTEGER PRIMARY KEY CHECK(id=1), "
                         + "dataset_id TEXT NOT NULL, "
@@ -157,11 +162,117 @@ final class OfflineTripLedgerStore {
                     migrateWireSnapshots(db);
                     db.setVersion(3);
                 }
+                if (db.getVersion() == 3) {
+                    db.execSQL("CREATE TABLE manager_binding(id INTEGER PRIMARY KEY CHECK(id=1), trip_json TEXT NOT NULL, "
+                            + "source_device_id TEXT NOT NULL, credential BLOB NOT NULL)");
+                    db.setVersion(4);
+                }
+                if (trip != null) {
+                    db.execSQL("INSERT OR REPLACE INTO manager_binding(id,trip_json,source_device_id,credential) VALUES(1,?,?,?)",
+                            new Object[]{trip.toString(), source, credential});
+                }
                 db.setTransactionSuccessful();
             } finally {
                 db.endTransaction();
             }
         }
+    }
+
+    static JSONObject parsePairingDisplay(String raw) throws Exception {
+        if (raw.getBytes(StandardCharsets.UTF_8).length > 16384) throw new IllegalArgumentException();
+        Map<String, Object> info = asObject(new StrictJsonParser(raw).parseDocument());
+        if (info == null) throw new IllegalArgumentException();
+        return new JSONObject(info);
+    }
+
+    // A missing database (or an interrupted first transaction) has no travel identity.
+    private static JSONObject storedScope(File dir) throws Exception {
+        if (!new File(dir, "store.db").isFile()) return null;
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            if (BridgeLedgerStore.queryLong(db, "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='branch_head'", null) == 0)
+                return null;
+            try (Cursor row = db.rawQuery("SELECT dataset_id,travel_id,branch_id,baseline_source,"
+                    + "(SELECT revision_id FROM revisions ORDER BY seq LIMIT 1) FROM branch_head WHERE id=1", null)) {
+                if (!row.moveToFirst()) throw new IllegalStateException("Missing ledger scope");
+                return new JSONObject().put("dataset_id", row.getString(0)).put("travel_id", row.getString(1))
+                        .put("branch_id", row.getString(2)).put("baseline_source", row.getString(3))
+                        .put("current_revision_id", row.getString(4));
+            }
+        }
+    }
+
+    static boolean compatibleTrip(File dir, JSONObject trip) throws Exception {
+        JSONObject local = storedScope(dir);
+        if (local == null) return true;
+        for (String field : new String[]{"dataset_id", "travel_id", "branch_id"})
+            if (!local.getString(field).equals(trip.getString(field))) return false;
+        return true;
+    }
+
+    static synchronized String businessSource(android.content.Context context) throws Exception {
+        File dir = ledgerDir(context.getFilesDir());
+        if (storedScope(dir) != null) {
+            try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+                if (db.getVersion() >= 4) {
+                    try (Cursor row = db.rawQuery("SELECT source_device_id FROM manager_binding WHERE id=1", null)) {
+                        if (row.moveToFirst()) return row.getString(0);
+                    }
+                }
+                try (Cursor row = db.rawQuery("SELECT DISTINCT source_device_id FROM outbox", null)) {
+                    if (row.getCount() > 1) throw new IllegalStateException("Ledger has ambiguous business source");
+                    if (row.moveToFirst()) return row.getString(0);
+                }
+            }
+        }
+        android.content.SharedPreferences prefs = context.getSharedPreferences("mobile-business-identity", 0);
+        String id = prefs.getString("source_device_id", null);
+        if (id != null) return id;
+        id = "mobile-" + UUID.randomUUID();
+        if (!prefs.edit().putString("source_device_id", id).commit()) throw new java.io.IOException("Cannot persist business identity");
+        return id;
+    }
+
+    static void bindManager(File dir, JSONObject trip, String source, byte[] credential) throws Exception {
+        JSONObject local = storedScope(dir);
+        String baseline = local == null ? trip.getString("current_revision_id") : local.getString("current_revision_id");
+        initialize(dir, trip.getString("dataset_id"), trip.getString("travel_id"), trip.getString("branch_id"),
+                baseline, local == null ? "desktop manager" : local.getString("baseline_source"), trip, source, credential);
+    }
+
+    static byte[] managerCredential(File dir) {
+        if (!new File(dir, "store.db").isFile()) return null;
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            if (db.getVersion() < 4) return null;
+            try (Cursor row = db.rawQuery("SELECT credential FROM manager_binding WHERE id=1", null)) {
+                return row.moveToFirst() ? row.getBlob(0) : null;
+            }
+        }
+    }
+
+    static void updateManagerCredential(File dir, byte[] credential) {
+        try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
+            android.content.ContentValues values = new android.content.ContentValues();
+            values.put("credential", credential);
+            if (db.update("manager_binding", values, "id=1", null) != 1) throw new IllegalStateException("Missing manager binding");
+        }
+    }
+
+    static JSObject openRuntimeLedger(android.content.Context context) throws Exception {
+        File dir = ledgerDir(context.getFilesDir());
+        JSONObject local = storedScope(dir);
+        if (local != null) {
+            ensureInitialized(dir, local.getString("dataset_id"), local.getString("travel_id"), local.getString("branch_id"),
+                    local.getString("current_revision_id"), local.getString("baseline_source"));
+        }
+        JSObject result = local == null ? emptyLedger() : inspectLedger(dir);
+        result.put("sourceDeviceId", businessSource(context));
+        if (local != null) {
+            try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false);
+                 Cursor row = db.rawQuery("SELECT trip_json FROM manager_binding WHERE id=1", null)) {
+                if (row.moveToFirst()) result.put("trip", new JSONObject(row.getString(0)));
+            }
+        }
+        return result;
     }
 
     private static void migrateWireSnapshots(SQLiteDatabase db) throws Exception {
@@ -521,7 +632,7 @@ final class OfflineTripLedgerStore {
         return validCreateIdentifier(obj.get(key));
     }
 
-    private static String validCreateIdentifier(Object raw) {
+    static String validCreateIdentifier(Object raw) {
         if (!(raw instanceof String)) {
             return null;
         }
@@ -698,7 +809,8 @@ final class OfflineTripLedgerStore {
             db.beginTransactionNonExclusive();
             try {
                 String currentHead = readHeadIfScopeMatches(db, datasetId, travelId, branchId);
-                if (currentHead == null) {
+                if (currentHead == null || BridgeLedgerStore.queryLong(db,
+                        "SELECT COUNT(*) FROM manager_binding WHERE source_device_id != ?", new String[]{sourceDeviceId}) > 0) {
                     rejectError = "scope_mismatch";
                 }
 
@@ -1017,21 +1129,25 @@ final class OfflineTripLedgerStore {
         return patchResult(receipt, false, false);
     }
 
-    static JSObject inspectLedger(File dir) throws Exception {
+    private static JSObject emptyLedger() {
         JSObject data = new JSObject();
         data.put("callerPid", Process.myPid());
-        if (!dir.isDirectory() || !new File(dir, "store.db").isFile()) {
-            data.put("initialized", false);
-            data.put("expenseCount", 0);
-            data.put("totalCents", 0L);
-            data.put("expenses", new JSArray());
-            data.put("revisions", new JSArray());
-            data.put("revisionCount", 0);
-            data.put("receiptCount", 0);
-            data.put("outboxCount", 0);
-            data.put("outbox", new JSArray());
-            return data;
-        }
+        data.put("initialized", false);
+        data.put("expenseCount", 0);
+        data.put("totalCents", 0L);
+        data.put("expenses", new JSArray());
+        data.put("revisions", new JSArray());
+        data.put("revisionCount", 0);
+        data.put("receiptCount", 0);
+        data.put("outboxCount", 0);
+        data.put("outbox", new JSArray());
+        return data;
+    }
+
+    static JSObject inspectLedger(File dir) throws Exception {
+        if (!new File(dir, "store.db").isFile()) return emptyLedger();
+        JSObject data = new JSObject();
+        data.put("callerPid", Process.myPid());
         try (SQLiteDatabase db = BridgeLedgerStore.openStore(dir, false)) {
             data.put("initialized", true);
             try (Cursor head = db.rawQuery(
